@@ -24,9 +24,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Service en avant-plan : toutes les [Config.getPollingIntervalMs],
- * 1. retransmet les statuts en attente,
- * 2. vérifie que les SMS envoyés ont bien été confirmés (timeout),
- * 3. interroge l'API pour les nouveaux SMS à envoyer et les envoie.
+ * 1. synchronise avec l'API (rapports de statut + récupération des messages à envoyer),
+ * 2. envoie les SMS demandés.
  */
 class SmsGatewayService : Service() {
 
@@ -84,8 +83,15 @@ class SmsGatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun processCycle() {
-        flushReports()
         sweepTimeouts()
+
+        val apiKey = Config.getGatewayApiKey(this)
+        if (apiKey.isBlank()) {
+            lastError = "Clé API non configurée"
+            SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Clé API non configurée"))
+            updateNotification()
+            return
+        }
 
         val smsGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) ==
             PackageManager.PERMISSION_GRANTED
@@ -96,13 +102,19 @@ class SmsGatewayService : Service() {
             return
         }
 
-        val pending = try {
-            api.fetchPendingMessages()
+        val reports = ReportQueue.all()
+        val result = try {
+            api.sync(reports)
         } catch (e: Exception) {
             lastError = "API injoignable : ${e.message}"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "API injoignable : ${e.message}"))
             updateNotification()
             return
+        }
+
+        if (reports.isNotEmpty()) {
+            ReportQueue.clearAll(reports)
+            for (r in reports) noteReported(r.messageId)
         }
 
         lastPollTime = System.currentTimeMillis()
@@ -112,7 +124,7 @@ class SmsGatewayService : Service() {
             lastError = "App SMS par défaut requise"
         }
 
-        for (message in pending) {
+        for (message in result.messages) {
             if (isDefaultSmsApp(this)) {
                 try {
                     SmsSender.send(this, message)
@@ -123,30 +135,21 @@ class SmsGatewayService : Service() {
                         SmsLog.Entry(now(), SmsLog.TYPE_ENVOI, message.id, message.recipient, message.body, null, null)
                     )
                 } catch (e: Exception) {
-                    ReportQueue.add(StatusReport(message.id, "FAILED", e.message, System.currentTimeMillis()))
+                    ReportQueue.add(StatusReport(message.id, "failed", e.message, System.currentTimeMillis()))
                     SmsLog.add(
                         this,
-                        SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "FAILED", e.message)
+                        SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", e.message)
                     )
                 }
             } else {
-                ReportQueue.add(StatusReport(message.id, "FAILED", "App SMS par défaut requise", System.currentTimeMillis()))
+                ReportQueue.add(StatusReport(message.id, "failed", "App SMS par défaut requise", System.currentTimeMillis()))
                 SmsLog.add(
                     this,
-                    SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "FAILED", "App SMS par défaut requise")
+                    SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", "App SMS par défaut requise")
                 )
             }
         }
         updateNotification()
-    }
-
-    private fun flushReports() {
-        for (report in ReportQueue.all()) {
-            if (api.reportStatus(report.messageId, report.status, report.error)) {
-                ReportQueue.remove(report.messageId)
-                noteReported(report.messageId)
-            }
-        }
     }
 
     private fun sweepTimeouts() {
@@ -154,10 +157,10 @@ class SmsGatewayService : Service() {
         val expired = sentAt.filterValues { now - it > Config.RESULT_TIMEOUT_MS }.keys
         for (messageId in expired) {
             sentAt.remove(messageId)
-            ReportQueue.add(StatusReport(messageId, "FAILED", "Aucune confirmation (timeout)", now))
+            ReportQueue.add(StatusReport(messageId, "failed", "Aucune confirmation (timeout)", now))
             SmsLog.add(
                 this,
-                SmsLog.Entry(now, SmsLog.TYPE_ERREUR, messageId, "", "", "FAILED", "Aucune confirmation (timeout)")
+                SmsLog.Entry(now, SmsLog.TYPE_ERREUR, messageId, "", "", "failed", "Aucune confirmation (timeout)")
             )
         }
     }

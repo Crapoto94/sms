@@ -59,7 +59,7 @@ main { padding: 24px; max-width: 1200px; margin: 0 auto; }
   flex-wrap: wrap;
 }
 
-.hidden { display: none; }
+.hidden { display: none !important; }
 .muted { color: #94a3b8; font-size: 13px; }
 .error { color: #f87171; font-size: 13px; }
 

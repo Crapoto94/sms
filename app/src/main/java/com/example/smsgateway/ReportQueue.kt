@@ -23,6 +23,11 @@ object ReportQueue {
 
     fun all(): List<StatusReport> = reports.values.toList()
 
+    /** Retire de la file tous les rapports de la liste (après acceptation par l'API). */
+    fun clearAll(sent: List<StatusReport>) {
+        for (r in sent) reports.remove(r.messageId)
+    }
+
     fun remove(messageId: String) {
         reports.remove(messageId)
     }

@@ -33,15 +33,18 @@ class SettingsActivity : AppCompatActivity() {
         binding.textVersion.text = getString(R.string.version_format, BuildConfig.VERSION_NAME)
         binding.textDeviceId.text = "${getString(R.string.device_id_label)} : ${Config.getDeviceId(this)}"
         binding.editBaseUrl.setText(Config.getBaseUrl(this))
+        binding.editApiKey.setText(Config.getGatewayApiKey(this))
 
         binding.btnBack.setOnClickListener { finish() }
 
         binding.btnSaveUrl.setOnClickListener {
             val url = binding.editBaseUrl.text.toString().trim()
+            val key = binding.editApiKey.text.toString().trim()
             if (url.isNotEmpty()) {
                 Config.setBaseUrl(this, url)
-                Toast.makeText(this, R.string.url_saved, Toast.LENGTH_SHORT).show()
             }
+            Config.setGatewayApiKey(this, key)
+            Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
         }
 
         binding.btnSetDefaultSms.setOnClickListener {
