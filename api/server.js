@@ -174,6 +174,10 @@ function requireSession(req, res, next) {
 
 const webApp = express();
 webApp.use(express.json());
+webApp.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 webApp.post('/admin/login', (req, res) => {
   if (String((req.body || {}).password || '') !== ADMIN_PASSWORD) {
