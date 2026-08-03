@@ -123,6 +123,26 @@ label { display: block; margin: 12px 0 4px; font-size: 13px; color: #cbd5e1; }
   width: 100%;
   max-width: 420px;
 }
+.card.wide { max-width: 640px; }
+#csvFile { display: none; }
+#dropZone {
+  border: 2px dashed #475569;
+  border-radius: 10px;
+  padding: 22px;
+  margin-top: 10px;
+  text-align: center;
+  cursor: pointer;
+}
+#dropZone:hover, #dropZone.dragover { border-color: #2563eb; background: #0f172a; }
+#importInvalid ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  font-size: 12px;
+  color: #f87171;
+  max-height: 150px;
+  overflow: auto;
+}
+#importInvalid li { margin-bottom: 2px; }
 textarea[readonly] { resize: none; height: 120px; }
 
 .code { font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }

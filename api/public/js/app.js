@@ -190,14 +190,23 @@ $('btnExport').addEventListener('click', () => {
 $('btnNewMessage').addEventListener('click', () => {
   $('smsRecipient').value = '';
   $('smsBody').value = '';
-  $('smsCounter').textContent = '0';
+  updateSmsCounter();
   $('messageError').textContent = '';
   $('messageModal').classList.remove('hidden');
 });
 $('btnCancelMessage').addEventListener('click', () => $('messageModal').classList.add('hidden'));
-$('smsBody').addEventListener('input', () => {
-  $('smsCounter').textContent = $('smsBody').value.length;
-});
+$('smsBody').addEventListener('input', updateSmsCounter);
+
+function updateSmsCounter() {
+  const len = $('smsBody').value.length;
+  $('smsCounter').textContent = len;
+  $('smsSegments').textContent = smsSegments(len) > 1 ? `${smsSegments(len)} segments` : '1 segment';
+}
+
+function smsSegments(len) {
+  const GSM7 = /^[\x00-\x7F]*$/.test($('smsBody').value) ? 153 : 67;
+  return len <= (GSM7 === 153 ? 160 : 70) ? 1 : Math.ceil(len / GSM7);
+}
 
 $('btnSendMessage').addEventListener('click', async () => {
   $('messageError').textContent = '';
@@ -213,6 +222,158 @@ $('btnSendMessage').addEventListener('click', async () => {
     loadMessages();
   } catch (e) {
     $('messageError').textContent = e.message;
+  }
+});
+
+// ---------- Import CSV ----------
+const PHONE_RE = /^\+?[0-9]{4,15}$/;
+const MAX_MESSAGE_LENGTH = 1000;
+const MAX_IMPORT = 5000;
+let parsedImport = null;
+
+function parseCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim() !== '') || '';
+  const counts = [';', ',', '\t'].map((s) => ({ s, n: firstLine.split(s).length - 1 }));
+  const sep = counts.reduce((a, b) => (b.n > a.n ? b : a), { s: ';', n: 0 }).s;
+  const rows = [];
+  let field = '';
+  let row = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === sep) {
+      row.push(field); field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return { rows, sep };
+}
+
+function analyzeCsv(rows) {
+  const seen = new Set();
+  const items = [];
+  const duplicates = [];
+  const invalid = [];
+  let header = false;
+  let longCount = 0;
+
+  const first = (rows[0] || []).map((c) => String(c ?? '').trim());
+  if (first[0] && !PHONE_RE.test(first[0])) header = true;
+
+  for (let i = header ? 1 : 0; i < rows.length; i++) {
+    const cols = rows[i].map((c) => String(c ?? '').trim());
+    while (cols.length > 0 && cols[cols.length - 1] === '') cols.pop();
+    const recipient = cols[0] || '';
+    const message = cols[1] || '';
+    if (!recipient && !message) continue;
+    const errs = [];
+    if (!PHONE_RE.test(recipient)) errs.push(`Numéro invalide (« ${recipient || '(vide)'} »)`);
+    if (!message) errs.push('Message vide');
+    else if (message.length > MAX_MESSAGE_LENGTH) errs.push(`Message trop long (${message.length}/${MAX_MESSAGE_LENGTH})`);
+    if (errs.length) {
+      invalid.push({ line: i + 1, recipient, message, error: errs.join(', ') });
+      continue;
+    }
+    if (message.length > 160) longCount++;
+    const key = recipient + '\u0001' + message;
+    if (seen.has(key)) {
+      duplicates.push({ line: i + 1, recipient, message });
+      continue;
+    }
+    seen.add(key);
+    items.push({ recipient, message });
+  }
+  return { items, duplicates, invalid, header, totalRows: rows.length, longCount };
+}
+
+function handleCsvFile(file) {
+  $('importError').textContent = '';
+  $('importResult').classList.add('hidden');
+  $('dropZone').querySelector('p').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const { rows } = parseCsv(String(reader.result || ''));
+      const analysis = analyzeCsv(rows);
+      parsedImport = analysis;
+      if (analysis.items.length > MAX_IMPORT) {
+        $('importError').textContent = `Fichier trop volumineux (${analysis.items.length} SMS, max ${MAX_IMPORT}).`;
+        return;
+      }
+      const longNote = analysis.longCount > 0 ? ` · ${analysis.longCount} message(s) long(s) → multipart` : '';
+      const summary = `Fichier : ${analysis.totalRows} ligne(s)${analysis.header ? ' (entête ignorée)' : ''} — ` +
+        `<strong>${analysis.items.length} SMS à envoyer</strong> · ${analysis.duplicates.length} doublon(s) ignoré(s) · ${analysis.invalid.length} ligne(s) invalide(s)${longNote}.`;
+      $('importSummary').innerHTML = summary;
+      $('btnConfirmImport').textContent = `Envoyer ${analysis.items.length} SMS`;
+      const inv = $('importInvalid');
+      if (analysis.invalid.length) {
+        inv.classList.remove('hidden');
+        inv.innerHTML = '<p class="error" style="margin:10px 0 4px">Lignes invalides (ignorées) :</p><ul>' +
+          analysis.invalid.slice(0, 20).map((i) => `<li>Ligne ${i.line} : ${esc(i.recipient)} — ${esc(i.error)}</li>`).join('') +
+          (analysis.invalid.length > 20 ? `<li>… et ${analysis.invalid.length - 20} autre(s)</li>` : '') + '</ul>';
+      } else {
+        inv.classList.add('hidden');
+      }
+      if (analysis.items.length === 0 && analysis.invalid.length === 0) {
+        $('importError').textContent = 'Aucun SMS valide trouvé dans ce fichier.';
+        return;
+      }
+      $('importResult').classList.remove('hidden');
+    } catch (e) {
+      $('importError').textContent = 'Impossible de lire le fichier : ' + e.message;
+    }
+  };
+  reader.onerror = () => { $('importError').textContent = 'Erreur de lecture du fichier.'; };
+  reader.readAsText(file, 'utf-8');
+}
+
+$('btnImportCsv').addEventListener('click', () => {
+  parsedImport = null;
+  $('csvFile').value = '';
+  $('importError').textContent = '';
+  $('importResult').classList.add('hidden');
+  $('dropZone').querySelector('p').textContent = 'Cliquez ou déposez le fichier ici';
+  $('importModal').classList.remove('hidden');
+});
+$('btnCancelImport').addEventListener('click', () => $('importModal').classList.add('hidden'));
+$('dropZone').addEventListener('click', () => $('csvFile').click());
+['dragover', 'dragleave', 'drop'].forEach((ev) =>
+  $('dropZone').addEventListener(ev, (e) => e.preventDefault()));
+$('dropZone').addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) handleCsvFile(f);
+});
+$('csvFile').addEventListener('change', () => {
+  const f = $('csvFile').files[0];
+  if (f) handleCsvFile(f);
+});
+$('btnConfirmImport').addEventListener('click', async () => {
+  if (!parsedImport || parsedImport.items.length === 0) return;
+  $('importError').textContent = '';
+  try {
+    const res = await api('/admin/api/messages/import', {
+      method: 'POST',
+      body: JSON.stringify({ messages: parsedImport.items })
+    });
+    $('importModal').classList.add('hidden');
+    loadMessages();
+    alert(`Import terminé : ${res.created} SMS créé(s), ${res.duplicates} doublon(s) ignoré(s), ${res.invalid.length} ligne(s) invalide(s).`);
+  } catch (e) {
+    $('importError').textContent = e.message;
   }
 });
 

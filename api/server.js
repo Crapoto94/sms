@@ -11,7 +11,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
-const MAX_MESSAGE_LENGTH = 160;
+const MAX_MESSAGE_LENGTH = 1000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -405,6 +405,57 @@ webApp.post('/admin/api/messages', (req, res) => {
     status: 'pending',
     createdAt
   });
+});
+
+webApp.post('/admin/api/messages/import', (req, res) => {
+  const input = Array.isArray(req.body.messages) ? req.body.messages : [];
+  const MAX_IMPORT = 5000;
+  if (input.length === 0) return res.status(400).json({ error: 'Aucune ligne à importer' });
+  if (input.length > MAX_IMPORT) return res.status(400).json({ error: `Trop de lignes (max ${MAX_IMPORT})` });
+
+  const seen = new Set();
+  const invalid = [];
+  const toInsert = [];
+  let duplicates = 0;
+
+  for (const raw of input) {
+    const recipient = String((raw && raw.recipient) || '').trim();
+    const message = String((raw && raw.message) || '').trim();
+    const errs = [];
+    if (!/^\+?[0-9]{4,15}$/.test(recipient)) errs.push('Numéro invalide');
+    if (message.length === 0) errs.push('Message vide');
+    else if (message.length > MAX_MESSAGE_LENGTH) errs.push(`Message trop long (max ${MAX_MESSAGE_LENGTH})`);
+    if (errs.length) {
+      invalid.push({ recipient, message, error: errs.join(', ') });
+      continue;
+    }
+    const key = recipient + '\u0001' + message;
+    if (seen.has(key)) {
+      duplicates++;
+      continue;
+    }
+    seen.add(key);
+    toInsert.push([recipient, message]);
+  }
+  const createdAt = isoNow();
+  const insert = db.prepare(
+    'INSERT INTO messages (recipient, body, status, created_at) VALUES (?, ?, ?, ?)'
+  );
+  let created = 0;
+  if (toInsert.length) {
+    db.exec('BEGIN');
+    try {
+      for (const [recipient, message] of toInsert) {
+        insert.run(recipient, message, 'pending', createdAt);
+        created++;
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+  res.status(201).json({ rows: input.length, duplicates, invalid, created });
 });
 
 webApp.get('/admin/api/logs', (req, res) => {

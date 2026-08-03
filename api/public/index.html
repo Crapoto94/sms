@@ -50,6 +50,7 @@
       <div class="row">
         <h2>Messages</h2>
         <button id="btnNewMessage">+ Envoyer un SMS</button>
+        <button id="btnImportCsv" class="ghost">Importer CSV</button>
         <button id="btnExport" class="ghost">Exporter CSV</button>
         <select id="statusFilter">
           <option value="">Tous les statuts</option>
@@ -131,13 +132,35 @@
       <label for="smsRecipient">Numéro</label>
       <input id="smsRecipient" placeholder="ex : +33612345678" autocomplete="off">
       <label for="smsBody">Message</label>
-      <textarea id="smsBody" maxlength="160" rows="3" placeholder="Contenu du SMS…"></textarea>
-      <p class="muted" style="margin-top:4px"><span id="smsCounter">0</span>/160</p>
+      <textarea id="smsBody" maxlength="1000" rows="4" placeholder="Contenu du SMS…"></textarea>
+      <p class="muted" style="margin-top:4px"><span id="smsCounter">0</span>/1000 · <span id="smsSegments">1 segment</span></p>
       <div class="row" style="margin-top:16px">
         <button id="btnSendMessage">Envoyer</button>
         <button id="btnCancelMessage" class="ghost">Annuler</button>
       </div>
       <p id="messageError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="importModal" class="overlay hidden">
+    <div class="card wide">
+      <h3>Importer un fichier CSV</h3>
+      <p class="muted">1re colonne : numéro de téléphone · 2e colonne : message.<br>
+      Séparateur « ; », « , » ou tabulation — une ligne = un SMS. Un doublon (numéro ET message identiques) n'est envoyé qu'une fois.<br>
+      Messages de plus de 160 caractères : envoyés en plusieurs segments.</p>
+      <input type="file" id="csvFile" accept=".csv,.txt,text/csv,text/plain">
+      <div id="dropZone">
+        <p class="muted">Cliquez ou déposez le fichier ici</p>
+      </div>
+      <div id="importResult" class="hidden">
+        <p id="importSummary" style="margin-top:12px"></p>
+        <div id="importInvalid" class="hidden"></div>
+        <div class="row" style="margin-top:16px">
+          <button id="btnConfirmImport">Envoyer</button>
+          <button id="btnCancelImport" class="ghost">Annuler</button>
+        </div>
+      </div>
+      <p id="importError" class="error"></p>
     </div>
   </div>
 

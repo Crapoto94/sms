@@ -33,8 +33,8 @@
           },
           "message": {
             "type": "string",
-            "description": "Contenu du SMS (160 caractères maximum).",
-            "maxLength": 160,
+            "description": "Contenu du SMS (jusqu'à 1000 caractères ; au-delà de 160, le message est envoyé en plusieurs segments).",
+            "maxLength": 1000,
             "example": "Votre colis sera livré demain."
           }
         }
@@ -110,7 +110,7 @@
             }
           },
           "400": {
-            "description": "Numéro invalide, message vide ou message trop long (plus de 160 caractères).",
+            "description": "Numéro invalide, message vide ou message trop long (plus de 1000 caractères).",
             "content": {
               "application/json": {
                 "schema": {

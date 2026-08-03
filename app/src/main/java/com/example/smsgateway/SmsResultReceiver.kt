@@ -15,43 +15,46 @@ class SmsResultReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val messageId = intent.getStringExtra(Config.EXTRA_MESSAGE_ID) ?: return
+        val partIndex = intent.getIntExtra(Config.EXTRA_PART_INDEX, 0)
+        val partTotal = intent.getIntExtra(Config.EXTRA_PART_TOTAL, 1)
 
-        val status: String
-        val error: String?
-        when (intent.action) {
+        val report: StatusReport? = when (intent.action) {
             Config.SMS_SENT_ACTION -> {
-                when (resultCode) {
-                    Activity.RESULT_OK -> { status = "sent"; error = null }
-                    SmsManager.RESULT_ERROR_GENERIC_FAILURE -> { status = "failed"; error = "Erreur générique" }
-                    SmsManager.RESULT_ERROR_NO_SERVICE -> { status = "failed"; error = "Pas de service réseau" }
-                    SmsManager.RESULT_ERROR_NULL_PDU -> { status = "failed"; error = "PDU nul" }
-                    SmsManager.RESULT_ERROR_RADIO_OFF -> { status = "failed"; error = "Radio éteinte" }
-                    else -> { status = "failed"; error = "Erreur $resultCode" }
+                val ok = resultCode == Activity.RESULT_OK
+                val error = when (resultCode) {
+                    Activity.RESULT_OK -> null
+                    SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "Erreur générique"
+                    SmsManager.RESULT_ERROR_NO_SERVICE -> "Pas de service réseau"
+                    SmsManager.RESULT_ERROR_NULL_PDU -> "PDU nul"
+                    SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio éteinte"
+                    else -> "Erreur $resultCode"
                 }
+                MultipartTracker.onSent(context, messageId, partIndex, partTotal, ok, error)
             }
             Config.SMS_DELIVERED_ACTION -> {
                 if (resultCode != Activity.RESULT_OK) return
-                status = "delivered"
-                error = null
+                MultipartTracker.onDelivered(context, messageId, partIndex, partTotal)
             }
             else -> return
         }
 
-        SmsGatewayService.noteReported(messageId)
+        if (report == null) return
+
+        SmsGatewayService.noteReported(report.messageId)
         SmsLog.add(
             context,
             SmsLog.Entry(
                 System.currentTimeMillis(),
                 SmsLog.TYPE_STATUT,
-                messageId,
+                report.messageId,
                 intent.getStringExtra(Config.EXTRA_RECIPIENT).orEmpty(),
                 "",
-                status,
-                error
+                report.status,
+                report.error
             )
         )
-        if (messageId.startsWith("test-")) return
-        ReportQueue.add(StatusReport(messageId, status, error, System.currentTimeMillis()))
+        if (report.messageId.startsWith("test-")) return
+        ReportQueue.add(report)
         SmsGatewayService.requestFlush(context)
     }
 }
