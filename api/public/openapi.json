@@ -1,0 +1,171 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Passerelle SMS — API d'envoi",
+    "version": "1.0.0",
+    "description": "API permettant à une application web de demander l'envoi d'un SMS. Le SMS est mis en file d'attente puis envoyé par la passerelle (le téléphone) au prochain cycle de synchronisation.\n\nL'authentification se fait par **Bearer token** : une clé API de type **Web** (créée dans la console d'administration)."
+  },
+  "tags": [
+    { "name": "Messages", "description": "Envoi de SMS" },
+    { "name": "Système", "description": "Vérification de disponibilité" }
+  ],
+  "security": [
+    { "bearerAuth": [] }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Clé API de type \"web\"."
+      }
+    },
+    "schemas": {
+      "SendMessageRequest": {
+        "type": "object",
+        "required": ["recipient", "message"],
+        "properties": {
+          "recipient": {
+            "type": "string",
+            "description": "Numéro de téléphone, au format international (avec ou sans +).",
+            "pattern": "^\\+?[0-9]{4,15}$",
+            "example": "+33612345678"
+          },
+          "message": {
+            "type": "string",
+            "description": "Contenu du SMS (160 caractères maximum).",
+            "maxLength": 160,
+            "example": "Votre colis sera livré demain."
+          }
+        }
+      },
+      "MessageCreated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Identifiant du message en base.",
+            "example": 42
+          },
+          "recipient": {
+            "type": "string",
+            "example": "+33612345678"
+          },
+          "message": {
+            "type": "string",
+            "example": "Votre colis sera livré demain."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending"],
+            "description": "Statut initial : en attente d'envoi."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Description de l'erreur."
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/messages": {
+      "post": {
+        "tags": ["Messages"],
+        "summary": "Envoyer un SMS",
+        "description": "Crée un SMS qui sera envoyé par la passerelle au prochain cycle de synchronisation (en file d'attente, un SMS toutes les 5 à 10 secondes).\n\nNécessite une clé API de type **web**.",
+        "operationId": "sendMessage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              },
+              "example": {
+                "recipient": "+33612345678",
+                "message": "Votre colis sera livré demain."
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Message créé et mis en file d'attente.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Numéro invalide, message vide ou message trop long (plus de 160 caractères).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Clé API manquante ou invalide.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Clé API révoquée, expirée ou type de clé inadapté (la clé doit être de type \"web\").",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["Système"],
+        "summary": "Vérifier que l'API est disponible",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "API disponible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "example": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -199,6 +199,11 @@ webApp.post('/admin/logout', (req, res) => {
 
 const sendFile = (name) => (_req, res) => res.sendFile(path.join(PUBLIC_DIR, name));
 
+apiApp.get('/docs', sendFile('docs.html'));
+apiApp.get('/openapi.json', sendFile('openapi.json'));
+webApp.get('/docs', sendFile('docs.html'));
+webApp.get('/openapi.json', sendFile('openapi.json'));
+
 webApp.get('/login.html', sendFile('login.html'));
 webApp.use('/css', express.static(path.join(PUBLIC_DIR, 'css')));
 webApp.use('/js', express.static(path.join(PUBLIC_DIR, 'js')));

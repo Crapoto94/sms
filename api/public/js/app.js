@@ -52,6 +52,8 @@ $('logout').addEventListener('click', async () => {
   location.href = '/login.html';
 });
 
+$('btnDocs').addEventListener('click', () => window.open('/docs', '_blank'));
+
 // ---------- Clés ----------
 async function loadKeys() {
   const keys = await api('/admin/api/keys');
