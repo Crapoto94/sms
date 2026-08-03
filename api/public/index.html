@@ -13,6 +13,7 @@
       <button class="tab active" data-tab="keys">Clés API</button>
       <button class="tab" data-tab="gateways">Passerelles</button>
       <button class="tab" data-tab="messages">Messages</button>
+      <button class="tab" data-tab="logs">Logs</button>
       <a id="btnDocs" class="ghost" href="/docs" target="_blank" rel="noopener">Docs API</a>
       <button id="logout" class="ghost">Déconnexion</button>
     </div>
@@ -49,6 +50,7 @@
       <div class="row">
         <h2>Messages</h2>
         <button id="btnNewMessage">+ Envoyer un SMS</button>
+        <button id="btnExport" class="ghost">Exporter CSV</button>
         <select id="statusFilter">
           <option value="">Tous les statuts</option>
           <option value="pending">En attente</option>
@@ -63,6 +65,30 @@
           <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
+      </table>
+    </section>
+
+    <section id="logs" class="panel hidden">
+      <div class="row">
+        <h2>Appels des passerelles</h2>
+        <select id="logLimit">
+          <option value="50">50 entrées</option>
+          <option value="100" selected>100 entrées</option>
+          <option value="200">200 entrées</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Passerelle</th><th>Appareil</th><th>Rapports remontés</th><th>Messages récupérés</th></tr>
+        </thead>
+        <tbody id="logsBody"></tbody>
+      </table>
+      <h2 style="margin-top:24px">Tentatives d'authentification échouées</h2>
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Clé</th><th>IP</th><th>Raison</th></tr>
+        </thead>
+        <tbody id="authLogsBody"></tbody>
       </table>
     </section>
   </main>

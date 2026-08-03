@@ -41,9 +41,11 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('keys').classList.toggle('hidden', currentTab !== 'keys');
     $('gateways').classList.toggle('hidden', currentTab !== 'gateways');
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
+    $('logs').classList.toggle('hidden', currentTab !== 'logs');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
     if (currentTab === 'messages') loadMessages();
+    if (currentTab === 'logs') loadLogs();
   });
 });
 
@@ -178,6 +180,12 @@ async function loadMessages() {
 
 $('statusFilter').addEventListener('change', loadMessages);
 
+$('btnExport').addEventListener('click', () => {
+  const status = $('statusFilter').value;
+  const url = '/admin/api/messages/export' + (status ? `?status=${encodeURIComponent(status)}` : '');
+  window.location.href = url;
+});
+
 // ---------- Envoi manuel ----------
 $('btnNewMessage').addEventListener('click', () => {
   $('smsRecipient').value = '';
@@ -208,9 +216,37 @@ $('btnSendMessage').addEventListener('click', async () => {
   }
 });
 
+// ---------- Logs ----------
+async function loadLogs() {
+  const limit = $('logLimit').value;
+  const [logs, authLogs] = await Promise.all([
+    api(`/admin/api/logs?limit=${limit}`),
+    api(`/admin/api/auth-logs?limit=${limit}`)
+  ]);
+  $('logsBody').innerHTML = logs.length
+    ? logs.map((l) => `<tr>
+        <td>${fmtDate(l.created_at)}</td>
+        <td>${esc(l.gateway_label || '—')}</td>
+        <td class="code">${esc(l.device_id || '—')}</td>
+        <td>${l.reports}</td>
+        <td>${l.claimed}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">Aucun appel enregistré.</td></tr>';
+  $('authLogsBody').innerHTML = authLogs.length
+    ? authLogs.map((a) => `<tr>
+        <td>${fmtDate(a.created_at)}</td>
+        <td>${esc(a.gateway_label || `clé #${a.key_id}`)}</td>
+        <td class="code">${esc(a.ip || '—')}</td>
+        <td class="muted">${esc(a.reason)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="muted">Aucune tentative échouée.</td></tr>';
+}
+$('logLimit').addEventListener('change', loadLogs);
+
 // ---------- Rafraîchissement automatique ----------
 loadKeys();
 setInterval(() => {
   if (currentTab === 'gateways') loadGateways();
   if (currentTab === 'messages') loadMessages();
+  if (currentTab === 'logs') loadLogs();
 }, 10000);

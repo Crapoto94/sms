@@ -19,6 +19,32 @@ const newToken = () => crypto.randomBytes(32).toString('base64url');
 const isoNow = () => new Date().toISOString();
 const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date.now();
 
+// ---------- Rate limiting (simple, en mémoire) ----------
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '30', 10);
+const rateHits = new Map(); // "ip|keyId" -> [timestamps]
+
+function rateLimit(req, res, next) {
+  const now = Date.now();
+  const key = `${req.socket.remoteAddress || req.ip || ''}|${req.apiKey ? req.apiKey.id : 'anon'}`;
+  const hits = (rateHits.get(key) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (hits.length >= RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Trop de requêtes, réessayez dans quelques secondes' });
+  }
+  hits.push(now);
+  rateHits.set(key, hits);
+  next();
+}
+
+// ---------- Journalisation des tentatives d'authentification ----------
+function logAuthAttempt(req, keyId, reason) {
+  try {
+    db.prepare(
+      'INSERT INTO auth_logs (key_id, ip, reason, created_at) VALUES (?, ?, ?, ?)'
+    ).run(keyId || null, req.socket.remoteAddress || req.ip || '', reason, isoNow());
+  } catch (_) { /* ne bloque jamais la réponse */ }
+}
+
 // ---------- Sessions de l'interface web ----------
 const sessions = new Map(); // sid -> expiration (timestamp ms)
 
@@ -40,12 +66,27 @@ function getBearer(req) {
 function requireApiKey(type) {
   return (req, res, next) => {
     const token = getBearer(req);
-    if (!token) return res.status(401).json({ error: 'Clé API manquante' });
+    if (!token) {
+      logAuthAttempt(req, null, '401 Clé API manquante');
+      return res.status(401).json({ error: 'Clé API manquante' });
+    }
     const row = db.prepare('SELECT * FROM keys WHERE token_hash = ?').get(sha256(token));
-    if (!row) return res.status(401).json({ error: 'Clé API invalide' });
-    if (row.revoked) return res.status(403).json({ error: 'Clé révoquée' });
-    if (row.type !== type) return res.status(403).json({ error: 'Type de clé inadapté' });
-    if (isExpired(row)) return res.status(403).json({ error: 'Clé expirée' });
+    if (!row) {
+      logAuthAttempt(req, null, '401 Clé API invalide');
+      return res.status(401).json({ error: 'Clé API invalide' });
+    }
+    if (row.revoked) {
+      logAuthAttempt(req, row.id, '403 Clé révoquée');
+      return res.status(403).json({ error: 'Clé révoquée' });
+    }
+    if (row.type !== type) {
+      logAuthAttempt(req, row.id, `403 Type de clé inadapté (${row.type} au lieu de ${type})`);
+      return res.status(403).json({ error: 'Type de clé inadapté' });
+    }
+    if (isExpired(row)) {
+      logAuthAttempt(req, row.id, '403 Clé expirée');
+      return res.status(403).json({ error: 'Clé expirée' });
+    }
     db.prepare('UPDATE keys SET last_used_at = ? WHERE id = ?').run(isoNow(), row.id);
     req.apiKey = row;
     next();
@@ -63,7 +104,7 @@ apiApp.use((_req, res, next) => {
 apiApp.get('/health', (_req, res) => res.json({ ok: true }));
 
 // Envoi d'un SMS demandé par une application web (clé type "web")
-apiApp.post('/api/v1/messages', requireApiKey('web'), (req, res) => {
+apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
@@ -152,6 +193,10 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
 
     claimed = toClaim;
     db.exec('COMMIT');
+
+    db.prepare(
+      'INSERT INTO gateway_logs (key_id, device_id, reports, claimed, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(req.apiKey.id, deviceId, reportAccepted.length, claimed.length, nowIso);
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
@@ -290,6 +335,42 @@ webApp.get('/admin/api/gateways', (_req, res) => {
   res.json(gateways);
 });
 
+webApp.get('/admin/api/messages/export', (req, res) => {
+  const status = String(req.query.status || '');
+  const base = `
+    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id
+    FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+  `;
+  const rows = status
+    ? db.prepare(`${base} WHERE m.status = ? ORDER BY m.id ASC`).all(status)
+    : db.prepare(`${base} ORDER BY m.id ASC`).all();
+  const esc = (v) => {
+    const s = v == null ? '' : String(v);
+    return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const statusLabel = {
+    pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec'
+  };
+  const header = ['ID', 'Date', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Erreur'];
+  const lines = rows.map((m) => [
+    m.id,
+    m.created_at,
+    m.recipient,
+    m.body,
+    statusLabel[m.status] || m.status,
+    m.sent_at,
+    m.delivered_at,
+    m.failed_at,
+    m.gateway_label,
+    m.device_id,
+    m.error
+  ].map(esc).join(';'));
+  const csv = '\uFEFF' + header.join(';') + '\r\n' + lines.join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="messages_${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(csv);
+});
+
 webApp.get('/admin/api/messages', (req, res) => {
   const status = String(req.query.status || '');
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
@@ -324,6 +405,26 @@ webApp.post('/admin/api/messages', (req, res) => {
     status: 'pending',
     createdAt
   });
+});
+
+webApp.get('/admin/api/logs', (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const rows = db.prepare(`
+    SELECT l.id, l.key_id, l.device_id, l.reports, l.claimed, l.created_at, k.label AS gateway_label
+    FROM gateway_logs l LEFT JOIN keys k ON k.id = l.key_id
+    ORDER BY l.id DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
+});
+
+webApp.get('/admin/api/auth-logs', (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const rows = db.prepare(`
+    SELECT a.id, a.key_id, a.ip, a.reason, a.created_at, k.label AS gateway_label
+    FROM auth_logs a LEFT JOIN keys k ON k.id = a.key_id
+    ORDER BY a.id DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
 });
 
 webApp.get('/admin/api/stats', (_req, res) => {

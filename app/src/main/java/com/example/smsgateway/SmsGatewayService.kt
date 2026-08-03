@@ -39,6 +39,7 @@ class SmsGatewayService : Service() {
 
     private val sendQueue = java.util.ArrayDeque<OutgoingMessage>()
     private var batchIntervalMs = BATCH_INTERVAL_SLOW_MS
+    private var pollIntervalMs = Config.DEFAULT_POLLING_INTERVAL_MS
 
     private val cycleRunnable = object : Runnable {
         override fun run() {
@@ -95,13 +96,13 @@ class SmsGatewayService : Service() {
         val messages = syncAndFetchMessages()
         if (messages == null) {
             updateNotification()
-            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            handler.postDelayed(cycleRunnable, pollIntervalMs)
             return
         }
 
         if (messages.isEmpty()) {
             updateNotification()
-            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            handler.postDelayed(cycleRunnable, pollIntervalMs)
             return
         }
 
@@ -109,7 +110,7 @@ class SmsGatewayService : Service() {
             lastError = "App SMS par défaut requise"
             failAll(messages, "App SMS par défaut requise")
             updateNotification()
-            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            handler.postDelayed(cycleRunnable, pollIntervalMs)
             return
         }
 
@@ -153,6 +154,7 @@ class SmsGatewayService : Service() {
 
         lastPollTime = System.currentTimeMillis()
         lastError = null
+        pollIntervalMs = result.intervalMs
         return result.messages
     }
 
@@ -256,6 +258,10 @@ class SmsGatewayService : Service() {
         const val ACTION_FLUSH = "com.example.smsgateway.ACTION_FLUSH"
         const val NOTIFICATION_CHANNEL_ID = "sms_gateway_min"
         const val NOTIFICATION_ID = 1
+
+        const val BATCH_INTERVAL_FAST_MS = 5_000L
+        const val BATCH_INTERVAL_SLOW_MS = 10_000L
+        const val BATCH_SLOW_THRESHOLD = 10
 
         @Volatile
         var isRunning = false

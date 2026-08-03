@@ -41,6 +41,28 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_status    ON messages(status);
 CREATE INDEX IF NOT EXISTS idx_messages_claimed_by ON messages(claimed_by);
 CREATE INDEX IF NOT EXISTS idx_keys_type          ON keys(type);
+
+CREATE TABLE IF NOT EXISTS gateway_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id      INTEGER,
+  device_id   TEXT,
+  reports     INTEGER NOT NULL DEFAULT 0,
+  claimed     INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_gateway_logs_created ON gateway_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_gateway_logs_key     ON gateway_logs(key_id);
+
+CREATE TABLE IF NOT EXISTS auth_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id     INTEGER,
+  ip         TEXT,
+  reason     TEXT    NOT NULL,
+  created_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_logs_created ON auth_logs(created_at);
 `);
 
 module.exports = db;
