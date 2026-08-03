@@ -37,11 +37,13 @@ class SmsGatewayService : Service() {
     @Volatile private var lastError: String? = null
     @Volatile private var sentCount = 0
 
-    private val pollRunnable = object : Runnable {
+    private val sendQueue = java.util.ArrayDeque<OutgoingMessage>()
+    private var batchIntervalMs = BATCH_INTERVAL_SLOW_MS
+
+    private val cycleRunnable = object : Runnable {
         override fun run() {
-            runCatching { processCycle() }
+            runCatching { tick() }
                 .onFailure { Log.w(TAG, "cycle error", it) }
-            handler.postDelayed(this, Config.getPollingIntervalMs(this@SmsGatewayService))
         }
     }
 
@@ -61,13 +63,12 @@ class SmsGatewayService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_FLUSH -> {
-                handler.removeCallbacks(pollRunnable)
-                handler.post { runCatching { processCycle() } }
-                handler.postDelayed(pollRunnable, Config.getPollingIntervalMs(this))
+                handler.removeCallbacks(cycleRunnable)
+                handler.post(cycleRunnable)
             }
             else -> {
-                handler.removeCallbacks(pollRunnable)
-                handler.post(pollRunnable)
+                handler.removeCallbacks(cycleRunnable)
+                handler.post(cycleRunnable)
             }
         }
         return START_STICKY
@@ -82,15 +83,50 @@ class SmsGatewayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun processCycle() {
+    private fun tick() {
+        val next = sendQueue.pollFirst()
+        if (next != null) {
+            sendMessage(next)
+            updateNotification()
+            handler.postDelayed(cycleRunnable, batchIntervalMs)
+            return
+        }
+
+        val messages = syncAndFetchMessages()
+        if (messages == null) {
+            updateNotification()
+            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            return
+        }
+
+        if (messages.isEmpty()) {
+            updateNotification()
+            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            return
+        }
+
+        if (!isDefaultSmsApp(this)) {
+            lastError = "App SMS par défaut requise"
+            failAll(messages, "App SMS par défaut requise")
+            updateNotification()
+            handler.postDelayed(cycleRunnable, Config.getPollingIntervalMs(this))
+            return
+        }
+
+        batchIntervalMs =
+            if (messages.size < BATCH_SLOW_THRESHOLD) BATCH_INTERVAL_SLOW_MS else BATCH_INTERVAL_FAST_MS
+        sendQueue.addAll(messages)
+        handler.post(cycleRunnable)
+    }
+
+    private fun syncAndFetchMessages(): List<OutgoingMessage>? {
         sweepTimeouts()
 
         val apiKey = Config.getGatewayApiKey(this)
         if (apiKey.isBlank()) {
             lastError = "Clé API non configurée"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Clé API non configurée"))
-            updateNotification()
-            return
+            return null
         }
 
         val smsGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) ==
@@ -98,8 +134,7 @@ class SmsGatewayService : Service() {
         if (!smsGranted) {
             lastError = "Permission SMS non accordée"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Permission SMS non accordée"))
-            updateNotification()
-            return
+            return null
         }
 
         val reports = ReportQueue.all()
@@ -108,8 +143,7 @@ class SmsGatewayService : Service() {
         } catch (e: Exception) {
             lastError = "API injoignable : ${e.message}"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "API injoignable : ${e.message}"))
-            updateNotification()
-            return
+            return null
         }
 
         if (reports.isNotEmpty()) {
@@ -119,37 +153,35 @@ class SmsGatewayService : Service() {
 
         lastPollTime = System.currentTimeMillis()
         lastError = null
+        return result.messages
+    }
 
-        if (!isDefaultSmsApp(this)) {
-            lastError = "App SMS par défaut requise"
+    private fun sendMessage(message: OutgoingMessage) {
+        try {
+            SmsSender.send(this, message)
+            noteSent(message.id)
+            sentCount++
+            SmsLog.add(
+                this,
+                SmsLog.Entry(now(), SmsLog.TYPE_ENVOI, message.id, message.recipient, message.body, null, null)
+            )
+        } catch (e: Exception) {
+            ReportQueue.add(StatusReport(message.id, "failed", e.message, System.currentTimeMillis()))
+            SmsLog.add(
+                this,
+                SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", e.message)
+            )
         }
+    }
 
-        for (message in result.messages) {
-            if (isDefaultSmsApp(this)) {
-                try {
-                    SmsSender.send(this, message)
-                    noteSent(message.id)
-                    sentCount++
-                    SmsLog.add(
-                        this,
-                        SmsLog.Entry(now(), SmsLog.TYPE_ENVOI, message.id, message.recipient, message.body, null, null)
-                    )
-                } catch (e: Exception) {
-                    ReportQueue.add(StatusReport(message.id, "failed", e.message, System.currentTimeMillis()))
-                    SmsLog.add(
-                        this,
-                        SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", e.message)
-                    )
-                }
-            } else {
-                ReportQueue.add(StatusReport(message.id, "failed", "App SMS par défaut requise", System.currentTimeMillis()))
-                SmsLog.add(
-                    this,
-                    SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", "App SMS par défaut requise")
-                )
-            }
+    private fun failAll(messages: List<OutgoingMessage>, reason: String) {
+        for (message in messages) {
+            ReportQueue.add(StatusReport(message.id, "failed", reason, System.currentTimeMillis()))
+            SmsLog.add(
+                this,
+                SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", reason)
+            )
         }
-        updateNotification()
     }
 
     private fun sweepTimeouts() {

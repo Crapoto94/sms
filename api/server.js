@@ -290,6 +290,29 @@ webApp.get('/admin/api/messages', (req, res) => {
   res.json(rows);
 });
 
+webApp.post('/admin/api/messages', (req, res) => {
+  const recipient = String(req.body.recipient || '').trim();
+  const message = String(req.body.message || '').trim();
+  if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
+    return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  }
+  if (message.length === 0) return res.status(400).json({ error: 'Message vide' });
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
+  }
+  const createdAt = isoNow();
+  const info = db.prepare(
+    'INSERT INTO messages (recipient, body, status, created_at) VALUES (?, ?, ?, ?)'
+  ).run(recipient, message, 'pending', createdAt);
+  res.status(201).json({
+    id: info.lastInsertRowid,
+    recipient,
+    message,
+    status: 'pending',
+    createdAt
+  });
+});
+
 webApp.get('/admin/api/stats', (_req, res) => {
   const byStatus = {};
   for (const r of db.prepare('SELECT status, COUNT(*) AS c FROM messages GROUP BY status').all()) {

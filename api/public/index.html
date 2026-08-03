@@ -47,6 +47,7 @@
     <section id="messages" class="panel hidden">
       <div class="row">
         <h2>Messages</h2>
+        <button id="btnNewMessage">+ Envoyer un SMS</button>
         <select id="statusFilter">
           <option value="">Tous les statuts</option>
           <option value="pending">En attente</option>
@@ -94,6 +95,22 @@
         <button id="btnCopyToken">Copier</button>
         <button id="btnCloseToken" class="ghost">Fermer</button>
       </div>
+    </div>
+  </div>
+
+  <div id="messageModal" class="overlay hidden">
+    <div class="card">
+      <h3>Envoyer un SMS (test)</h3>
+      <label for="smsRecipient">Numéro</label>
+      <input id="smsRecipient" placeholder="ex : +33612345678" autocomplete="off">
+      <label for="smsBody">Message</label>
+      <textarea id="smsBody" maxlength="160" rows="3" placeholder="Contenu du SMS…"></textarea>
+      <p class="muted" style="margin-top:4px"><span id="smsCounter">0</span>/160</p>
+      <div class="row" style="margin-top:16px">
+        <button id="btnSendMessage">Envoyer</button>
+        <button id="btnCancelMessage" class="ghost">Annuler</button>
+      </div>
+      <p id="messageError" class="error"></p>
     </div>
   </div>
 

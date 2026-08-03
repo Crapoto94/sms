@@ -178,6 +178,36 @@ async function loadMessages() {
 
 $('statusFilter').addEventListener('change', loadMessages);
 
+// ---------- Envoi manuel ----------
+$('btnNewMessage').addEventListener('click', () => {
+  $('smsRecipient').value = '';
+  $('smsBody').value = '';
+  $('smsCounter').textContent = '0';
+  $('messageError').textContent = '';
+  $('messageModal').classList.remove('hidden');
+});
+$('btnCancelMessage').addEventListener('click', () => $('messageModal').classList.add('hidden'));
+$('smsBody').addEventListener('input', () => {
+  $('smsCounter').textContent = $('smsBody').value.length;
+});
+
+$('btnSendMessage').addEventListener('click', async () => {
+  $('messageError').textContent = '';
+  try {
+    await api('/admin/api/messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient: $('smsRecipient').value,
+        message: $('smsBody').value
+      })
+    });
+    $('messageModal').classList.add('hidden');
+    loadMessages();
+  } catch (e) {
+    $('messageError').textContent = e.message;
+  }
+});
+
 // ---------- Rafraîchissement automatique ----------
 loadKeys();
 setInterval(() => {
