@@ -45,6 +45,17 @@ button.ghost { background: transparent; border: 1px solid #475569; color: #cbd5e
 button.ghost:hover { background: #334155; }
 button.danger { background: #dc2626; }
 button.danger:hover { background: #b91c1c; }
+a.ghost {
+  background: transparent;
+  border: 1px solid #475569;
+  color: #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  text-decoration: none;
+  display: inline-block;
+}
+a.ghost:hover { background: #334155; color: #e2e8f0; }
 
 main { padding: 24px; max-width: 1200px; margin: 0 auto; }
 
