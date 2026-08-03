@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Passerelle SMS — Console</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <h1>Passerelle SMS</h1>
+    <div class="nav">
+      <button class="tab active" data-tab="keys">Clés API</button>
+      <button class="tab" data-tab="gateways">Passerelles</button>
+      <button class="tab" data-tab="messages">Messages</button>
+      <button id="logout" class="ghost">Déconnexion</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="keys" class="panel">
+      <div class="row">
+        <h2>Clés API</h2>
+        <button id="btnNewKey">+ Nouvelle clé</button>
+      </div>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Libellé</th><th>Type</th><th>Appareil</th><th>Créée</th><th>Expire</th><th>Dernier usage</th><th>État</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="keysBody"></tbody>
+      </table>
+    </section>
+
+    <section id="gateways" class="panel hidden">
+      <div class="row">
+        <h2>Passerelles</h2>
+        <span id="online" class="muted"></span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Passerelle</th><th>Appareil</th><th>Dernier contact</th><th>En cours</th><th>Envoyés</th><th>Remis</th><th>Échecs</th><th>État</th></tr>
+        </thead>
+        <tbody id="gatewaysBody"></tbody>
+      </table>
+    </section>
+
+    <section id="messages" class="panel hidden">
+      <div class="row">
+        <h2>Messages</h2>
+        <select id="statusFilter">
+          <option value="">Tous les statuts</option>
+          <option value="pending">En attente</option>
+          <option value="sending">En cours d'envoi</option>
+          <option value="sent">Envoyé</option>
+          <option value="delivered">Remis</option>
+          <option value="failed">Échec</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>
+        </thead>
+        <tbody id="messagesBody"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div id="modal" class="overlay hidden">
+    <div class="card">
+      <h3>Nouvelle clé API</h3>
+      <label for="keyLabel">Libellé</label>
+      <input id="keyLabel" placeholder="Ex : Appli web, Téléphone salon">
+      <label for="keyType">Type</label>
+      <select id="keyType">
+        <option value="web">Web (envoi de SMS)</option>
+        <option value="gateway">Passerelle (téléphone)</option>
+      </select>
+      <label for="keyDays">Validité (jours, vide = illimitée)</label>
+      <input id="keyDays" type="number" min="1" placeholder="ex : 365">
+      <div class="row" style="margin-top:16px">
+        <button id="btnCreateKey">Créer</button>
+        <button id="btnCancelKey" class="ghost">Annuler</button>
+      </div>
+      <p id="modalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="tokenModal" class="overlay hidden">
+    <div class="card">
+      <h3>Clé créée</h3>
+      <p class="muted">Copiez cette clé immédiatement : elle ne sera plus jamais affichée.</p>
+      <textarea id="tokenValue" readonly></textarea>
+      <div class="row" style="margin-top:16px">
+        <button id="btnCopyToken">Copier</button>
+        <button id="btnCloseToken" class="ghost">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

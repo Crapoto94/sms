@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Passerelle SMS</string>
+    <string name="device_id_label">ID appareil</string>
+    <string name="api_url_label">URL de l\'API</string>
+    <string name="save_url">Enregistrer l\'URL</string>
+    <string name="start_service">Démarrer le service</string>
+    <string name="stop_service">Arrêter le service</string>
+    <string name="set_default_sms">Définir comme app SMS par défaut</string>
+    <string name="url_saved">URL API enregistrée</string>
+    <string name="permission_denied">Permissions refusées : l\'envoi automatique est impossible</string>
+    <string name="make_default_first">Définissez d\'abord l\'app comme SMS par défaut (bouton ci-dessus)</string>
+    <string name="service_started">Service démarré</string>
+    <string name="service_stopped">Service arrêté</string>
+    <string name="explanation">Chaque minute, le téléphone interroge l\'API, envoie les SMS demandés puis renvoie le statut (SENT / DELIVERED / FAILED). Aucune confirmation manuelle : l\'application doit être définie comme application SMS par défaut.</string>
+    <string name="channel_name">Passerelle SMS</string>
+    <string name="channel_description">Notification du service d\'envoi automatique de SMS</string>
+    <string name="status_default_sms_ok">Statut : app SMS par défaut ✓</string>
+    <string name="status_default_sms_missing">Statut : PAS l\'app SMS par défaut (requis pour l\'envoi automatique)</string>
+    <string name="status_service_running">Service : actif</string>
+    <string name="status_service_stopped">Service : arrêté</string>
+    <string name="test_sms_label">Test d\'envoi SMS</string>
+    <string name="test_recipient_hint">Numéro de destination (ex : +33612345678)</string>
+    <string name="send_test_sms">Envoyer un SMS de test</string>
+    <string name="test_sms_sent">SMS de test envoyé à %1$s</string>
+    <string name="test_sms_number_required">Saisissez un numéro de téléphone</string>
+    <string name="test_sms_error">Erreur d\'envoi : %1$s</string>
+    <string name="log_title">Journal des SMS</string>
+    <string name="clear_logs">Effacer le journal</string>
+    <string name="log_empty">Aucun SMS envoyé pour l\'instant.\nLes derniers SMS apparaîtront ici.</string>
+    <string name="settings_title">Paramètres</string>
+    <string name="back">Retour</string>
+    <string name="version_format">Version %1$s</string>
+</resources>
