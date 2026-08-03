@@ -55,6 +55,10 @@ function requireApiKey(type) {
 // ---------- API publique (port 3250) ----------
 const apiApp = express();
 apiApp.use(express.json());
+apiApp.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 apiApp.get('/health', (_req, res) => res.json({ ok: true }));
 
