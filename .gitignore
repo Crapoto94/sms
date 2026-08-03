@@ -15,6 +15,3 @@ node_modules/
 api/node_modules/
 api/data/
 *.log
-
-# Artifacts de build
-SmsGateway-debug.apk
