@@ -248,6 +248,20 @@ function smsSegments(len, s) {
   return len <= (GSM7 === 153 ? 160 : 70) ? 1 : Math.ceil(len / GSM7);
 }
 
+function insertEmoji(emoji) {
+  const ta = $('smsBody');
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + emoji + ta.value.slice(end);
+  ta.focus();
+  const pos = start + emoji.length;
+  ta.setSelectionRange(pos, pos);
+  ta.dispatchEvent(new Event('input'));
+}
+document.querySelectorAll('.emoji-palette button').forEach((b) => {
+  b.addEventListener('click', () => insertEmoji(b.dataset.emoji));
+});
+
 // ---------- Confirmation avant envoi ----------
 let pendingSend = null;
 
