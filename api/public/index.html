@@ -10,9 +10,9 @@
   <header>
     <h1>Passerelle SMS <span id="appVersion" class="muted"></span> <span id="onlineBadge" class="online-pastille" title="Passerelles actives"></span></h1>
     <div class="nav">
-      <button class="tab active" data-tab="keys">Clés API</button>
+      <button class="tab" data-tab="keys">Clés API</button>
       <button class="tab" data-tab="gateways">Passerelles</button>
-      <button class="tab" data-tab="messages">Messages</button>
+      <button class="tab active" data-tab="messages">Messages</button>
       <button class="tab" data-tab="books">Carnets</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="accounts">Comptes</button>
@@ -25,7 +25,7 @@
   </header>
 
   <main>
-    <section id="keys" class="panel">
+    <section id="keys" class="panel hidden">
       <div class="row">
         <h2>Clés API</h2>
         <button id="btnNewKey">+ Nouvelle clé</button>
@@ -51,7 +51,7 @@
       </table>
     </section>
 
-    <section id="messages" class="panel hidden">
+    <section id="messages" class="panel">
       <div class="row">
         <h2>Messages</h2>
         <div class="msg-toggle">

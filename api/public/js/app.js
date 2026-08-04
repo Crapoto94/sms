@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 
-let currentTab = 'keys';
+let currentTab = 'messages';
 
 const fmtDate = (iso) => {
   if (!iso) return '—';
@@ -1301,7 +1301,7 @@ $('btnConfirmBookImport').addEventListener('click', async () => {
 $('btnCloseBookImportResult').addEventListener('click', () => $('bookImportResultModal').classList.add('hidden'));
 
 // ---------- Rafraîchissement automatique ----------
-loadKeys();
+document.querySelector('[data-tab="messages"]').click();
 refreshOnlineBadge();
 setInterval(() => {
   refreshOnlineBadge();
