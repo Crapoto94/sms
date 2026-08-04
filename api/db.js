@@ -110,6 +110,18 @@ CREATE TABLE IF NOT EXISTS contacts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_book ON contacts(address_book_id);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  address_book_id INTEGER,
+  group_id        INTEGER,
+  body            TEXT    NOT NULL,
+  created_by      INTEGER,
+  scheduled_at    TEXT,
+  created_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_campaigns_group ON campaigns(group_id);
 `);
 
 // Migrations : colonnes ajoutées sur des bases existantes (CREATE TABLE
@@ -121,11 +133,25 @@ if (!accountCols.includes('role')) {
 if (!accountCols.includes('group_id')) {
   db.exec('ALTER TABLE accounts ADD COLUMN group_id INTEGER');
 }
+if (!accountCols.includes('email')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN email TEXT');
+}
+if (!accountCols.includes('is_group_manager')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN is_group_manager INTEGER NOT NULL DEFAULT 0');
+}
 const messageCols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
 if (!messageCols.includes('group_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN group_id INTEGER');
 }
+if (!messageCols.includes('campaign_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN campaign_id INTEGER');
+}
+if (!messageCols.includes('scheduled_at')) {
+  db.exec('ALTER TABLE messages ADD COLUMN scheduled_at TEXT');
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');
 
 module.exports = db;

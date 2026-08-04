@@ -57,6 +57,7 @@
         <button id="btnExport" class="ghost">Exporter CSV</button>
         <select id="statusFilter">
           <option value="">Tous les statuts</option>
+          <option value="scheduled">Programmé</option>
           <option value="pending">En attente</option>
           <option value="sending">En cours d'envoi</option>
           <option value="sent">Envoyé</option>
@@ -103,7 +104,7 @@
       <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe. Laissez l'identifiant vide sur l'écran de connexion pour utiliser le compte admin (mot de passe défini dans docker-compose, <code>ADMIN_PASSWORD</code>).</p>
       <table>
         <thead>
-          <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
+          <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>E-mail</th><th>Resp.</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
         </thead>
         <tbody id="accountsBody"></tbody>
       </table>
@@ -113,10 +114,10 @@
         <h2>Groupes</h2>
         <button id="btnNewGroup">+ Nouveau groupe</button>
       </div>
-      <p class="muted">Les membres d'un groupe partagent les mêmes carnets d'adresses et ne voient que les messages envoyés depuis leur groupe. Chaque compte non-admin doit être rattaché à un groupe.</p>
+      <p class="muted">Les membres d'un groupe partagent les mêmes carnets d'adresses et ne voient que les messages envoyés depuis leur groupe. Cochez « Resp. » sur un compte pour le définir comme responsable de son groupe (plusieurs responsables possibles).</p>
       <table>
         <thead>
-          <tr><th>ID</th><th>Nom</th><th>Membres</th><th>Messages</th><th>Créé le</th><th>Actions</th></tr>
+          <tr><th>ID</th><th>Nom</th><th>Membres</th><th>Responsables</th><th>Messages</th><th>Créé le</th><th>Actions</th></tr>
         </thead>
         <tbody id="groupsBody"></tbody>
       </table>
@@ -161,6 +162,9 @@
       <select id="accountGroup">
         <option value="">Aucun</option>
       </select>
+      <label for="accountEmail">Adresse e-mail</label>
+      <input id="accountEmail" type="email" placeholder="ex : alice@exemple.fr" autocomplete="off">
+      <label style="margin-top:12px"><input id="accountManager" type="checkbox" style="width:auto"> Responsable de groupe</label>
       <div class="row" style="margin-top:16px">
         <button id="btnSaveAccount">Créer</button>
         <button id="btnCancelAccount" class="ghost">Annuler</button>

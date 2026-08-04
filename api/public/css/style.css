@@ -86,6 +86,7 @@ th { color: #94a3b8; font-weight: 600; white-space: nowrap; }
   white-space: nowrap;
 }
 .badge.pending, .badge.sending { background: #1e3a8a; color: #bfdbfe; }
+.badge.scheduled{ background: #312e81; color: #c7d2fe; }
 .badge.sent     { background: #14532d; color: #bbf7d0; }
 .badge.delivered{ background: #065f46; color: #a7f3d0; }
 .badge.failed   { background: #7f1d1d; color: #fecaca; }
@@ -178,6 +179,12 @@ textarea[readonly] { resize: none; height: 120px; }
 .mapping-table th, .mapping-table td { padding: 6px 8px; border-bottom: 1px solid #334155; }
 .mapping-table select { padding: 4px 6px; font-size: 13px; }
 .csv-preview { max-height: 180px; overflow: auto; margin: 8px 0 0; }
+
+.campaign-row td { background: #16223a; cursor: pointer; }
+.campaign-row:hover td { background: #1b2a49; }
+.campaign-detail td { background: #0f172a; padding: 12px !important; }
+.campaign-detail table { margin: 0; }
+.campaign-detail .summary { color: #7dd3fc; }
 
 @media (max-width: 720px) {
   .composer { grid-template-columns: 1fr; }

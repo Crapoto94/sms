@@ -173,24 +173,92 @@ async function loadGateways() {
 }
 
 // ---------- Messages ----------
+const stateOf = (s) => badge({
+  scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
+}[s] || s, s);
+
+const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>';
+
+function adminMessageRow(m) {
+  return `<tr>
+    <td>${m.id}</td>
+    <td>${fmtDate(m.created_at)}</td>
+    <td class="code">${esc(m.recipient)}</td>
+    <td>${esc(m.body)}</td>
+    <td>${stateOf(m.status)}</td>
+    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td>${esc(m.group_name || '—')}</td>
+    <td class="muted">${esc(m.error || '')}</td>
+  </tr>`;
+}
+
+function campaignDetailRow(m) {
+  return `<tr>
+    <td>${fmtDate(m.created_at)}</td>
+    <td class="code">${esc(m.recipient)}</td>
+    <td>${stateOf(m.status)}</td>
+    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td>${esc(m.group_name || '—')}</td>
+    <td class="muted">${esc(m.error || '')}</td>
+  </tr>`;
+}
+
+function renderMessageList(messages) {
+  const campaigns = new Map();
+  const singles = [];
+  for (const m of messages) {
+    if (m.campaign_id) {
+      if (!campaigns.has(m.campaign_id)) {
+        campaigns.set(m.campaign_id, { id: m.campaign_id, book: m.campaign_book_name || 'Carnet', rows: [] });
+      }
+      campaigns.get(m.campaign_id).rows.push(m);
+    } else {
+      singles.push(m);
+    }
+  }
+  const html = [];
+  for (const c of campaigns.values()) {
+    const byStatus = {};
+    for (const m of c.rows) byStatus[m.status] = (byStatus[m.status] || 0) + 1;
+    const delivered = byStatus.delivered || 0;
+    const failed = byStatus.failed || 0;
+    const inFlight = (byStatus.pending || 0) + (byStatus.sending || 0) + (byStatus.scheduled || 0);
+    const first = c.rows[0];
+    const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
+    const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
+    html.push(`<tr class="campaign-row" data-campaign="${c.id}">
+      <td colspan="8">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+    </tr>`);
+    html.push(`<tr class="campaign-detail hidden" data-campaign="${c.id}">
+      <td colspan="8">
+        <table>
+          <thead>${MESSAGE_HEADERS}</thead>
+          <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
+        </table>
+      </td>
+    </tr>`);
+  }
+  for (const m of singles) html.push(adminMessageRow(m));
+  return html.join('');
+}
+
+function bindCampaignToggles() {
+  document.querySelectorAll('.campaign-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const id = row.dataset.campaign;
+      const detail = document.querySelector(`.campaign-detail[data-campaign="${id}"]`);
+      if (detail) detail.classList.toggle('hidden');
+    });
+  });
+}
+
 async function loadMessages() {
   const status = $('statusFilter').value;
   const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
-  const stateOf = (s) => badge({
-    pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
-  }[s] || s, s);
   $('messagesBody').innerHTML = messages.length
-    ? messages.map((m) => `<tr>
-        <td>${m.id}</td>
-        <td>${fmtDate(m.created_at)}</td>
-        <td class="code">${esc(m.recipient)}</td>
-        <td>${esc(m.body)}</td>
-        <td>${stateOf(m.status)}</td>
-        <td>${esc(m.gateway_label || m.device_id || '—')}</td>
-        <td>${esc(m.group_name || '—')}</td>
-        <td class="muted">${esc(m.error || '')}</td>
-      </tr>`).join('')
+    ? renderMessageList(messages)
     : '<tr><td colspan="8" class="muted">Aucun message.</td></tr>';
+  bindCampaignToggles();
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
@@ -443,6 +511,8 @@ async function loadAccounts() {
           <td>${esc(a.login)}</td>
           <td>${roleBadge}</td>
           <td>${esc(a.group_name || '—')}</td>
+          <td>${esc(a.email || '—')}</td>
+          <td><input type="checkbox" data-manager="${a.id}" ${a.is_group_manager ? 'checked' : ''} ${a.role !== 'admin' && !a.group_id ? 'disabled' : ''}></td>
           <td>${fmtDate(a.created_at)}</td>
           <td>${state}</td>
           <td>
@@ -453,7 +523,7 @@ async function loadAccounts() {
           </td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="7" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
   document.querySelectorAll('[data-pwd]').forEach((b) => {
     b.addEventListener('click', () => openAccountModal(Number(b.dataset.pwd)));
   });
@@ -461,6 +531,16 @@ async function loadAccounts() {
     b.addEventListener('click', async () => {
       const a = accounts.find((x) => x.id === Number(b.dataset.editacc));
       if (a) openAccountModal(a.id, a);
+    });
+  });
+  document.querySelectorAll('[data-manager]').forEach((b) => {
+    b.addEventListener('change', async () => {
+      try {
+        await api(`/admin/api/accounts/${b.dataset.manager}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ isGroupManager: b.checked })
+        });
+      } catch (e) { alert(e.message); loadAccounts(); }
     });
   });
   document.querySelectorAll('[data-toggle]').forEach((b) => {
@@ -498,6 +578,8 @@ async function openAccountModal(id = null, account = null) {
   pendingAccountEdit = !!(id && account);
   $('accountModalError').textContent = '';
   $('accountPassword').value = '';
+  $('accountEmail').value = account ? (account.email || '') : '';
+  $('accountManager').checked = !!(account && account.is_group_manager);
   await fillGroupSelect(account ? account.group_id : '');
   if (id === null) {
     $('accountModalTitle').textContent = 'Nouveau compte';
@@ -531,10 +613,12 @@ $('btnSaveAccount').addEventListener('click', async () => {
   try {
     const role = $('accountRole').value;
     const groupId = $('accountGroup').value ? Number($('accountGroup').value) : null;
+    const email = $('accountEmail').value.trim();
+    const isGroupManager = $('accountManager').checked;
     if (pendingAccountEdit) {
       await api(`/admin/api/accounts/${pendingAccountId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ role, groupId })
+        body: JSON.stringify({ role, groupId, email, isGroupManager })
       });
     } else if (pendingAccountId === null) {
       await api('/admin/api/accounts', {
@@ -543,7 +627,9 @@ $('btnSaveAccount').addEventListener('click', async () => {
           login: $('accountLogin').value,
           password: $('accountPassword').value,
           role,
-          groupId
+          groupId,
+          email,
+          isGroupManager
         })
       });
     } else {
@@ -569,6 +655,7 @@ async function loadGroups() {
         <td>${g.id}</td>
         <td>${esc(g.name)}</td>
         <td>${g.member_count}</td>
+        <td>${esc(g.managers || '—')}</td>
         <td>${g.message_count}</td>
         <td>${fmtDate(g.created_at)}</td>
         <td>
@@ -576,7 +663,7 @@ async function loadGroups() {
           <button data-delgroup="${g.id}" class="danger">Supprimer</button>
         </td>
       </tr>`).join('')
-    : '<tr><td colspan="6" class="muted">Aucun groupe. Créez un groupe puis rattachez-y les comptes utilisateurs.</td></tr>';
+    : '<tr><td colspan="7" class="muted">Aucun groupe. Créez un groupe puis rattachez-y les comptes utilisateurs.</td></tr>';
   document.querySelectorAll('[data-editgroup]').forEach((b) => {
     b.addEventListener('click', () => {
       pendingGroupId = Number(b.dataset.editgroup);

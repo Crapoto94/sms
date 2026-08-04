@@ -9,7 +9,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.21';
+const APP_VERSION = process.env.APP_VERSION || '1.22';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -28,6 +28,16 @@ const newToken = () => crypto.randomBytes(32).toString('base64url');
 const isoNow = () => new Date().toISOString();
 const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date.now();
 
+// Envoi différé : si une heure est fournie (ISO ou heure locale), le message
+// reste "scheduled" (Programmé) jusqu'à cette heure, puis passe en "pending"
+// et est récupéré par les passerelles.
+function scheduleInfo(scheduledAt) {
+  if (!scheduledAt) return null;
+  const t = Date.parse(String(scheduledAt));
+  if (Number.isNaN(t)) return { error: 'Heure d’envoi invalide' };
+  return { scheduledAt: new Date(t).toISOString() };
+}
+
 // ---------- Hachage des mots de passe des comptes (scrypt + sel) ----------
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_SALT_LEN = 16;
@@ -43,6 +53,23 @@ function verifyPassword(password, stored) {
   if (!salt || !hash) return false;
   const calc = crypto.scryptSync(password, salt, 64);
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), calc);
+}
+
+// Normalisation d'un numéro de téléphone français :
+//  - suppression des séparateurs (espaces, points, tirets, parenthèses, _)
+//  - "+33XXXXXXXXX" / "0033XXXXXXXXX" / "33XXXXXXXXX" -> "0XXXXXXXXX"
+//  - numéro à 9 chiffres sans 0 initial -> "0" + numéro
+const PHONE_RE = /^\+?[0-9]{4,15}$/;
+
+function normalizePhone(input) {
+  let s = String(input == null ? '' : input).trim();
+  if (!s) return '';
+  s = s.replace(/[^\d+]/g, '');
+  if (s.startsWith('+33')) s = '0' + s.slice(3);
+  else if (s.startsWith('0033')) s = '0' + s.slice(4);
+  else if (s.startsWith('33') && s.length === 11) s = '0' + s.slice(2);
+  if (!s.startsWith('+') && !s.startsWith('0') && s.length === 9) s = '0' + s;
+  return s;
 }
 
 // ---------- Rate limiting (simple, en mémoire) ----------
@@ -531,9 +558,13 @@ webApp.get('/admin/api/messages', (req, res) => {
   const status = String(req.query.status || '');
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
   const base = `
-    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name
-    FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
+      c.address_book_id AS campaign_book_id, ab.name AS campaign_book_name
+    FROM messages m
+    LEFT JOIN keys k ON k.id = m.claimed_by
     LEFT JOIN groups g ON g.id = m.group_id
+    LEFT JOIN campaigns c ON c.id = m.campaign_id
+    LEFT JOIN address_books ab ON ab.id = c.address_book_id
   `;
   const cond = [];
   const params = [];
@@ -562,15 +593,19 @@ webApp.post('/admin/api/messages', (req, res) => {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
   const groupId = req.session.role === 'admin' ? (Number(req.body.groupId) || null) : req.session.groupId;
+  const sched = scheduleInfo(req.body.scheduledAt);
+  if (sched && sched.error) return res.status(400).json({ error: sched.error });
+  const status = sched ? 'scheduled' : 'pending';
+  const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at, group_id) VALUES (?, ?, ?, ?, ?)'
-  ).run(recipient, message, 'pending', createdAt, groupId);
+    'INSERT INTO messages (recipient, body, status, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(recipient, message, status, createdAt, groupId, scheduledAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
     message,
-    status: 'pending',
+    status,
     createdAt
   });
 });
@@ -649,7 +684,7 @@ webApp.get('/admin/api/auth-logs', requireAdmin, (req, res) => {
 
 // ---------- Gestion des comptes (protégée par session) ----------
 const accountFields = `
-  a.id, a.login, a.role, a.group_id, a.disabled, a.created_at,
+  a.id, a.login, a.role, a.group_id, a.email, a.is_group_manager, a.disabled, a.created_at,
   g.name AS group_name
 `;
 
@@ -665,11 +700,16 @@ webApp.post('/admin/api/accounts', requireAdmin, (req, res) => {
   const password = String((req.body || {}).password || '');
   const role = (req.body || {}).role === 'admin' ? 'admin' : 'user';
   const groupId = Number(req.body.groupId) || null;
+  const email = String((req.body || {}).email || '').trim() || null;
+  const isGroupManager = (req.body || {}).isGroupManager ? 1 : 0;
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(login)) {
     return res.status(400).json({ error: 'Identifiant invalide (3 à 32 caractères : lettres, chiffres, . _ -)' });
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
     return res.status(400).json({ error: `Mot de passe trop court (${PASSWORD_MIN_LENGTH} caractères minimum)` });
+  }
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return res.status(400).json({ error: 'Adresse e-mail invalide' });
   }
   if (db.prepare('SELECT 1 FROM accounts WHERE login = ?').get(login)) {
     return res.status(409).json({ error: 'Cet identifiant existe déjà' });
@@ -678,9 +718,9 @@ webApp.post('/admin/api/accounts', requireAdmin, (req, res) => {
     return res.status(400).json({ error: 'Groupe introuvable' });
   }
   const info = db.prepare(
-    'INSERT INTO accounts (login, password_hash, role, group_id, disabled, created_at) VALUES (?, ?, ?, ?, 0, ?)'
-  ).run(login, hashPassword(password), role, groupId, isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, login, role, group_id: groupId, disabled: 0, created_at: isoNow() });
+    'INSERT INTO accounts (login, password_hash, role, group_id, email, is_group_manager, disabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+  ).run(login, hashPassword(password), role, groupId, email, isGroupManager, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, login, role, group_id: groupId, email, is_group_manager: isGroupManager, disabled: 0, created_at: isoNow() });
 });
 
 webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
@@ -706,6 +746,18 @@ webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
     }
     sets.push('group_id = ?');
     params.push(groupId);
+  }
+  if (body.email !== undefined) {
+    const email = String(body.email || '').trim() || null;
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ error: 'Adresse e-mail invalide' });
+    }
+    sets.push('email = ?');
+    params.push(email);
+  }
+  if (body.isGroupManager !== undefined) {
+    sets.push('is_group_manager = ?');
+    params.push(body.isGroupManager ? 1 : 0);
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucune modification demandée' });
   params.push(id);
@@ -754,6 +806,8 @@ webApp.get('/admin/api/groups', requireAdmin, (_req, res) => {
   const rows = db.prepare(`
     SELECT g.*,
       (SELECT COUNT(*) FROM accounts a WHERE a.group_id = g.id) AS member_count,
+      (SELECT COUNT(*) FROM accounts a WHERE a.group_id = g.id AND a.is_group_manager = 1) AS manager_count,
+      (SELECT GROUP_CONCAT(a.login, ', ') FROM accounts a WHERE a.group_id = g.id AND a.is_group_manager = 1) AS managers,
       (SELECT COUNT(*) FROM messages m WHERE m.group_id = g.id) AS message_count
     FROM groups g ORDER BY g.id ASC
   `).all();
@@ -890,7 +944,7 @@ webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const first = String((req.body || {}).firstName || '').trim();
   const last = String((req.body || {}).lastName || '').trim();
   const entity = String((req.body || {}).entity || '').trim();
-  const phone = String((req.body || {}).phone || '').trim();
+  const phone = normalizePhone((req.body || {}).phone || '');
   if (!/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
   }
@@ -941,7 +995,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   const seen = new Set();
   for (let r = 0; r < rows.length; r++) {
     const raw = Array.isArray(rows[r]) ? rows[r] : [];
-    const phone = String(raw[phoneIdx] == null ? '' : raw[phoneIdx]).trim().replace(/[\s.\-()]/g, '');
+    const phone = normalizePhone(raw[phoneIdx] == null ? '' : raw[phoneIdx]);
     const first = fi >= 0 ? String(raw[fi] == null ? '' : raw[fi]).trim() : '';
     const last = li >= 0 ? String(raw[li] == null ? '' : raw[li]).trim() : '';
     const entity = ei >= 0 ? String(raw[ei] == null ? '' : raw[ei]).trim() : '';
@@ -983,6 +1037,59 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   });
 });
 
+// Envoi vers un carnet d'adresses : crée une « campagne » (une entrée
+// groupée dans le journal, nommée d'après le carnet) et un message par
+// contact sélectionné, rattaché à la campagne et au groupe du carnet.
+webApp.post('/admin/api/campaigns', (req, res) => {
+  const body = req.body || {};
+  const bookId = Number(body.bookId);
+  const contactIds = Array.isArray(body.contactIds)
+    ? body.contactIds.map(Number).filter(Number.isInteger)
+    : [];
+  const message = String(body.message || '').trim();
+  if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
+  if (!book) return res.status(404).json({ error: 'Carnet introuvable' });
+  if (req.session.role !== 'admin' && book.group_id !== req.session.groupId) {
+    return res.status(404).json({ error: 'Carnet introuvable' });
+  }
+  if (contactIds.length === 0) return res.status(400).json({ error: 'Sélectionnez au moins un destinataire' });
+  if (!message) return res.status(400).json({ error: 'Message vide' });
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
+  }
+  const sched = scheduleInfo(body.scheduledAt);
+  if (sched && sched.error) return res.status(400).json({ error: sched.error });
+  const placeholders = contactIds.map(() => '?').join(',');
+  const contacts = db.prepare(
+    `SELECT * FROM contacts WHERE address_book_id = ? AND id IN (${placeholders})`
+  ).all(bookId, ...contactIds);
+  if (contacts.length === 0) {
+    return res.status(400).json({ error: 'Aucun destinataire valide dans ce carnet' });
+  }
+  const status = sched ? 'scheduled' : 'pending';
+  const scheduledAt = sched ? sched.scheduledAt : null;
+  const createdAt = isoNow();
+  const groupId = book.group_id;
+  let campaignId;
+  db.exec('BEGIN');
+  try {
+    const info = db.prepare(
+      'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
+    campaignId = info.lastInsertRowid;
+    const insert = db.prepare(
+      'INSERT INTO messages (recipient, body, status, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    for (const c of contacts) insert.run(c.phone, message, status, createdAt, groupId, campaignId, scheduledAt);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
+});
+
 webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
   const byStatus = {};
   for (const r of db.prepare('SELECT status, COUNT(*) AS c FROM messages GROUP BY status').all()) {
@@ -1004,3 +1111,14 @@ apiApp.listen(PORT_API, '0.0.0.0', () => {
 webApp.listen(PORT_WEB, '0.0.0.0', () => {
   console.log(`[web] interface sur le port ${PORT_WEB}`);
 });
+
+// Envois différés : les messages "scheduled" dont l'heure est arrivée
+// passent en "pending" et sont récupérés par les passerelles.
+setInterval(() => {
+  try {
+    const now = isoNow();
+    db.prepare(
+      "UPDATE messages SET status = 'pending', updated_at = ? WHERE status = 'scheduled' AND scheduled_at <= ?"
+    ).run(now, now);
+  } catch (_) { /* ne bloque jamais */ }
+}, 10 * 1000);

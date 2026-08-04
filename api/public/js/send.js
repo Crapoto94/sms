@@ -6,7 +6,6 @@ let currentTab = 'composer';
 let session = null;
 let books = [];
 let contacts = [];
-let selectedBookId = null;
 
 const fmtDate = (iso) => {
   if (!iso) return '—';
@@ -74,27 +73,57 @@ async function loadSession() {
 }
 
 // ---------- Composer ----------
+let selectedContacts = new Set();
+let loadedBookId = null;
+let composerBookId = null;
+let composerMode = 'single';
+
+function scheduledIso() {
+  const v = $('scheduleAt').value;
+  if (!v) return undefined;
+  return new Date(v).toISOString();
+}
+
+function updateComposerMode() {
+  const book = composerMode === 'book';
+  $('singleRecipient').classList.toggle('hidden', book);
+  $('bookRecipient').classList.toggle('hidden', !book);
+  $('btnSendSingle').classList.toggle('hidden', book);
+  $('btnSendToSelected').classList.toggle('hidden', !book);
+  updateComposerCount();
+}
+
+document.querySelectorAll('input[name=mode]').forEach((r) => {
+  r.addEventListener('change', () => {
+    composerMode = r.value;
+    updateComposerMode();
+  });
+});
+
 async function loadComposer() {
-  const { bookSelect } = { bookSelect: $('bookSelect') };
-  const selected = bookSelect.value;
+  const bookSelect = $('bookSelect');
+  const prev = bookSelect.value;
   books = await api('/admin/api/address-books');
-  const html = ['<option value="">—</option>']
+  bookSelect.innerHTML = ['<option value="">—</option>']
     .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`))
     .join('');
-  const changed = bookSelect.innerHTML !== html;
-  bookSelect.innerHTML = html;
-  if (changed && books.length && !books.some((b) => String(b.id) === selected)) {
-    bookSelect.value = books[0].id;
+  if (books.some((b) => String(b.id) === prev)) {
+    bookSelect.value = prev;
+  } else {
+    bookSelect.value = books.length ? String(books[0].id) : '';
   }
-  bookSelect.value = selected;
   await loadRecipients();
 }
 
 async function loadRecipients() {
   const id = Number($('bookSelect').value || 0);
-  selectedBookId = id;
+  composerBookId = id;
   const list = $('recipientList');
   contacts = id ? await api(`/admin/api/address-books/${id}/contacts`) : [];
+  if (id !== loadedBookId) {
+    loadedBookId = id;
+    selectedContacts = new Set(contacts.map((c) => c.id));
+  }
   if (!contacts.length) {
     list.innerHTML = '<div class="contact-list-empty muted">' + (id ? 'Ce carnet ne contient aucun contact.' : 'Choisissez un carnet pour afficher les contacts.') + '</div>';
     updateComposerCount();
@@ -104,7 +133,7 @@ async function loadRecipients() {
     const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
     const label = name || c.entity || c.phone;
     return `<label class="contact-row">
-      <input type="checkbox" data-id="${c.id}">
+      <input type="checkbox" data-id="${c.id}" ${selectedContacts.has(c.id) ? 'checked' : ''}>
       <span class="who">
         <b>${esc(label)}</b><br>
         ${c.entity && name ? `<span class="muted">${esc(c.entity)}</span> · ` : ''}<span class="phone">${esc(c.phone)}</span>
@@ -116,13 +145,37 @@ async function loadRecipients() {
 
 $('bookSelect').addEventListener('change', loadRecipients);
 
-$('recipientList').addEventListener('change', updateComposerCount);
+$('recipientList').addEventListener('change', (e) => {
+  const cb = e.target.closest('input[type=checkbox]');
+  if (!cb) return;
+  const id = Number(cb.dataset.id);
+  if (cb.checked) selectedContacts.add(id);
+  else selectedContacts.delete(id);
+  updateComposerCount();
+});
+
+$('btnToggleAll').addEventListener('click', () => {
+  if (!contacts.length) return;
+  const allChecked = contacts.every((c) => selectedContacts.has(c.id));
+  if (allChecked) selectedContacts.clear();
+  else selectedContacts = new Set(contacts.map((c) => c.id));
+  document.querySelectorAll('#recipientList input[type=checkbox]').forEach((cb) => {
+    cb.checked = selectedContacts.has(Number(cb.dataset.id));
+  });
+  updateComposerCount();
+});
 
 function updateComposerCount() {
-  const checked = document.querySelectorAll('#recipientList input:checked').length;
   const s = $('smsBody').value;
   const segs = smsSegments(s.length, s);
-  $('composerCount').textContent = `${checked} destinataire(s) · ${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
+  if (composerMode === 'single') {
+    $('composerCount').textContent = `${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
+  } else {
+    const checked = document.querySelectorAll('#recipientList input:checked').length;
+    $('composerCount').textContent = `${checked} destinataire(s) · ${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
+  }
+  $('btnToggleAll').textContent = contacts.length > 0 && contacts.every((c) => selectedContacts.has(c.id))
+    ? 'Tout décocher' : 'Tout cocher';
   $('composerSummary').classList.add('hidden');
   $('composerError').textContent = '';
 }
@@ -139,6 +192,35 @@ function smsSegments(len, s) {
   return len <= (GSM7 === 153 ? 160 : 70) ? 1 : Math.ceil(len / GSM7);
 }
 
+$('btnSendSingle').addEventListener('click', async () => {
+  $('composerError').textContent = '';
+  const recipient = $('smsRecipient').value.trim().replace(/[\s.\-()]/g, '');
+  const body = $('smsBody').value.trim();
+  if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
+    $('composerError').textContent = 'Numéro de téléphone invalide.';
+    return;
+  }
+  if (!body) {
+    $('composerError').textContent = 'Le message est vide.';
+    return;
+  }
+  try {
+    const res = await api('/admin/api/messages', {
+      method: 'POST',
+      body: JSON.stringify({ recipient, message: body, scheduledAt: scheduledIso() })
+    });
+    $('composerSummary').classList.remove('hidden');
+    $('composerSummary').textContent = res.status === 'scheduled'
+      ? `Message programmé (${fmtDate(res.createdAt)}).`
+      : 'Message envoyé.';
+    $('smsRecipient').value = '';
+    $('smsBody').value = '';
+    updateComposerCount();
+  } catch (e) {
+    $('composerError').textContent = e.message;
+  }
+});
+
 $('btnSendToSelected').addEventListener('click', async () => {
   $('composerError').textContent = '';
   const checks = Array.from(document.querySelectorAll('#recipientList input:checked'));
@@ -151,24 +233,22 @@ $('btnSendToSelected').addEventListener('click', async () => {
     $('composerError').textContent = 'Le message est vide.';
     return;
   }
-  const contactsById = new Map(contacts.map((c) => [c.id, c]));
-  const recipientIds = checks.map((c) => Number(c.dataset.id));
-  const target = recipientIds
-    .map((id) => contactsById.get(id))
-    .filter(Boolean)
-    .map((c) => c.phone);
+  if (!composerBookId) {
+    $('composerError').textContent = 'Choisissez un carnet d\'adresses.';
+    return;
+  }
+  const contactIds = checks.map((c) => Number(c.dataset.id));
   try {
-    const created = [];
-    for (const recipient of target) {
-      const r = await api('/admin/api/messages', {
-        method: 'POST',
-        body: JSON.stringify({ recipient, message: body })
-      });
-      created.push(r);
-    }
+    const res = await api('/admin/api/campaigns', {
+      method: 'POST',
+      body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso() })
+    });
     $('composerSummary').classList.remove('hidden');
-    $('composerSummary').textContent = `${created.length} SMS envoyé(s) pour ${target.length} destinataire(s).`;
+    $('composerSummary').textContent = res.status === 'scheduled'
+      ? `${res.count} SMS programmés pour le carnet « ${res.bookName} ».`
+      : `${res.count} SMS envoyé(s) au carnet « ${res.bookName} ».`;
     checks.forEach((c) => { c.checked = false; });
+    selectedContacts = new Set();
     updateComposerCount();
   } catch (e) {
     $('composerError').textContent = e.message;
@@ -176,29 +256,98 @@ $('btnSendToSelected').addEventListener('click', async () => {
 });
 
 // ---------- Messages ----------
+const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>';
+
+function stateOf(s) {
+  return badge({
+    scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
+  }[s] || s, s);
+}
+
+function messageRow(m) {
+  return `<tr>
+    <td>${m.id}</td>
+    <td>${fmtDate(m.created_at)}</td>
+    <td class="code">${esc(m.recipient)}</td>
+    <td>${esc(m.body)}</td>
+    <td>${stateOf(m.status)}</td>
+    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td class="muted">${esc(m.error || '')}</td>
+  </tr>`;
+}
+
+function campaignDetailRow(m) {
+  return `<tr>
+    <td>${fmtDate(m.created_at)}</td>
+    <td class="code">${esc(m.recipient)}</td>
+    <td>${stateOf(m.status)}</td>
+    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td class="muted">${esc(m.error || '')}</td>
+  </tr>`;
+}
+
+function renderMessageList(messages) {
+  const campaigns = new Map();
+  const singles = [];
+  for (const m of messages) {
+    if (m.campaign_id) {
+      if (!campaigns.has(m.campaign_id)) {
+        campaigns.set(m.campaign_id, { id: m.campaign_id, book: m.campaign_book_name || 'Carnet', rows: [] });
+      }
+      campaigns.get(m.campaign_id).rows.push(m);
+    } else {
+      singles.push(m);
+    }
+  }
+  const html = [];
+  for (const c of campaigns.values()) {
+    const byStatus = {};
+    for (const m of c.rows) byStatus[m.status] = (byStatus[m.status] || 0) + 1;
+    const delivered = byStatus.delivered || 0;
+    const failed = byStatus.failed || 0;
+    const inFlight = (byStatus.pending || 0) + (byStatus.sending || 0);
+    const first = c.rows[0];
+    const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
+    const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
+    html.push(`<tr class="campaign-row" data-campaign="${c.id}">
+      <td colspan="7">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+    </tr>`);
+    html.push(`<tr class="campaign-detail hidden" data-campaign="${c.id}">
+      <td colspan="7">
+        <table>
+          <thead>${MESSAGE_HEADERS}</thead>
+          <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
+        </table>
+      </td>
+    </tr>`);
+  }
+  for (const m of singles) html.push(messageRow(m));
+  return html.join('');
+}
+
+function bindCampaignToggles() {
+  document.querySelectorAll('.campaign-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      const id = row.dataset.campaign;
+      const detail = document.querySelector(`.campaign-detail[data-campaign="${id}"]`);
+      if (detail) detail.classList.toggle('hidden');
+    });
+  });
+}
+
 async function loadMessages() {
   const status = $('statusFilter').value;
   const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
-  const stateOf = (s) => badge({
-    pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
-  }[s] || s, s);
   $('messagesBody').innerHTML = messages.length
-    ? messages.map((m) => `<tr>
-        <td>${m.id}</td>
-        <td>${fmtDate(m.created_at)}</td>
-        <td class="code">${esc(m.recipient)}</td>
-        <td>${esc(m.body)}</td>
-        <td>${stateOf(m.status)}</td>
-        <td>${esc(m.gateway_label || m.device_id || '—')}</td>
-        <td class="muted">${esc(m.error || '')}</td>
-      </tr>`).join('')
+    ? renderMessageList(messages)
     : '<tr><td colspan="7" class="muted">Aucun message dans votre groupe.</td></tr>';
+  bindCampaignToggles();
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
 
 // ---------- Carnets ----------
-let currentBookId = null;
+let viewBookId = null;
 
 async function loadBooks() {
   books = await api('/admin/api/address-books');
@@ -217,7 +366,7 @@ async function loadBooks() {
 }
 
 async function openBook(bookId) {
-  currentBookId = bookId;
+  viewBookId = bookId;
   const book = books.find((b) => b.id === bookId);
   $('bookContactsTitle').textContent = `Contacts — ${book ? book.name : ''}`;
   await loadContacts();
@@ -226,7 +375,7 @@ async function openBook(bookId) {
 }
 
 async function loadContacts() {
-  const rows = await api(`/admin/api/address-books/${currentBookId}/contacts`);
+  const rows = await api(`/admin/api/address-books/${viewBookId}/contacts`);
   $('contactsBody').innerHTML = rows.length
     ? rows.map((c) => `<tr>
         <td>${esc(c.first_name || '')}</td>
@@ -377,7 +526,7 @@ $('btnConfirmImport').addEventListener('click', async () => {
     return;
   }
   try {
-    const res = await api(`/admin/api/address-books/${currentBookId}/import`, {
+    const res = await api(`/admin/api/address-books/${viewBookId}/import`, {
       method: 'POST',
       body: JSON.stringify({
         map,
