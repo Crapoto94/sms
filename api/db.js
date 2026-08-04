@@ -63,6 +63,25 @@ CREATE TABLE IF NOT EXISTS auth_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auth_logs_created ON auth_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS accounts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  login         TEXT    NOT NULL UNIQUE,
+  password_hash TEXT    NOT NULL,
+  disabled      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_login ON accounts(login);
+
+CREATE TABLE IF NOT EXISTS claim_state (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  round_started TEXT,
+  claimed       INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO claim_state (id, round_started, claimed)
+SELECT 1, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM claim_state WHERE id = 1);
 `);
 
 module.exports = db;

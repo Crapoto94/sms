@@ -10,8 +10,10 @@
   <form id="loginForm" class="card">
     <h1>Passerelle SMS</h1>
     <p class="muted">Console d'administration</p>
+    <label for="login">Identifiant <span class="muted">(laisser vide pour le compte admin)</span></label>
+    <input id="login" type="text" autocomplete="username" autofocus>
     <label for="password">Mot de passe</label>
-    <input id="password" type="password" autofocus autocomplete="current-password">
+    <input id="password" type="password" autocomplete="current-password">
     <p style="margin-top:16px"><button type="submit" style="width:100%">Se connecter</button></p>
     <p id="error" class="error"></p>
   </form>
@@ -21,12 +23,16 @@
       const res = await fetch('/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: document.getElementById('password').value })
+        body: JSON.stringify({
+          login: document.getElementById('login').value,
+          password: document.getElementById('password').value
+        })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         location.href = '/';
       } else {
-        document.getElementById('error').textContent = 'Mot de passe incorrect';
+        document.getElementById('error').textContent = data.error || 'Connexion impossible';
       }
     });
   </script>

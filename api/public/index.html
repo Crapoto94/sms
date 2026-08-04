@@ -8,14 +8,16 @@
 </head>
 <body>
   <header>
-    <h1>Passerelle SMS</h1>
+    <h1>Passerelle SMS <span id="appVersion" class="muted"></span></h1>
     <div class="nav">
       <button class="tab active" data-tab="keys">Clés API</button>
       <button class="tab" data-tab="gateways">Passerelles</button>
       <button class="tab" data-tab="messages">Messages</button>
       <button class="tab" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="accounts">Comptes</button>
       <a id="btnDocs" class="ghost" href="/docs" target="_blank" rel="noopener">Docs API</a>
       <button id="logout" class="ghost">Déconnexion</button>
+      <span id="currentUser" class="muted"></span>
     </div>
   </header>
 
@@ -92,6 +94,19 @@
         <tbody id="authLogsBody"></tbody>
       </table>
     </section>
+    <section id="accounts" class="panel hidden">
+      <div class="row">
+        <h2>Comptes d'accès à la console</h2>
+        <button id="btnNewAccount">+ Nouveau compte</button>
+      </div>
+      <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe. Laissez l'identifiant vide sur l'écran de connexion pour utiliser le compte admin (mot de passe défini dans docker-compose, <code>ADMIN_PASSWORD</code>).</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Identifiant</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="accountsBody"></tbody>
+      </table>
+    </section>
   </main>
 
   <div id="modal" class="overlay hidden">
@@ -111,6 +126,23 @@
         <button id="btnCancelKey" class="ghost">Annuler</button>
       </div>
       <p id="modalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="accountModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="accountModalTitle">Nouveau compte</h3>
+      <div id="accountLoginWrap">
+        <label for="accountLogin">Identifiant</label>
+        <input id="accountLogin" placeholder="ex : alice" autocomplete="off">
+      </div>
+      <label for="accountPassword">Mot de passe <span class="muted">(8 caractères minimum)</span></label>
+      <input id="accountPassword" type="password" autocomplete="new-password">
+      <div class="row" style="margin-top:16px">
+        <button id="btnSaveAccount">Créer</button>
+        <button id="btnCancelAccount" class="ghost">Annuler</button>
+      </div>
+      <p id="accountModalError" class="error"></p>
     </div>
   </div>
 

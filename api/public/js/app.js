@@ -42,12 +42,24 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('gateways').classList.toggle('hidden', currentTab !== 'gateways');
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
+    $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
     if (currentTab === 'messages') loadMessages();
     if (currentTab === 'logs') loadLogs();
+    if (currentTab === 'accounts') loadAccounts();
   });
 });
+
+loadCurrentUser();
+
+async function loadCurrentUser() {
+  try {
+    const s = await api('/admin/api/session');
+    $('currentUser').textContent = s.isAdmin ? `Connecté en tant qu'admin` : `Connecté en tant que « ${s.login} »`;
+    $('appVersion').textContent = `v${s.version}`;
+  } catch { /* la redirection 401 gère le reste */ }
+}
 
 $('logout').addEventListener('click', async () => {
   await api('/admin/logout', { method: 'POST' }).catch(() => {});
@@ -403,6 +415,98 @@ async function loadLogs() {
     : '<tr><td colspan="4" class="muted">Aucune tentative échouée.</td></tr>';
 }
 $('logLimit').addEventListener('change', loadLogs);
+
+// ---------- Comptes ----------
+let pendingAccountId = null;
+
+async function loadAccounts() {
+  const accounts = await api('/admin/api/accounts');
+  $('accountsBody').innerHTML = accounts.length
+    ? accounts.map((a) => {
+        const state = a.disabled ? badge('Désactivé', 'revoked') : badge('Actif', 'ok');
+        const toggleLabel = a.disabled ? 'Activer' : 'Désactiver';
+        return `<tr>
+          <td>${a.id}</td>
+          <td>${esc(a.login)}</td>
+          <td>${fmtDate(a.created_at)}</td>
+          <td>${state}</td>
+          <td>
+            <button data-pwd="${a.id}" class="ghost">Réinitialiser le mot de passe</button>
+            <button data-toggle="${a.id}" data-disabled="${a.disabled ? 1 : 0}" class="ghost">${toggleLabel}</button>
+            <button data-delacc="${a.id}" class="danger">Supprimer</button>
+          </td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="5" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
+  document.querySelectorAll('[data-pwd]').forEach((b) => {
+    b.addEventListener('click', () => openAccountModal(Number(b.dataset.pwd)));
+  });
+  document.querySelectorAll('[data-toggle]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      try {
+        await api(`/admin/api/accounts/${b.dataset.toggle}/disable`, {
+          method: 'POST',
+          body: JSON.stringify({ disabled: b.dataset.disabled === '0' })
+        });
+        loadAccounts();
+      } catch (e) { alert(e.message); }
+    });
+  });
+  document.querySelectorAll('[data-delacc]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer définitivement ce compte ?')) return;
+      try {
+        await api(`/admin/api/accounts/${b.dataset.delacc}`, { method: 'DELETE' });
+        loadAccounts();
+      } catch (e) { alert(e.message); }
+    });
+  });
+}
+
+function openAccountModal(id = null) {
+  pendingAccountId = id;
+  $('accountModalError').textContent = '';
+  $('accountPassword').value = '';
+  if (id === null) {
+    $('accountModalTitle').textContent = 'Nouveau compte';
+    $('accountLoginWrap').classList.remove('hidden');
+    $('accountLogin').value = '';
+    $('btnSaveAccount').textContent = 'Créer';
+  } else {
+    $('accountModalTitle').textContent = 'Réinitialiser le mot de passe';
+    $('accountLoginWrap').classList.add('hidden');
+    $('btnSaveAccount').textContent = 'Enregistrer';
+  }
+  $('accountModal').classList.remove('hidden');
+  $('accountPassword').focus();
+}
+
+$('btnNewAccount').addEventListener('click', () => openAccountModal(null));
+$('btnCancelAccount').addEventListener('click', () => $('accountModal').classList.add('hidden'));
+
+$('btnSaveAccount').addEventListener('click', async () => {
+  $('accountModalError').textContent = '';
+  try {
+    if (pendingAccountId === null) {
+      await api('/admin/api/accounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          login: $('accountLogin').value,
+          password: $('accountPassword').value
+        })
+      });
+    } else {
+      await api(`/admin/api/accounts/${pendingAccountId}/password`, {
+        method: 'POST',
+        body: JSON.stringify({ password: $('accountPassword').value })
+      });
+    }
+    $('accountModal').classList.add('hidden');
+    loadAccounts();
+  } catch (e) {
+    $('accountModalError').textContent = e.message;
+  }
+});
 
 // ---------- Rafraîchissement automatique ----------
 loadKeys();
