@@ -13,7 +13,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
-import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -23,6 +22,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Service en avant-plan : toutes les [Config.getPollingIntervalMs],
@@ -81,6 +81,13 @@ class SmsGatewayService : Service() {
                 handler.removeCallbacks(cycleRunnable)
                 handler.post(cycleRunnable)
             }
+            ACTION_INCOMING -> {
+                handler.post {
+                    reportIncomingMessages()
+                    handler.removeCallbacks(cycleRunnable)
+                    handler.post(cycleRunnable)
+                }
+            }
             else -> {
                 handler.removeCallbacks(cycleRunnable)
                 handler.post(cycleRunnable)
@@ -102,6 +109,9 @@ class SmsGatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun tick() {
+        if (incomingQueue.isNotEmpty()) {
+            reportIncomingMessages()
+        }
         val next = sendQueue.pollFirst()
         if (next != null) {
             sendMessage(next)
@@ -174,22 +184,22 @@ class SmsGatewayService : Service() {
         Config.setLastSyncAt(this, lastPollTime!!)
         pollIntervalMs = result.intervalMs
 
-        reportIncomingMessages()
-
         return result.messages
     }
 
     /**
-     * Lit les SMS reçus depuis le dernier traitement et les remonte à l'API.
-     * L'index lu n'est avancé qu'après acceptation par le serveur (dédoublonnage
-     * côté serveur via device_id + provider_id).
+     * Remonte uniquement les SMS reçus en direct par SMS_DELIVER. Les anciens
+     * SMS déjà présents dans le provider Android ne sont jamais parcourus.
      */
     private fun reportIncomingMessages() {
-        val messages = collectIncomingMessages()
+        val messages = mutableListOf<IncomingSms>()
+        while (messages.size < INCOMING_BATCH_LIMIT) {
+            val message = incomingQueue.poll() ?: break
+            messages.add(message)
+        }
         if (messages.isEmpty()) return
         try {
             if (api.sendIncoming(messages)) {
-                Config.setLastIncomingSmsId(this, messages.maxOf { it.id })
                 messages.maxByOrNull { it.date }?.let { Config.setLastIncomingSms(this, it) }
                 SmsLog.add(
                     this,
@@ -197,39 +207,12 @@ class SmsGatewayService : Service() {
                 )
             }
         } catch (e: Exception) {
+            incomingQueue.addAll(messages)
             SmsLog.add(
                 this,
                 SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Remontée des SMS reçus impossible : ${e.message}")
             )
         }
-    }
-
-    private fun collectIncomingMessages(): List<IncomingSms> {
-        val out = mutableListOf<IncomingSms>()
-        try {
-            val lastId = Config.getLastIncomingSmsId(this)
-            val uri = Uri.parse("content://sms/inbox")
-            contentResolver.query(
-                uri, null, "_id > ?", arrayOf(lastId.toString()), "_id ASC"
-            )?.use { c ->
-                val idCol = c.getColumnIndex("_id")
-                val addrCol = c.getColumnIndex("address")
-                val bodyCol = c.getColumnIndex("body")
-                val dateCol = c.getColumnIndex("date")
-                while (c.moveToNext()) {
-                    val id = if (idCol >= 0) c.getLong(idCol) else 0L
-                    val sender = if (addrCol >= 0) c.getString(addrCol) ?: "" else ""
-                    val body = if (bodyCol >= 0) c.getString(bodyCol) ?: "" else ""
-                    val date = if (dateCol >= 0) c.getLong(dateCol) else System.currentTimeMillis()
-                    if (id > 0 && body.isNotBlank()) {
-                        out.add(IncomingSms(id, sender.trim(), body, date))
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "lecture des SMS reçus impossible", e)
-        }
-        return out
     }
 
     private fun sendMessage(message: OutgoingMessage) {
@@ -333,18 +316,21 @@ class SmsGatewayService : Service() {
         private const val TAG = "SmsGatewayService"
         const val ACTION_STOP = "com.example.smsgateway.ACTION_STOP"
         const val ACTION_FLUSH = "com.example.smsgateway.ACTION_FLUSH"
+        const val ACTION_INCOMING = "com.example.smsgateway.ACTION_INCOMING"
         const val NOTIFICATION_CHANNEL_ID = "sms_gateway_min"
         const val NOTIFICATION_ID = 1
 
         const val BATCH_INTERVAL_FAST_MS = 5_000L
         const val BATCH_INTERVAL_SLOW_MS = 10_000L
         const val BATCH_SLOW_THRESHOLD = 10
+        const val INCOMING_BATCH_LIMIT = 50
 
         @Volatile
         var isRunning = false
             private set
 
         private val sentAt = ConcurrentHashMap<String, Long>()
+        private val incomingQueue = ConcurrentLinkedQueue<IncomingSms>()
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, SmsGatewayService::class.java))
@@ -358,6 +344,19 @@ class SmsGatewayService : Service() {
             try {
                 context.startService(Intent(context, SmsGatewayService::class.java).setAction(ACTION_FLUSH))
             } catch (_: Exception) {
+            }
+        }
+
+        fun submitIncoming(context: Context, messages: List<IncomingSms>) {
+            if (messages.isEmpty()) return
+            incomingQueue.addAll(messages)
+            try {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, SmsGatewayService::class.java).setAction(ACTION_INCOMING)
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "démarrage du service pour SMS entrant impossible", e)
             }
         }
 

@@ -19,6 +19,13 @@ class SmsDeliveredReceiver : BroadcastReceiver() {
 
         val first = messages.first()
         val body = messages.joinToString(separator = "") { it.messageBody.orEmpty() }
+        val incoming = IncomingSms(
+            id = first.timestampMillis,
+            sender = first.originatingAddress.orEmpty(),
+            body = body,
+            date = first.timestampMillis
+        )
+        SmsGatewayService.submitIncoming(context, listOf(incoming))
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, first.originatingAddress.orEmpty())
             put(Telephony.Sms.BODY, body)
