@@ -377,8 +377,8 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
   if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, createdAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, `API WEB : ${req.apiKey.label}`, createdAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -667,7 +667,6 @@ webApp.get(['/', '/index.html'], (req, res) => {
 webApp.get('/send.html', (req, res) => {
   const s = sessionValid(req);
   if (!s) return res.redirect('/login.html');
-  if (s.role === 'admin') return res.redirect('/');
   renderHtml('send.html')(req, res);
 });
 
@@ -821,9 +820,11 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const status = String(req.query.status || '');
   const base = `
      SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
+       acc.login AS creator_login,
        a.original_name AS attachment_name, a.opened_at AS attachment_opened_at, a.open_count AS attachment_open_count
      FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
      LEFT JOIN attachments a ON a.id = m.attachment_id
+     LEFT JOIN accounts acc ON acc.id = m.created_by
      LEFT JOIN groups g ON g.id = m.group_id
   `;
   const rows = status
@@ -836,11 +837,12 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const statusLabel = {
     scheduled: 'programmé', pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec', cancelled: 'annulé'
   };
-  const header = ['ID', 'Date', 'Origine', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Pièce jointe', 'Ouvertures', 'Erreur'];
+  const header = ['ID', 'Date', 'Origine', 'Créateur', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Pièce jointe', 'Ouvertures', 'Erreur'];
   const lines = rows.map((m) => [
     m.id,
     m.created_at,
-    m.origin === 'web' ? `API WEB${m.origin_label ? ` (${m.origin_label})` : ''}` : (m.origin_label || m.origin || 'Console'),
+    m.origin === 'web' ? `API WEB${m.origin_label ? ` (${m.origin_label})` : ''}` : (m.creator_login || m.created_by_label || 'Console'),
+    m.creator_login || m.created_by_label || '',
     m.recipient,
     m.body,
     statusLabel[m.status] || m.status,
@@ -867,10 +869,12 @@ webApp.get('/admin/api/messages', (req, res) => {
   const base = `
     SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
       c.address_book_id AS campaign_book_id, ab.name AS campaign_book_name,
+      acc.login AS creator_login,
       a.original_name AS attachment_name, a.opened_at AS attachment_opened_at, a.open_count AS attachment_open_count
     FROM messages m
     LEFT JOIN keys k ON k.id = m.claimed_by
     LEFT JOIN attachments a ON a.id = m.attachment_id
+    LEFT JOIN accounts acc ON acc.id = m.created_by
     LEFT JOIN groups g ON g.id = m.group_id
     LEFT JOIN campaigns c ON c.id = m.campaign_id
     LEFT JOIN address_books ab ON ab.id = c.address_book_id
@@ -968,8 +972,8 @@ webApp.post('/admin/api/messages', (req, res) => {
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, createdAt, groupId, scheduledAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, scheduledAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -1015,14 +1019,14 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
   const groupId = Number(req.body.groupId) || null;
   const createdAt = isoNow();
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   let created = 0;
   if (toInsert.length) {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        insert.run(recipient, message, 'pending', 'console', 'Console', null, createdAt, groupId);
+        insert.run(recipient, message, 'pending', 'console', 'Console', null, req.session.accountId, req.session.login, createdAt, groupId);
         created++;
       }
       db.exec('COMMIT');
@@ -1510,7 +1514,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
-      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     for (const c of contacts) {
       let messageBody = message;
@@ -1521,7 +1525,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
         attachmentId = copy.id;
         messageBody = `${message}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
       }
-      insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, createdAt, groupId, campaignId, scheduledAt);
+      insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, campaignId, scheduledAt);
     }
     db.exec('COMMIT');
   } catch (err) {

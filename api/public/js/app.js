@@ -483,12 +483,7 @@ $('btnExport').addEventListener('click', () => {
 
 // ---------- Envoi manuel ----------
 $('btnNewMessage').addEventListener('click', () => {
-  $('smsRecipient').value = '';
-  $('smsBody').value = '';
-  $('smsAttachment').value = '';
-  updateSmsCounter();
-  $('messageError').textContent = '';
-  $('messageModal').classList.remove('hidden');
+  location.href = '/send.html';
 });
 $('btnCancelMessage').addEventListener('click', () => $('messageModal').classList.add('hidden'));
 $('smsBody').addEventListener('input', updateSmsCounter);

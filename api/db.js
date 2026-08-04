@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS messages (
   origin       TEXT    NOT NULL DEFAULT 'console',
   origin_label TEXT,
   attachment_id INTEGER,
+  created_by    INTEGER,
+  created_by_label TEXT,
   created_at   TEXT    NOT NULL,
   updated_at   TEXT
 );
@@ -205,6 +207,12 @@ if (!messageCols.includes('origin_label')) {
 }
 if (!messageCols.includes('attachment_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN attachment_id INTEGER');
+}
+if (!messageCols.includes('created_by')) {
+  db.exec('ALTER TABLE messages ADD COLUMN created_by INTEGER');
+}
+if (!messageCols.includes('created_by_label')) {
+  db.exec('ALTER TABLE messages ADD COLUMN created_by_label TEXT');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');

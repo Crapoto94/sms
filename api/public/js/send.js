@@ -134,10 +134,6 @@ async function loadSession() {
   session = await api('/admin/api/session');
   $('currentUser').textContent = `Connecté en tant que « ${session.login} »`;
   $('appVersion').textContent = `v${session.version}`;
-  if (session.role !== 'user') {
-    location.href = '/';
-    return;
-  }
 }
 
 // ---------- Composer ----------
@@ -434,7 +430,7 @@ $('btnSendToSelected').addEventListener('click', () => {
 
 // ---------- Messages ----------
 const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
-const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>';
+const MESSAGE_HEADERS = '<tr><th>Date</th><th>Créateur</th><th>Destinataire</th><th>Statut</th><th>Pièce jointe</th><th>Passerelle</th><th>Erreur</th></tr>';
 
 function stateOf(s) {
   return badge({
@@ -455,13 +451,32 @@ function recipientPastille(phone) {
   return `<span data-recipient="${esc(phone)}" class="sms-pastille${n ? '' : ' empty'}" title="Voir les SMS envoyés à ${esc(phone)}">${n}</span>`;
 }
 
+function repairFilename(name) {
+  const value = String(name || '');
+  if (!/[ÃÂâ]/.test(value)) return value;
+  try {
+    return decodeURIComponent(Array.from(value).map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`).join(''));
+  } catch (_) { return value; }
+}
+
+function attachmentDisplay(m) {
+  if (!m.attachment_name) return '—';
+  const count = Number(m.attachment_open_count || 0);
+  const state = count
+    ? `<button type="button" class="badge ok attachment-open-info" data-attachment-info="${m.attachment_id}">Ouverte (${count})</button>`
+    : badge('Non ouverte', 'off');
+  return `${state} <a href="/admin/api/attachments/${m.attachment_id}/preview" target="_blank" rel="noopener">${esc(repairFilename(m.attachment_name))}</a>`;
+}
+
 function messageRow(m) {
   return `<tr>
     <td>${m.id}</td>
     <td>${fmtDate(m.created_at)}</td>
+    <td>${esc(m.creator_login || m.created_by_label || m.origin_label || '—')}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${esc(m.body)}</td>
     <td>${stateOf(m.status)}</td>
+    <td>${attachmentDisplay(m)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td class="muted">${esc(m.error || '')}</td>
     <td>${cancelButton(m)}</td>
@@ -471,8 +486,10 @@ function messageRow(m) {
 function campaignDetailRow(m) {
   return `<tr>
     <td>${fmtDate(m.created_at)}</td>
+    <td>${esc(m.creator_login || m.created_by_label || m.origin_label || '—')}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${stateOf(m.status)}</td>
+    <td>${attachmentDisplay(m)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td class="muted">${esc(m.error || '')}</td>
   </tr>`;
@@ -503,11 +520,11 @@ function renderMessageList(messages) {
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-      <td colspan="7">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+       <td colspan="9">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">
-      <td colspan="8">
+       <td colspan="10">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
@@ -559,6 +576,19 @@ function bindMessageActions() {
       openSmsHistory(`SMS envoyés vers ${b.dataset.recipient}`, `/admin/api/messages?recipient=${encodeURIComponent(b.dataset.recipient)}&limit=200`);
     });
   });
+  document.querySelectorAll('[data-attachment-info]').forEach((b) => {
+    b.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const data = await api(`/admin/api/attachments/${b.dataset.attachmentInfo}/opens`);
+        const lines = (data.opens || []).map((o) =>
+          `${fmtDate(o.opened_at)} — ${o.device_type || 'Appareil inconnu'} — IP ${o.ip || '—'}\n${o.user_agent || ''}`
+        );
+        alert(`${repairFilename(data.name)}\nExpiration : ${fmtDate(data.expiresAt)}\nOuvertures : ${data.openCount}\n\n${lines.join('\n') || 'Aucune ouverture.'}`);
+      } catch (e) { alert(e.message); }
+    });
+  });
 }
 
 async function loadMessages() {
@@ -574,7 +604,7 @@ async function loadMessages() {
   }
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
-    : '<tr><td colspan="8" class="muted">Aucun message dans votre groupe.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Aucun message dans votre groupe.</td></tr>';
   bindCampaignToggles();
   bindMessageActions();
 }
