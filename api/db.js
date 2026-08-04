@@ -51,9 +51,23 @@ CREATE TABLE IF NOT EXISTS attachments (
   owner_key_id     INTEGER,
   owner_account_id INTEGER,
   created_at       TEXT    NOT NULL,
+  expires_at       TEXT,
   opened_at        TEXT,
   open_count       INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS attachment_opens (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  attachment_id INTEGER NOT NULL,
+  opened_at     TEXT    NOT NULL,
+  ip            TEXT,
+  user_agent    TEXT,
+  device_type   TEXT,
+  referer       TEXT,
+  accept_language TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_attachment_opens_attachment ON attachment_opens(attachment_id, opened_at);
 
 CREATE INDEX IF NOT EXISTS idx_messages_status    ON messages(status);
 CREATE INDEX IF NOT EXISTS idx_messages_claimed_by ON messages(claimed_by);
@@ -196,5 +210,11 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)'
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');
+
+const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
+if (!attachmentCols.includes('expires_at')) {
+  db.exec('ALTER TABLE attachments ADD COLUMN expires_at TEXT');
+  db.exec("UPDATE attachments SET expires_at = datetime(created_at, '+90 days') WHERE expires_at IS NULL");
+}
 
 module.exports = db;

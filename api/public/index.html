@@ -385,6 +385,15 @@
       <textarea id="smsBody" maxlength="1000" rows="4" placeholder="Contenu du SMS…"></textarea>
       <label for="smsAttachment">Pièce jointe <span class="muted">(10 Mo maximum, un lien public sera ajouté au SMS)</span></label>
       <input id="smsAttachment" type="file">
+      <label for="smsAttachmentExpiry">Conserver la pièce jointe</label>
+      <select id="smsAttachmentExpiry">
+        <option value="7">7 jours</option>
+        <option value="30">30 jours</option>
+        <option value="90" selected>90 jours</option>
+        <option value="180">180 jours</option>
+        <option value="365">1 an</option>
+        <option value="0">Sans expiration</option>
+      </select>
       <p class="muted" style="margin-top:4px"><span id="smsCounter">0</span>/1000 · <span id="smsSegments">1 segment</span></p>
       <div class="row" style="margin-top:16px">
         <button id="btnSendMessage">Envoyer</button>

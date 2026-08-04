@@ -95,9 +95,10 @@ async function api(path, options = {}) {
   return res.json();
 }
 
-async function uploadAttachment(file) {
+async function uploadAttachment(file, expiresInDays) {
   const form = new FormData();
   form.append('file', file);
+  form.append('expiresInDays', String(expiresInDays));
   const res = await fetch('/admin/api/attachments', { method: 'POST', body: form });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -312,6 +313,7 @@ $('btnSendSingle').addEventListener('click', () => {
   const recipient = $('smsRecipient').value.trim().replace(/[\s.\-()]/g, '');
   const body = $('smsBody').value.trim();
   const attachmentFile = $('smsAttachment').files[0] || null;
+  const attachmentExpiry = $('smsAttachmentExpiry').value;
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     $('composerError').textContent = 'Numéro de téléphone invalide.';
     return;
@@ -326,7 +328,7 @@ $('btnSendSingle').addEventListener('click', () => {
     ${attachmentFile ? `<p><b>Pièce jointe :</b> ${esc(attachmentFile.name)}</p>` : ''}
     <p class="muted">Envoi ${scheduleLabel()}.</p>
   `, async () => {
-    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile, attachmentExpiry) : null;
     const res = await api('/admin/api/messages', {
       method: 'POST',
       body: JSON.stringify({ recipient, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
@@ -347,6 +349,7 @@ $('btnSendToSelected').addEventListener('click', () => {
   const checks = Array.from(document.querySelectorAll('#recipientList input:checked'));
   const body = $('smsBody').value.trim();
   const attachmentFile = $('smsAttachment').files[0] || null;
+  const attachmentExpiry = $('smsAttachmentExpiry').value;
   if (!checks.length) {
     $('composerError').textContent = 'Cochez au moins un destinataire.';
     return;
@@ -368,7 +371,7 @@ $('btnSendToSelected').addEventListener('click', () => {
     ${attachmentFile ? `<p><b>Pièce jointe :</b> ${esc(attachmentFile.name)}</p>` : ''}
     <p class="muted">Envoi ${scheduleLabel()}.</p>
   `, async () => {
-    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile, attachmentExpiry) : null;
     const res = await api('/admin/api/campaigns', {
       method: 'POST',
       body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })

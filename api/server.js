@@ -16,6 +16,8 @@ const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
 const MAX_MESSAGE_LENGTH = 1000;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+const DEFAULT_ATTACHMENT_EXPIRY_DAYS = 90;
+const ATTACHMENT_EXPIRY_OPTIONS = [0, 7, 30, 90, 180, 365];
 // Répartition de charge entre passerelles :
 //  - intervalle conseillé aux passerelles (renvoyé dans /sync)
 //  - passerelle « active » = synchronisée il y a moins de 2 intervalles
@@ -56,6 +58,41 @@ const attachmentUpload = multer({
 function publicAttachmentUrl(req, token) {
   const base = String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.hostname}:${PORT_API}`).replace(/\/$/, '');
   return `${base}/api/v1/attachments/${encodeURIComponent(token)}`;
+}
+
+function readableFilename(name) {
+  const value = String(name || 'piece-jointe');
+  if (!/[ÃÂâ]/.test(value)) return value;
+  try {
+    return decodeURIComponent(Array.from(value)
+      .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+      .join(''));
+  } catch (_) {
+    return value;
+  }
+}
+
+function attachmentExpiry(value) {
+  const days = Number(value);
+  if (!Number.isInteger(days) || !ATTACHMENT_EXPIRY_OPTIONS.includes(days)) {
+    return { error: 'Durée de conservation invalide' };
+  }
+  return { days, expiresAt: days === 0 ? null : new Date(Date.now() + days * 86400000).toISOString() };
+}
+
+function deviceType(userAgent) {
+  const ua = String(userAgent || '');
+  if (/iPad|Tablet/i.test(ua)) return 'iPad / tablette';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/Android/i.test(ua)) return 'Android';
+  if (/Windows/i.test(ua)) return 'Windows';
+  if (/Mac OS/i.test(ua)) return 'macOS';
+  if (/Linux/i.test(ua)) return 'Linux';
+  return 'Autre';
+}
+
+function attachmentDispositionName(name) {
+  return encodeURIComponent(readableFilename(name));
 }
 
 function findAttachment(req, attachmentId, owner) {
@@ -247,14 +284,29 @@ apiApp.get('/api/v1/attachments/:token', (req, res) => {
   if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return res.status(404).end();
   const attachment = db.prepare('SELECT * FROM attachments WHERE token = ?').get(token);
   if (!attachment) return res.status(404).end();
+  if (attachment.expires_at && Date.parse(attachment.expires_at) <= Date.now()) return res.status(410).end();
   const filePath = path.join(ATTACHMENTS_DIR, attachment.stored_name);
   if (!fs.existsSync(filePath)) return res.status(404).end();
+  const openedAt = isoNow();
+  db.prepare(`
+    INSERT INTO attachment_opens
+      (attachment_id, opened_at, ip, user_agent, device_type, referer, accept_language)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    attachment.id,
+    openedAt,
+    req.headers['x-forwarded-for'] || req.socket.remoteAddress || '',
+    req.headers['user-agent'] || '',
+    deviceType(req.headers['user-agent']),
+    req.headers.referer || '',
+    req.headers['accept-language'] || ''
+  );
   db.prepare('UPDATE attachments SET opened_at = ?, open_count = open_count + 1 WHERE id = ?')
-    .run(isoNow(), attachment.id);
+    .run(openedAt, attachment.id);
   res.type(attachment.mime_type || 'application/octet-stream');
   res.setHeader(
     'Content-Disposition',
-    `inline; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`
+    `inline; filename*=UTF-8''${attachmentDispositionName(attachment.original_name)}`
   );
   res.sendFile(filePath);
 });
@@ -271,27 +323,36 @@ function uploadSingle(req, res, next) {
 
 apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  const expiry = attachmentExpiry(
+    req.body.expiresInDays === undefined ? DEFAULT_ATTACHMENT_EXPIRY_DAYS : req.body.expiresInDays
+  );
+  if (expiry.error) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(400).json({ error: expiry.error });
+  }
   const createdAt = isoNow();
   try {
     const info = db.prepare(`
       INSERT INTO attachments
-        (token, original_name, stored_name, mime_type, size, owner_key_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (token, original_name, stored_name, mime_type, size, owner_key_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       req.file.filename,
-      req.file.originalname || 'piece-jointe',
+      readableFilename(req.file.originalname || 'piece-jointe'),
       req.file.filename,
       req.file.mimetype || 'application/octet-stream',
       req.file.size,
       req.apiKey.id,
-      createdAt
+      createdAt,
+      expiry.expiresAt
     );
     res.status(201).json({
       id: info.lastInsertRowid,
-      name: req.file.originalname || 'piece-jointe',
+      name: readableFilename(req.file.originalname || 'piece-jointe'),
       mimeType: req.file.mimetype || 'application/octet-stream',
       size: req.file.size,
-      url: publicAttachmentUrl(req, req.file.filename)
+      url: publicAttachmentUrl(req, req.file.filename),
+      expiresAt: expiry.expiresAt
     });
   } catch (err) {
     fs.rmSync(req.file.path, { force: true });
@@ -615,32 +676,76 @@ webApp.use('/admin/api', requireSession);
 
 webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  const expiry = attachmentExpiry(
+    req.body.expiresInDays === undefined ? DEFAULT_ATTACHMENT_EXPIRY_DAYS : req.body.expiresInDays
+  );
+  if (expiry.error) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(400).json({ error: expiry.error });
+  }
   const createdAt = isoNow();
   try {
     const info = db.prepare(`
       INSERT INTO attachments
-        (token, original_name, stored_name, mime_type, size, owner_account_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (token, original_name, stored_name, mime_type, size, owner_account_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       req.file.filename,
-      req.file.originalname || 'piece-jointe',
+      readableFilename(req.file.originalname || 'piece-jointe'),
       req.file.filename,
       req.file.mimetype || 'application/octet-stream',
       req.file.size,
       req.session.accountId,
-      createdAt
+      createdAt,
+      expiry.expiresAt
     );
     res.status(201).json({
       id: info.lastInsertRowid,
-      name: req.file.originalname || 'piece-jointe',
+      name: readableFilename(req.file.originalname || 'piece-jointe'),
       mimeType: req.file.mimetype || 'application/octet-stream',
       size: req.file.size,
-      url: publicAttachmentUrl(req, req.file.filename)
+      url: publicAttachmentUrl(req, req.file.filename),
+      expiresAt: expiry.expiresAt
     });
   } catch (err) {
     fs.rmSync(req.file.path, { force: true });
     throw err;
   }
+});
+
+function attachmentForSession(req, id) {
+  const attachment = db.prepare('SELECT * FROM attachments WHERE id = ?').get(Number(id));
+  if (!attachment) return null;
+  if (req.session.role !== 'admin' && attachment.owner_account_id !== req.session.accountId) return null;
+  return attachment;
+}
+
+webApp.get('/admin/api/attachments/:id/preview', (req, res) => {
+  const attachment = attachmentForSession(req, req.params.id);
+  if (!attachment) return res.status(404).end();
+  if (attachment.expires_at && Date.parse(attachment.expires_at) <= Date.now()) return res.status(410).end();
+  const filePath = path.join(ATTACHMENTS_DIR, attachment.stored_name);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.type(attachment.mime_type || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${attachmentDispositionName(attachment.original_name)}`);
+  res.sendFile(filePath);
+});
+
+webApp.get('/admin/api/attachments/:id/opens', (req, res) => {
+  const attachment = attachmentForSession(req, req.params.id);
+  if (!attachment) return res.status(404).json({ error: 'Pièce jointe introuvable' });
+  const opens = db.prepare(`
+    SELECT opened_at, ip, user_agent, device_type, referer, accept_language
+    FROM attachment_opens WHERE attachment_id = ? ORDER BY opened_at DESC LIMIT 100
+  `).all(attachment.id);
+  res.json({
+    id: attachment.id,
+    name: readableFilename(attachment.original_name),
+    expiresAt: attachment.expires_at,
+    openCount: attachment.open_count,
+    openedAt: attachment.opened_at,
+    opens
+  });
 });
 
 webApp.get('/admin/api/keys', requireAdmin, (_req, res) => {
@@ -1466,3 +1571,25 @@ setInterval(() => {
     ).run(now, now);
   } catch (_) { /* ne bloque jamais */ }
 }, 10 * 1000);
+
+function cleanupExpiredAttachments() {
+  const expired = db.prepare(
+    'SELECT id, stored_name, expires_at FROM attachments WHERE expires_at IS NOT NULL'
+  ).all().filter((attachment) => Date.parse(attachment.expires_at) <= Date.now());
+  if (!expired.length) return;
+  db.exec('BEGIN');
+  try {
+    for (const attachment of expired) {
+      fs.rmSync(path.join(ATTACHMENTS_DIR, attachment.stored_name), { force: true });
+      db.prepare('DELETE FROM attachment_opens WHERE attachment_id = ?').run(attachment.id);
+      db.prepare('DELETE FROM attachments WHERE id = ?').run(attachment.id);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    console.error('[attachments] nettoyage impossible', err);
+  }
+}
+
+setInterval(cleanupExpiredAttachments, 60 * 60 * 1000);
+cleanupExpiredAttachments();

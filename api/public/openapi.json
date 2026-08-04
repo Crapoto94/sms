@@ -52,6 +52,7 @@
           "mimeType": { "type": "string", "example": "application/pdf" },
           "size": { "type": "integer", "example": 24576 },
           "url": { "type": "string", "format": "uri", "description": "Lien public non authentifié. Chaque ouverture est comptabilisée." }
+          ,"expiresAt": { "type": "string", "format": "date-time", "nullable": true, "description": "Date d'expiration ; null si sans expiration." }
         }
       },
       "AttachmentUploadResponse": {
@@ -115,8 +116,9 @@
               "schema": {
                 "type": "object",
                 "required": ["file"],
-                "properties": {
-                  "file": { "type": "string", "format": "binary" }
+                  "properties": {
+                  "file": { "type": "string", "format": "binary" },
+                  "expiresInDays": { "type": "integer", "enum": [0, 7, 30, 90, 180, 365], "default": 90, "description": "Durée de conservation. 0 = sans expiration." }
                 }
               }
             }
@@ -145,7 +147,8 @@
         ],
         "responses": {
           "200": { "description": "Fichier de la pièce jointe." },
-          "404": { "description": "Pièce jointe introuvable." }
+          "404": { "description": "Pièce jointe introuvable." },
+          "410": { "description": "Pièce jointe expirée et supprimée." }
         }
       }
     },

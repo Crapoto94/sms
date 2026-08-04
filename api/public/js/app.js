@@ -74,9 +74,10 @@ async function api(path, options = {}) {
   return res.json();
 }
 
-async function uploadAttachment(file) {
+async function uploadAttachment(file, expiresInDays) {
   const form = new FormData();
   form.append('file', file);
+  form.append('expiresInDays', String(expiresInDays));
   const res = await fetch('/admin/api/attachments', { method: 'POST', body: form });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -261,11 +262,25 @@ function messageOrigin(m) {
   return esc(m.origin_label || m.origin || '—');
 }
 
+function repairFilename(name) {
+  const value = String(name || '');
+  if (!/[ÃÂâ]/.test(value)) return value;
+  try {
+    return decodeURIComponent(Array.from(value)
+      .map((c) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+      .join(''));
+  } catch (_) {
+    return value;
+  }
+}
+
 function messageAttachment(m) {
   if (!m.attachment_name) return '—';
   const opened = Number(m.attachment_open_count || 0);
   const state = opened ? badge(`Ouverte (${opened})`, 'ok') : badge('Non ouverte', 'off');
-  return `${state} <span class="muted">${esc(m.attachment_name)}</span>`;
+  const file = `<a href="/admin/api/attachments/${m.attachment_id}/preview" target="_blank" rel="noopener">${esc(repairFilename(m.attachment_name))}</a>`;
+  const info = `<button type="button" class="attachment-info" data-attachment-info="${m.attachment_id}" title="Détails des ouvertures">i</button>`;
+  return `${state} ${file} ${info}`;
 }
 
 function cancelButton(m) {
@@ -391,6 +406,19 @@ function bindMessageActions() {
       openSmsHistory(`SMS envoyés vers ${b.dataset.recipient}`, `/admin/api/messages?recipient=${encodeURIComponent(b.dataset.recipient)}&limit=200`);
     });
   });
+  document.querySelectorAll('[data-attachment-info]').forEach((b) => {
+    b.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        const data = await api(`/admin/api/attachments/${b.dataset.attachmentInfo}/opens`);
+        const lines = (data.opens || []).map((o) =>
+          `${fmtDate(o.opened_at)} — ${o.device_type || 'Appareil inconnu'} — IP ${o.ip || '—'}\n${o.user_agent || ''}`
+        );
+        alert(`${repairFilename(data.name)}\nExpiration : ${fmtDate(data.expiresAt)}\nOuvertures : ${data.openCount}\n\n${lines.join('\n') || 'Aucune ouverture.'}`);
+      } catch (e) { alert(e.message); }
+    });
+  });
 }
 
 async function loadMessages() {
@@ -494,6 +522,7 @@ $('btnSendMessage').addEventListener('click', () => {
   const recipient = $('smsRecipient').value.trim();
   const message = $('smsBody').value.trim();
   const attachmentFile = $('smsAttachment').files[0] || null;
+  const attachmentExpiry = $('smsAttachmentExpiry').value;
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     $('messageError').textContent = 'Numéro de téléphone invalide.';
     return;
@@ -511,7 +540,7 @@ $('btnSendMessage').addEventListener('click', () => {
   $('confirmError').textContent = '';
   $('confirmModal').classList.remove('hidden');
   pendingAdminSend = async () => {
-    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile, attachmentExpiry) : null;
     await api('/admin/api/messages', {
       method: 'POST',
       body: JSON.stringify({ recipient, message, attachmentId: attachment ? attachment.id : null })
