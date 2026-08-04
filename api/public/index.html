@@ -54,6 +54,10 @@
     <section id="messages" class="panel hidden">
       <div class="row">
         <h2>Messages</h2>
+        <div class="msg-toggle">
+          <button id="btnMsgSent" class="active">Envoyés</button>
+          <button id="btnMsgReceived">Reçus</button>
+        </div>
         <button id="btnNewMessage">+ Envoyer un SMS</button>
         <button id="btnImportCsv" class="ghost">Importer CSV</button>
         <button id="btnExport" class="ghost">Exporter CSV</button>
@@ -68,11 +72,17 @@
           <option value="cancelled">Annulé</option>
         </select>
       </div>
-      <table>
+      <table id="messagesSentTable">
         <thead>
-          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th><th></th></tr>
+          <tr><th>ID</th><th>Date</th><th>Origine</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th><th></th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
+      </table>
+      <table id="messagesReceivedTable" class="hidden">
+        <thead>
+          <tr><th>Date</th><th>Expéditeur</th><th>Message</th><th>Passerelle</th><th>Appareil</th></tr>
+        </thead>
+        <tbody id="incomingBody"></tbody>
       </table>
     </section>
 

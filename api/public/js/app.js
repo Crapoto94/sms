@@ -87,7 +87,10 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
-    if (currentTab === 'messages') loadMessages();
+    if (currentTab === 'messages') {
+      if (msgView === 'sent') loadMessages();
+      else loadIncoming();
+    }
     if (currentTab === 'books') loadBooks();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'accounts') loadAccounts();
@@ -235,7 +238,15 @@ const stateOf = (s) => badge({
   scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec', cancelled: 'Annulé'
 }[s] || s, s);
 
-const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>';
+let msgView = 'sent';
+
+const MESSAGE_HEADERS = '<tr><th>Date</th><th>Origine</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>';
+
+function messageOrigin(m) {
+  if (m.origin === 'web') return `${badge('API WEB', 'ok')} ${esc(m.origin_label || '')}`;
+  if (m.origin === 'console') return badge('Console', 'off');
+  return esc(m.origin_label || m.origin || '—');
+}
 
 function cancelButton(m) {
   return CANCELABLE.includes(m.status)
@@ -254,6 +265,7 @@ function adminMessageRow(m) {
   return `<tr>
     <td>${m.id}</td>
     <td>${fmtDate(m.created_at)}</td>
+    <td>${messageOrigin(m)}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${esc(m.body)}</td>
     <td>${stateOf(m.status)}</td>
@@ -267,6 +279,7 @@ function adminMessageRow(m) {
 function campaignDetailRow(m) {
   return `<tr>
     <td>${fmtDate(m.created_at)}</td>
+    <td>${messageOrigin(m)}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
@@ -300,11 +313,11 @@ function renderMessageList(messages) {
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-      <td colspan="8">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+      <td colspan="9">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">
-      <td colspan="9">
+      <td colspan="10">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
@@ -371,12 +384,45 @@ async function loadMessages() {
   }
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
-    : '<tr><td colspan="9" class="muted">Aucun message.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Aucun message.</td></tr>';
   bindCampaignToggles();
   bindMessageActions();
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
+
+// ---------- Toggle Messages envoyés / reçus ----------
+$('btnMsgSent').addEventListener('click', () => switchMsgView('sent'));
+$('btnMsgReceived').addEventListener('click', () => switchMsgView('received'));
+
+function switchMsgView(view) {
+  msgView = view;
+  $('btnMsgSent').classList.toggle('active', view === 'sent');
+  $('btnMsgReceived').classList.toggle('active', view === 'received');
+  $('messagesSentTable').classList.toggle('hidden', view !== 'sent');
+  $('messagesReceivedTable').classList.toggle('hidden', view !== 'received');
+  $('btnNewMessage').classList.toggle('hidden', view !== 'sent');
+  $('btnImportCsv').classList.toggle('hidden', view !== 'sent');
+  $('btnExport').classList.toggle('hidden', view !== 'sent');
+  $('statusFilter').classList.toggle('hidden', view !== 'sent');
+  if (view === 'sent') loadMessages();
+  else loadIncoming();
+}
+
+async function loadIncoming() {
+  try {
+    const rows = await api('/admin/api/incoming?limit=100');
+    $('incomingBody').innerHTML = rows.length
+      ? rows.map((m) => `<tr>
+          <td>${fmtDate(m.received_at)}</td>
+          <td class="code">${esc(m.sender)}</td>
+          <td>${esc(m.body)}</td>
+          <td>${esc(m.gateway_label || '—')}</td>
+          <td class="code">${esc(m.device_id || '—')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="muted">Aucun message reçu.</td></tr>';
+  } catch { /* silencieux */ }
+}
 
 $('btnExport').addEventListener('click', () => {
   const status = $('statusFilter').value;

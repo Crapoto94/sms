@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS messages (
   delivered_at TEXT,
   failed_at    TEXT,
   error        TEXT,
+  origin       TEXT    NOT NULL DEFAULT 'console',
+  origin_label TEXT,
   created_at   TEXT    NOT NULL,
   updated_at   TEXT
 );
@@ -122,6 +124,20 @@ CREATE TABLE IF NOT EXISTS campaigns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_campaigns_group ON campaigns(group_id);
+
+CREATE TABLE IF NOT EXISTS incoming_messages (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id       INTEGER,
+  device_id   TEXT,
+  provider_id TEXT NOT NULL,
+  sender      TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  UNIQUE (device_id, provider_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_incoming_created ON incoming_messages(created_at);
 `);
 
 // Migrations : colonnes ajoutées sur des bases existantes (CREATE TABLE
@@ -151,6 +167,12 @@ if (!messageCols.includes('scheduled_at')) {
 }
 if (!messageCols.includes('cancelled_at')) {
   db.exec('ALTER TABLE messages ADD COLUMN cancelled_at TEXT');
+}
+if (!messageCols.includes('origin')) {
+  db.exec("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'console'");
+}
+if (!messageCols.includes('origin_label')) {
+  db.exec('ALTER TABLE messages ADD COLUMN origin_label TEXT');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');

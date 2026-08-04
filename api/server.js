@@ -198,8 +198,8 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
   }
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at) VALUES (?, ?, ?, ?)'
-  ).run(recipient, message, 'pending', createdAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(recipient, message, 'pending', 'web', req.apiKey.label, createdAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -335,6 +335,37 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
     reportsAccepted: reportAccepted,
     messages: claimed.map((m) => ({ id: m.id, recipient: m.recipient, body: m.body }))
   });
+});
+
+// Remontée des SMS reçus par une passerelle (clé type "gateway")
+apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => {
+  const messages = Array.isArray(req.body.messages) ? req.body.messages : [];
+  if (messages.length === 0) return res.json({ accepted: 0 });
+  const deviceId = String(req.body.deviceId || req.apiKey.device_id || '').trim();
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO incoming_messages
+       (key_id, device_id, provider_id, sender, body, received_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  const nowIso = isoNow();
+  let accepted = 0;
+  db.exec('BEGIN');
+  try {
+    for (const m of messages) {
+      const providerId = String(m.providerId || m.id || '').trim();
+      const sender = String(m.sender || '').trim();
+      const body = String(m.body || '').trim();
+      const receivedAt = String(m.receivedAt || nowIso);
+      if (!providerId || !sender) continue;
+      const info = insert.run(req.apiKey.id, deviceId, providerId, sender, body, receivedAt, nowIso);
+      if (info.changes > 0) accepted++;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.json({ accepted });
 });
 
 // ---------- Interface web (port 3251) ----------
@@ -547,10 +578,11 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const statusLabel = {
     scheduled: 'programmé', pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec', cancelled: 'annulé'
   };
-  const header = ['ID', 'Date', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Erreur'];
+  const header = ['ID', 'Date', 'Origine', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Erreur'];
   const lines = rows.map((m) => [
     m.id,
     m.created_at,
+    m.origin === 'web' ? `API WEB${m.origin_label ? ` (${m.origin_label})` : ''}` : (m.origin_label || m.origin || 'Console'),
     m.recipient,
     m.body,
     statusLabel[m.status] || m.status,
@@ -667,8 +699,8 @@ webApp.post('/admin/api/messages', (req, res) => {
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(recipient, message, status, createdAt, groupId, scheduledAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, message, status, 'console', 'Console', createdAt, groupId, scheduledAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -711,14 +743,14 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
   const groupId = Number(req.body.groupId) || null;
   const createdAt = isoNow();
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at, group_id) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   let created = 0;
   if (toInsert.length) {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        insert.run(recipient, message, 'pending', createdAt, groupId);
+        insert.run(recipient, message, 'pending', 'console', 'Console', createdAt, groupId);
         created++;
       }
       db.exec('COMMIT');
@@ -1198,9 +1230,9 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
-      'INSERT INTO messages (recipient, body, status, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    for (const c of contacts) insert.run(c.phone, message, status, createdAt, groupId, campaignId, scheduledAt);
+    for (const c of contacts) insert.run(c.phone, message, status, 'console', 'Console', createdAt, groupId, campaignId, scheduledAt);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -1229,6 +1261,18 @@ webApp.get('/admin/api/gateways/online', requireSession, (_req, res) => {
     "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
   ).get(onlineCutoffIso()).c;
   res.json({ online });
+});
+
+webApp.get('/admin/api/incoming', requireAdmin, (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
+  const rows = db.prepare(`
+    SELECT im.id, im.sender, im.body, im.received_at, im.created_at,
+           k.label AS gateway_label, im.device_id
+    FROM incoming_messages im
+    LEFT JOIN keys k ON k.id = im.key_id
+    ORDER BY im.id DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
 });
 
 apiApp.listen(PORT_API, '0.0.0.0', () => {
