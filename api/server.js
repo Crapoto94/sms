@@ -9,7 +9,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.22';
+const APP_VERSION = process.env.APP_VERSION || '1.23';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -218,7 +218,7 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       failed_at    = CASE WHEN ? = 'failed'    THEN ? ELSE failed_at END,
       error        = ?,
       updated_at   = ?
-    WHERE id = ?
+    WHERE id = ? AND status <> 'cancelled'
   `);
 
   let claimed;
@@ -532,7 +532,7 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const statusLabel = {
-    pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec'
+    scheduled: 'programmé', pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec', cancelled: 'annulé'
   };
   const header = ['ID', 'Date', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Erreur'];
   const lines = rows.map((m) => [
@@ -556,6 +556,8 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
 
 webApp.get('/admin/api/messages', (req, res) => {
   const status = String(req.query.status || '');
+  const recipient = String(req.query.recipient || '').trim();
+  const bookId = parseInt(req.query.bookId, 10);
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
   const base = `
     SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
@@ -572,6 +574,14 @@ webApp.get('/admin/api/messages', (req, res) => {
     cond.push('m.status = ?');
     params.push(status);
   }
+  if (recipient) {
+    cond.push('m.recipient = ?');
+    params.push(recipient);
+  }
+  if (Number.isInteger(bookId)) {
+    cond.push('m.campaign_id IN (SELECT id FROM campaigns WHERE address_book_id = ?)');
+    params.push(bookId);
+  }
   if (req.session.role !== 'admin') {
     cond.push('m.group_id = ?');
     params.push(req.session.groupId);
@@ -580,6 +590,51 @@ webApp.get('/admin/api/messages', (req, res) => {
   const rows = db.prepare(`${base} ${where} ORDER BY m.id DESC LIMIT ?`)
     .all(...params, limit);
   res.json(rows);
+});
+
+// Comptage de SMS envoyés (par numéro et/ou par carnet). Scindé en deux
+// routes pour rester sous les chemins de /messages/:id :
+webApp.get('/admin/api/messages/count', (req, res) => {
+  const recipient = String(req.query.recipient || '').trim();
+  const bookId = parseInt(req.query.bookId, 10);
+  const cond = [];
+  const params = [];
+  if (recipient) {
+    cond.push('recipient = ?');
+    params.push(recipient);
+  }
+  if (Number.isInteger(bookId)) {
+    cond.push('campaign_id IN (SELECT id FROM campaigns WHERE address_book_id = ?)');
+    params.push(bookId);
+  }
+  if (req.session.role !== 'admin') {
+    cond.push('group_id = ?');
+    params.push(req.session.groupId);
+  }
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+  const row = db.prepare(`SELECT COUNT(*) AS c FROM messages ${where}`).get(...params);
+  res.json({ count: row.c });
+});
+
+// Comptage groupé par numéro (pour afficher la pastille sur chaque contact).
+webApp.get('/admin/api/messages/counts', (req, res) => {
+  const recipients = String(req.query.recipients || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (recipients.length === 0) return res.json({ counts: {} });
+  const cond = [`recipient IN (${recipients.map(() => '?').join(',')})`];
+  const params = [...recipients];
+  if (req.session.role !== 'admin') {
+    cond.push('group_id = ?');
+    params.push(req.session.groupId);
+  }
+  const rows = db.prepare(
+    `SELECT recipient, COUNT(*) AS c FROM messages WHERE ${cond.join(' AND ')} GROUP BY recipient`
+  ).all(...params);
+  const counts = {};
+  for (const r of rows) counts[r.recipient] = r.c;
+  res.json({ counts });
 });
 
 webApp.post('/admin/api/messages', (req, res) => {
@@ -660,6 +715,41 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
     }
   }
   res.status(201).json({ rows: input.length, duplicates, invalid, created });
+});
+
+// Annulation d'un message pas encore envoyé (programmé, en attente, en cours
+// ou envoyé mais pas remis). Une fois annulé, le message ne peut plus être
+// récupéré par une passerelle ni mis à jour par un rapport.
+const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
+webApp.post('/admin/api/messages/:id/cancel', (req, res) => {
+  const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(Number(req.params.id));
+  if (!message) return res.status(404).json({ error: 'Message introuvable' });
+  if (req.session.role !== 'admin' && message.group_id !== req.session.groupId) {
+    return res.status(404).json({ error: 'Message introuvable' });
+  }
+  if (!CANCELABLE.includes(message.status)) {
+    return res.status(409).json({ error: 'Ce message ne peut plus être annulé' });
+  }
+  db.prepare(
+    "UPDATE messages SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE id = ?"
+  ).run(isoNow(), isoNow(), message.id);
+  res.json({ ok: true, id: message.id });
+});
+
+// Annulation d'une campagne : annule tous ses messages pas encore envoyés.
+webApp.post('/admin/api/campaigns/:campaignId/cancel', (req, res) => {
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(Number(req.params.campaignId));
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  if (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId) {
+    return res.status(404).json({ error: 'Campagne introuvable' });
+  }
+  const now = isoNow();
+  const placeholders = CANCELABLE.map(() => '?').join(',');
+  const info = db.prepare(
+    `UPDATE messages SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+     WHERE campaign_id = ? AND status IN (${placeholders})`
+  ).run(now, now, campaign.id, ...CANCELABLE);
+  res.json({ ok: true, campaignId: campaign.id, cancelled: info.changes });
 });
 
 webApp.get('/admin/api/logs', requireAdmin, (req, res) => {
@@ -863,22 +953,16 @@ function requireGroupBook(req, res) {
 }
 
 webApp.get('/admin/api/address-books', (req, res) => {
-  let books;
-  if (req.session.role === 'admin') {
-    books = db.prepare(`
-      SELECT ab.*, g.name AS group_name,
-        (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
-      FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
-      ORDER BY ab.id ASC
-    `).all();
-  } else {
-    books = db.prepare(`
-      SELECT ab.*, g.name AS group_name,
-        (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
-      FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
-      WHERE ab.group_id = ? ORDER BY ab.id ASC
-    `).all(req.session.groupId);
-  }
+  const scope = req.session.role === 'admin' ? '' : 'WHERE ab.group_id = ?';
+  const params = req.session.role === 'admin' ? [] : [req.session.groupId];
+  const books = db.prepare(`
+    SELECT ab.*, g.name AS group_name,
+      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count,
+      (SELECT COUNT(*) FROM messages m JOIN campaigns c2 ON c2.id = m.campaign_id
+        WHERE c2.address_book_id = ab.id) AS message_count
+    FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+    ${scope} ORDER BY ab.id ASC
+  `).all(...params);
   res.json(books);
 });
 
@@ -964,6 +1048,28 @@ webApp.delete('/admin/api/contacts/:contactId', (req, res) => {
   if (checked.error) return res.status(404).json({ error: checked.error });
   db.prepare('DELETE FROM contacts WHERE id = ?').run(contact.id);
   res.json({ ok: true });
+});
+
+webApp.patch('/admin/api/contacts/:contactId', (req, res) => {
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(Number(req.params.contactId));
+  if (!contact) return res.status(404).json({ error: 'Contact introuvable' });
+  const checked = requireGroupBook({ ...req, params: { bookId: contact.address_book_id } }, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  const body = req.body || {};
+  const first = String(body.firstName !== undefined ? body.firstName : contact.first_name).trim();
+  const last = String(body.lastName !== undefined ? body.lastName : contact.last_name).trim();
+  const entity = String(body.entity !== undefined ? body.entity : contact.entity).trim();
+  const phone = normalizePhone(body.phone !== undefined ? body.phone : contact.phone);
+  if (!/^\+?[0-9]{4,15}$/.test(phone)) {
+    return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  }
+  if (!first && !last && !entity) {
+    return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
+  }
+  db.prepare(
+    'UPDATE contacts SET first_name = ?, last_name = ?, entity = ?, phone = ? WHERE id = ?'
+  ).run(first, last, entity, phone, contact.id);
+  res.json({ ok: true, id: contact.id, first_name: first, last_name: last, entity, phone });
 });
 
 webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {

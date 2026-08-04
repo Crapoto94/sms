@@ -16,6 +16,46 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c]));
 
+// ---------- Mode clair / sombre ----------
+function initTheme() {
+  const btn = $('btnTheme');
+  if (!btn) return;
+  const apply = (light) => {
+    document.body.classList.toggle('light', light);
+    btn.textContent = light ? 'Mode sombre' : 'Mode clair';
+  };
+  apply(localStorage.getItem('sms-theme') === 'light');
+  btn.addEventListener('click', () => {
+    const light = !document.body.classList.contains('light');
+    localStorage.setItem('sms-theme', light ? 'light' : 'dark');
+    apply(light);
+  });
+}
+initTheme();
+
+// ---------- Historique SMS d'un numéro / d'un carnet ----------
+async function openSmsHistory(title, url) {
+  const msgs = await api(url);
+  $('smsHistoryTitle').textContent = title + (msgs.length ? ` (${msgs.length})` : '');
+  $('smsHistoryBody').innerHTML = msgs.length
+    ? `<table>
+        <thead><tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr></thead>
+        <tbody>${msgs.map((m) => `<tr>
+          <td>${m.id}</td>
+          <td>${fmtDate(m.created_at)}</td>
+          <td class="code">${esc(m.recipient)}</td>
+          <td>${esc(m.body)}</td>
+          <td>${stateOf(m.status)}</td>
+          <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+          <td class="muted">${esc(m.error || '')}</td>
+        </tr>`).join('')}</tbody>
+      </table>`
+    : '<p class="muted">Aucun SMS envoyé vers ce numéro.</p>';
+  $('smsHistoryModal').classList.remove('hidden');
+}
+
+$('btnCloseSmsHistory').addEventListener('click', () => $('smsHistoryModal').classList.add('hidden'));
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -41,12 +81,14 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('keys').classList.toggle('hidden', currentTab !== 'keys');
     $('gateways').classList.toggle('hidden', currentTab !== 'gateways');
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
+    $('books').classList.toggle('hidden', currentTab !== 'books');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
     if (currentTab === 'messages') loadMessages();
+    if (currentTab === 'books') loadBooks();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'accounts') loadAccounts();
     if (currentTab === 'groups') loadGroups();
@@ -173,11 +215,18 @@ async function loadGateways() {
 }
 
 // ---------- Messages ----------
+const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
 const stateOf = (s) => badge({
-  scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
+  scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec', cancelled: 'Annulé'
 }[s] || s, s);
 
 const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>';
+
+function cancelButton(m) {
+  return CANCELABLE.includes(m.status)
+    ? `<button data-cancelmsg="${m.id}" class="ghost">Annuler</button>`
+    : '';
+}
 
 function adminMessageRow(m) {
   return `<tr>
@@ -189,6 +238,7 @@ function adminMessageRow(m) {
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td>${esc(m.group_name || '—')}</td>
     <td class="muted">${esc(m.error || '')}</td>
+    <td>${cancelButton(m)}</td>
   </tr>`;
 }
 
@@ -223,14 +273,16 @@ function renderMessageList(messages) {
     const delivered = byStatus.delivered || 0;
     const failed = byStatus.failed || 0;
     const inFlight = (byStatus.pending || 0) + (byStatus.sending || 0) + (byStatus.scheduled || 0);
+    const cancelable = c.rows.some((m) => CANCELABLE.includes(m.status));
     const first = c.rows[0];
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push(`<tr class="campaign-row" data-campaign="${c.id}">
       <td colspan="8">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+      <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>`);
     html.push(`<tr class="campaign-detail hidden" data-campaign="${c.id}">
-      <td colspan="8">
+      <td colspan="9">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
@@ -244,11 +296,37 @@ function renderMessageList(messages) {
 
 function bindCampaignToggles() {
   document.querySelectorAll('.campaign-row').forEach((row) => {
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
       const id = row.dataset.campaign;
       const detail = document.querySelector(`.campaign-detail[data-campaign="${id}"]`);
       if (detail) detail.classList.toggle('hidden');
     });
+  });
+}
+
+async function cancelMessage(id) {
+  try {
+    await api(`/admin/api/messages/${id}/cancel`, { method: 'POST' });
+    loadMessages();
+  } catch (e) { alert(e.message); }
+}
+
+async function cancelCampaign(id) {
+  if (!confirm('Annuler tous les envois pas encore terminés de cette campagne ?')) return;
+  try {
+    const res = await api(`/admin/api/campaigns/${id}/cancel`, { method: 'POST' });
+    alert(`${res.cancelled} message(s) annulé(s).`);
+    loadMessages();
+  } catch (e) { alert(e.message); }
+}
+
+function bindMessageActions() {
+  document.querySelectorAll('[data-cancelmsg]').forEach((b) => {
+    b.addEventListener('click', () => cancelMessage(Number(b.dataset.cancelmsg)));
+  });
+  document.querySelectorAll('[data-cancelcamp]').forEach((b) => {
+    b.addEventListener('click', () => cancelCampaign(Number(b.dataset.cancelcamp)));
   });
 }
 
@@ -257,8 +335,9 @@ async function loadMessages() {
   const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
-    : '<tr><td colspan="8" class="muted">Aucun message.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucun message.</td></tr>';
   bindCampaignToggles();
+  bindMessageActions();
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
@@ -291,20 +370,49 @@ function smsSegments(len) {
   return len <= (GSM7 === 153 ? 160 : 70) ? 1 : Math.ceil(len / GSM7);
 }
 
-$('btnSendMessage').addEventListener('click', async () => {
+$('btnSendMessage').addEventListener('click', () => {
   $('messageError').textContent = '';
-  try {
+  const recipient = $('smsRecipient').value.trim();
+  const message = $('smsBody').value.trim();
+  if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
+    $('messageError').textContent = 'Numéro de téléphone invalide.';
+    return;
+  }
+  if (!message) {
+    $('messageError').textContent = 'Le message est vide.';
+    return;
+  }
+  $('confirmTitle').textContent = "Confirmer l'envoi du SMS";
+  $('confirmBody').innerHTML = `
+    <p><b>Destinataire :</b> <span class="code">${esc(recipient)}</span></p>
+    <p><b>Message :</b><br>${esc(message)}</p>
+    <p class="muted">Envoi immédiat.</p>`;
+  $('confirmError').textContent = '';
+  $('confirmModal').classList.remove('hidden');
+  pendingAdminSend = async () => {
     await api('/admin/api/messages', {
       method: 'POST',
-      body: JSON.stringify({
-        recipient: $('smsRecipient').value,
-        message: $('smsBody').value
-      })
+      body: JSON.stringify({ recipient, message })
     });
     $('messageModal').classList.add('hidden');
     loadMessages();
+  };
+});
+let pendingAdminSend = null;
+$('btnCancelConfirm').addEventListener('click', () => {
+  pendingAdminSend = null;
+  $('confirmModal').classList.add('hidden');
+});
+$('btnConfirmSend').addEventListener('click', async () => {
+  const fn = pendingAdminSend;
+  if (!fn) return;
+  $('confirmError').textContent = '';
+  try {
+    await fn();
+    pendingAdminSend = null;
+    $('confirmModal').classList.add('hidden');
   } catch (e) {
-    $('messageError').textContent = e.message;
+    $('confirmError').textContent = e.message;
   }
 });
 
@@ -718,10 +826,337 @@ $('btnSaveGroup').addEventListener('click', async () => {
   }
 });
 
+// ---------- Carnets d'adresses (admin) ----------
+let viewBookId = null;
+let pendingBookId = null;
+let pendingContactId = null;
+let adminBooks = [];
+let bookCsvRows = [];
+let bookCsvHeaderCells = [];
+
+async function loadBooks() {
+  adminBooks = await api('/admin/api/address-books');
+  $('booksBody').innerHTML = adminBooks.length
+    ? adminBooks.map((b) => `<tr>
+        <td>${b.id}</td>
+        <td>${esc(b.name)} <span data-bookhistory="${b.id}" class="sms-pastille${b.message_count ? '' : ' empty'}" title="Voir les SMS envoyés">${b.message_count || 0}</span></td>
+        <td>${esc(b.group_name || '—')}</td>
+        <td>${b.contact_count}</td>
+        <td>${fmtDate(b.created_at)}</td>
+        <td>
+          <button data-editbook="${b.id}" data-name="${esc(b.name)}" class="ghost">Renommer</button>
+          <button data-importbook="${b.id}" class="ghost">Importer</button>
+          <button data-delbook="${b.id}" class="danger">Supprimer</button>
+          <button data-openbook="${b.id}" class="ghost">Ouvrir</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">Aucun carnet d\'adresses.</td></tr>';
+  document.querySelectorAll('[data-openbook]').forEach((b) => {
+    b.addEventListener('click', () => openBook(Number(b.dataset.openbook)));
+  });
+  document.querySelectorAll('[data-editbook]').forEach((b) => {
+    b.addEventListener('click', () => openBookModal(Number(b.dataset.editbook), b.dataset.name));
+  });
+  document.querySelectorAll('[data-importbook]').forEach((b) => {
+    b.addEventListener('click', () => openBookImportModal(Number(b.dataset.importbook)));
+  });
+  document.querySelectorAll('[data-delbook]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer ce carnet et tous ses contacts ?')) return;
+      await api(`/admin/api/address-books/${b.dataset.delbook}`, { method: 'DELETE' });
+      loadBooks();
+    });
+  });
+  document.querySelectorAll('[data-bookhistory]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const book = adminBooks.find((x) => x.id === Number(b.dataset.bookhistory));
+      openSmsHistory(`SMS envoyés — ${book ? book.name : ''}`, `/admin/api/messages?bookId=${b.dataset.bookhistory}&limit=200`);
+    });
+  });
+}
+
+async function openBook(bookId) {
+  viewBookId = bookId;
+  const book = adminBooks.find((b) => b.id === bookId);
+  $('bookContactsTitle').textContent = `Contacts — ${book ? book.name : ''}`;
+  await loadContacts();
+  $('booksBody').closest('table').classList.add('hidden');
+  $('bookContacts').classList.remove('hidden');
+}
+
+$('btnBackBooks').addEventListener('click', () => {
+  $('bookContacts').classList.add('hidden');
+  $('booksBody').closest('table').classList.remove('hidden');
+  loadBooks();
+});
+
+async function loadContacts() {
+  const rows = await api(`/admin/api/address-books/${viewBookId}/contacts`);
+  const phones = rows.map((c) => c.phone);
+  let counts = {};
+  try {
+    const r = await api(`/admin/api/messages/counts?recipients=${encodeURIComponent(phones.join(','))}`);
+    counts = r.counts || {};
+  } catch { /* pastilles vides si le comptage échoue */ }
+  $('contactsBody').innerHTML = rows.length
+    ? rows.map((c) => `<tr>
+        <td>${esc(c.first_name || '')}</td>
+        <td>${esc(c.last_name || '')}</td>
+        <td>${esc(c.entity || '')}</td>
+        <td class="code">${esc(c.phone)} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
+        <td>
+          <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+          <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="muted">Aucun contact.</td></tr>';
+  document.querySelectorAll('[data-editcontact]').forEach((b) => {
+    b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
+  });
+  document.querySelectorAll('[data-delcontact]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer ce contact ?')) return;
+      await api(`/admin/api/contacts/${b.dataset.delcontact}`, { method: 'DELETE' });
+      loadContacts();
+    });
+  });
+  document.querySelectorAll('[data-recipient]').forEach((b) => {
+    b.addEventListener('click', () => {
+      openSmsHistory(`SMS envoyés vers ${b.dataset.recipient}`, `/admin/api/messages?recipient=${encodeURIComponent(b.dataset.recipient)}&limit=200`);
+    });
+  });
+}
+
+async function fillBookGroupSelect() {
+  const groups = await api('/admin/api/groups');
+  $('bookGroup').innerHTML = groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join('') || '<option value="">—</option>';
+}
+
+function openBookModal(id = null, name = '') {
+  pendingBookId = id;
+  $('bookName').value = name;
+  $('bookModalError').textContent = '';
+  $('bookModalTitle').textContent = id === null ? 'Nouveau carnet d\'adresses' : 'Renommer le carnet';
+  $('btnSaveBook').textContent = id === null ? 'Créer' : 'Enregistrer';
+  $('bookGroupWrap').classList.toggle('hidden', id !== null);
+  if (id === null) fillBookGroupSelect();
+  $('bookModal').classList.remove('hidden');
+  $('bookName').focus();
+}
+
+$('btnNewBook').addEventListener('click', () => openBookModal(null));
+$('btnCancelBook').addEventListener('click', () => $('bookModal').classList.add('hidden'));
+
+$('btnSaveBook').addEventListener('click', async () => {
+  $('bookModalError').textContent = '';
+  try {
+    if (pendingBookId === null) {
+      await api('/admin/api/address-books', {
+        method: 'POST',
+        body: JSON.stringify({ name: $('bookName').value, groupId: Number($('bookGroup').value) })
+      });
+    } else {
+      await api(`/admin/api/address-books/${pendingBookId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: $('bookName').value })
+      });
+    }
+    $('bookModal').classList.add('hidden');
+    loadBooks();
+  } catch (e) {
+    $('bookModalError').textContent = e.message;
+  }
+});
+
+function openContactModal(id = null, data = null) {
+  pendingContactId = id;
+  $('contactFirstName').value = data ? data.cname : '';
+  $('contactLastName').value = data ? data.clast : '';
+  $('contactEntity').value = data ? data.centity : '';
+  $('contactPhone').value = data ? data.cphone : '';
+  $('contactModalError').textContent = '';
+  $('contactModalTitle').textContent = id === null ? 'Nouveau contact' : 'Modifier le contact';
+  $('btnSaveContact').textContent = id === null ? 'Créer' : 'Enregistrer';
+  $('contactModal').classList.remove('hidden');
+  $('contactFirstName').focus();
+}
+
+$('btnAddContact').addEventListener('click', () => openContactModal(null));
+$('btnCancelContact').addEventListener('click', () => $('contactModal').classList.add('hidden'));
+
+$('btnSaveContact').addEventListener('click', async () => {
+  $('contactModalError').textContent = '';
+  const body = {
+    firstName: $('contactFirstName').value,
+    lastName: $('contactLastName').value,
+    entity: $('contactEntity').value,
+    phone: $('contactPhone').value
+  };
+  try {
+    if (pendingContactId === null) {
+      await api(`/admin/api/address-books/${viewBookId}/contacts`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+    } else {
+      await api(`/admin/api/contacts/${pendingContactId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body)
+      });
+    }
+    $('contactModal').classList.add('hidden');
+    loadContacts();
+  } catch (e) {
+    $('contactModalError').textContent = e.message;
+  }
+});
+
+// ---------- Import CSV contacts (admin) ----------
+function parseBookCsv(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim() !== '') || '';
+  const counts = [';', ',', '\t'].map((s) => ({ s, n: firstLine.split(s).length - 1 }));
+  const sep = counts.reduce((a, b) => (b.n > a.n ? b : a), { s: ';', n: 0 }).s;
+  const rows = [];
+  let field = '';
+  let row = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === sep) {
+      row.push(field); field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+function handleBookCsvFile(file) {
+  $('bookImportErrorTop').textContent = '';
+  $('bookDropZone').querySelector('p').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const rows = parseBookCsv(String(reader.result || ''));
+      if (rows.length === 0) {
+        $('bookImportErrorTop').textContent = 'Fichier vide.';
+        return;
+      }
+      bookCsvHeaderCells = rows[0].map((c) => String(c ?? '').trim());
+      bookCsvRows = rows.slice(1).filter((r) => r.some((c) => String(c ?? '').trim() !== ''));
+      const fields = [
+        { v: '', l: '— Ignorer —' },
+        { v: 'phone', l: 'Téléphone (obligatoire)' },
+        { v: 'firstName', l: 'Prénom' },
+        { v: 'lastName', l: 'Nom' },
+        { v: 'entity', l: 'Entité' }
+      ];
+      $('bookMappingBody').innerHTML = bookCsvHeaderCells.map((h, i) => `<tr>
+        <td>${esc(h || `Colonne ${i + 1}`)}</td>
+        <td><select data-col="${i}">${fields.map((f) => `<option value="${f.v}" ${f.v === 'phone' && i === 0 ? 'selected' : ''}>${f.l}</option>`).join('')}</select></td>
+      </tr>`).join('');
+      $('bookCsvHeader').classList.remove('hidden');
+    } catch (e) {
+      $('bookImportErrorTop').textContent = 'Impossible de lire le fichier : ' + e.message;
+    }
+  };
+  reader.onerror = () => { $('bookImportErrorTop').textContent = 'Erreur de lecture du fichier.'; };
+  reader.readAsText(file, 'utf-8');
+}
+
+function openBookImportModal(bookId) {
+  viewBookId = bookId;
+  $('bookCsvFile').value = '';
+  $('bookImportErrorTop').textContent = '';
+  $('bookImportError').textContent = '';
+  $('bookCsvHeader').classList.add('hidden');
+  $('bookDropZone').querySelector('p').textContent = 'Cliquez ou déposez le fichier ici';
+  $('bookImportModal').classList.remove('hidden');
+}
+
+$('btnImportBook').addEventListener('click', () => openBookImportModal(viewBookId));
+$('btnCancelBookImport').addEventListener('click', () => $('bookImportModal').classList.add('hidden'));
+$('bookDropZone').addEventListener('click', () => $('bookCsvFile').click());
+['dragover', 'dragleave', 'drop'].forEach((ev) =>
+  $('bookDropZone').addEventListener(ev, (e) => e.preventDefault()));
+$('bookDropZone').addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) handleBookCsvFile(f);
+});
+$('bookCsvFile').addEventListener('change', () => {
+  const f = $('bookCsvFile').files[0];
+  if (f) handleBookCsvFile(f);
+});
+
+$('btnConfirmBookImport').addEventListener('click', async () => {
+  $('bookImportError').textContent = '';
+  const map = { firstName: '', lastName: '', entity: '', phone: '' };
+  document.querySelectorAll('#bookMappingBody select').forEach((s) => {
+    const val = s.value;
+    if (val) map[val] = s.dataset.col;
+  });
+  if (map.phone === '') {
+    $('bookImportError').textContent = 'Mappez une colonne sur « Téléphone » avant d\'importer.';
+    return;
+  }
+  try {
+    const res = await api(`/admin/api/address-books/${viewBookId}/import`, {
+      method: 'POST',
+      body: JSON.stringify({
+        map,
+        rows: bookCsvRows,
+        overwrite: $('bookOverwrite').checked
+      })
+    });
+    $('bookImportModal').classList.add('hidden');
+    loadContacts();
+    loadBooks();
+    const created = Number(res.created || 0);
+    const replaced = Number(res.replaced || 0);
+    const invalid = Array.isArray(res.invalid) ? res.invalid : [];
+    const lines = [];
+    lines.push('<p style="margin-top:12px">');
+    if (created > 0) lines.push(`<span class="badge ok">${created} numéro(s) importé(s)</span> `);
+    if (replaced > 0) lines.push(`<span class="badge pending">${replaced} contact(s) mis à jour</span> `);
+    if (Number(res.duplicates || 0) > 0) lines.push(`<span class="badge off">${res.duplicates} doublon(s) ignoré(s)</span> `);
+    if (invalid.length > 0) lines.push(`<span class="badge failed">${invalid.length} ligne(s) invalide(s)</span> `);
+    lines.push('</p>');
+    if (invalid.length > 0) {
+      lines.push('<p class="error" style="margin:12px 0 4px">Lignes invalides (non importées) :</p><ul class="import-invalid-list">');
+      invalid.slice(0, 20).forEach((i) => {
+        lines.push(`<li>Ligne ${i.row ?? '—'} : ${esc(i.phone || '(vide)')} — ${esc(i.error || 'invalide')}</li>`);
+      });
+      if (invalid.length > 20) lines.push(`<li>… et ${invalid.length - 20} autre(s)</li>`);
+      lines.push('</ul>');
+    }
+    $('bookImportResultTitle').textContent = (created + replaced) > 0 ? 'Import réussi' : 'Import terminé';
+    $('bookImportResultBody').innerHTML = lines.join('');
+    $('bookImportResultModal').classList.remove('hidden');
+  } catch (e) {
+    $('bookImportError').textContent = e.message;
+  }
+});
+
+$('btnCloseBookImportResult').addEventListener('click', () => $('bookImportResultModal').classList.add('hidden'));
+
 // ---------- Rafraîchissement automatique ----------
 loadKeys();
 setInterval(() => {
   if (currentTab === 'gateways') loadGateways();
   if (currentTab === 'messages') loadMessages();
   if (currentTab === 'logs') loadLogs();
+  if (currentTab === 'books' && $('bookContacts').classList.contains('hidden')) loadBooks();
 }, 10000);

@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/css/style.css?v=__APP_VERSION__">
 </head>
 <body class="center">
+  <button id="btnTheme" class="ghost" style="position:fixed;top:16px;right:16px">Mode clair</button>
   <form id="loginForm" class="card">
     <h1>Passerelle SMS</h1>
     <p class="muted">Console d'administration et d'envoi de SMS</p>
@@ -18,6 +19,19 @@
     <p id="error" class="error"></p>
   </form>
   <script>
+    (function initTheme() {
+      const btn = document.getElementById('btnTheme');
+      const apply = (light) => {
+        document.body.classList.toggle('light', light);
+        btn.textContent = light ? 'Mode sombre' : 'Mode clair';
+      };
+      apply(localStorage.getItem('sms-theme') === 'light');
+      btn.addEventListener('click', () => {
+        const light = !document.body.classList.contains('light');
+        localStorage.setItem('sms-theme', light ? 'light' : 'dark');
+        apply(light);
+      });
+    })();
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const res = await fetch('/admin/login', {

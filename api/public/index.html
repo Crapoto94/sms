@@ -13,10 +13,12 @@
       <button class="tab active" data-tab="keys">Clés API</button>
       <button class="tab" data-tab="gateways">Passerelles</button>
       <button class="tab" data-tab="messages">Messages</button>
+      <button class="tab" data-tab="books">Carnets</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="accounts">Comptes</button>
       <button class="tab" data-tab="groups">Groupes</button>
       <a id="btnDocs" class="ghost" href="/docs" target="_blank" rel="noopener">Docs API</a>
+      <button id="btnTheme" class="ghost">Mode clair</button>
       <button id="logout" class="ghost">Déconnexion</button>
       <span id="currentUser" class="muted"></span>
     </div>
@@ -63,14 +65,45 @@
           <option value="sent">Envoyé</option>
           <option value="delivered">Remis</option>
           <option value="failed">Échec</option>
+          <option value="cancelled">Annulé</option>
         </select>
       </div>
       <table>
         <thead>
-          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>
+          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th><th></th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
       </table>
+    </section>
+
+    <section id="books" class="panel hidden">
+      <div class="row">
+        <h2>Carnets d'adresses (tous les groupes)</h2>
+        <button id="btnNewBook">+ Nouveau carnet</button>
+      </div>
+      <p class="muted">L'administrateur voit ici tous les carnets de tous les groupes. Ouvrez un carnet pour gérer ses contacts (ajouter, modifier, supprimer, importer).</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Nom</th><th>Groupe</th><th>Contacts</th><th>Créé le</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="booksBody"></tbody>
+      </table>
+      <div id="bookContacts" class="hidden" style="margin-top:20px">
+        <div class="row">
+          <h2 id="bookContactsTitle"></h2>
+          <div>
+            <button id="btnAddContact" class="ghost">+ Ajouter un contact</button>
+            <button id="btnImportBook" class="ghost">Importer CSV</button>
+            <button id="btnBackBooks" class="ghost">← Retour</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Téléphone</th><th></th></tr>
+          </thead>
+          <tbody id="contactsBody"></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="logs" class="panel hidden">
@@ -198,6 +231,101 @@
     </div>
   </div>
 
+  <div id="bookModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="bookModalTitle">Nouveau carnet d'adresses</h3>
+      <div id="bookGroupWrap">
+        <label for="bookGroup">Groupe</label>
+        <select id="bookGroup"></select>
+      </div>
+      <label for="bookName">Nom du carnet</label>
+      <input id="bookName" placeholder="ex : Clients 2026">
+      <div class="row" style="margin-top:16px">
+        <button id="btnSaveBook">Créer</button>
+        <button id="btnCancelBook" class="ghost">Annuler</button>
+      </div>
+      <p id="bookModalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="contactModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="contactModalTitle">Nouveau contact</h3>
+      <label for="contactFirstName">Prénom</label>
+      <input id="contactFirstName" autocomplete="off">
+      <label for="contactLastName">Nom</label>
+      <input id="contactLastName" autocomplete="off">
+      <label for="contactEntity">Entité / société</label>
+      <input id="contactEntity" autocomplete="off">
+      <label for="contactPhone">Téléphone</label>
+      <input id="contactPhone" placeholder="ex : 06 12 34 56 78" autocomplete="off">
+      <div class="row" style="margin-top:16px">
+        <button id="btnSaveContact">Créer</button>
+        <button id="btnCancelContact" class="ghost">Annuler</button>
+      </div>
+      <p id="contactModalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="confirmTitle">Confirmer l'envoi</h3>
+      <div id="confirmBody"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnConfirmSend">Confirmer l'envoi</button>
+        <button id="btnCancelConfirm" class="ghost">Annuler</button>
+      </div>
+      <p id="confirmError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="smsHistoryModal" class="overlay hidden">
+    <div class="card wide">
+      <h3 id="smsHistoryTitle">SMS envoyés</h3>
+      <div id="smsHistoryBody" style="max-height:60vh;overflow:auto"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnCloseSmsHistory">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bookImportModal" class="overlay hidden">
+    <div class="card wide">
+      <h3>Importer des contacts (CSV)</h3>
+      <p class="muted">1re ligne = en-têtes de colonnes. Séparateur « ; », « , » ou tabulation.</p>
+      <input type="file" id="bookCsvFile" accept=".csv,.txt,text/csv,text/plain">
+      <div id="bookDropZone">
+        <p class="muted">Cliquez ou déposez le fichier ici</p>
+      </div>
+      <div id="bookCsvHeader" class="hidden">
+        <p style="margin-top:12px">Faites correspondre chaque colonne du fichier :</p>
+        <table class="mapping-table">
+          <thead>
+            <tr><th>Colonne du fichier</th><th>Correspond à</th></tr>
+          </thead>
+          <tbody id="bookMappingBody"></tbody>
+        </table>
+        <label><input type="checkbox" id="bookOverwrite" style="width:auto"> Écraser le contenu existant du carnet</label>
+        <div class="row" style="margin-top:16px">
+          <button id="btnConfirmBookImport">Importer</button>
+          <button id="btnCancelBookImport" class="ghost">Annuler</button>
+        </div>
+        <p id="bookImportError" class="error"></p>
+      </div>
+      <p id="bookImportErrorTop" class="error"></p>
+    </div>
+  </div>
+
+  <div id="bookImportResultModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="bookImportResultTitle">Import terminé</h3>
+      <div id="bookImportResultBody"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnCloseBookImportResult">Fermer</button>
+      </div>
+    </div>
+  </div>
+
   <div id="messageModal" class="overlay hidden">
     <div class="card">
       <h3>Envoyer un SMS (test)</h3>
@@ -214,8 +342,7 @@
     </div>
   </div>
 
-  <div id="importModal" class="overlay hidden">
-    <div class="card wide">
+  <div id="importModal" class="overlay hidden">    <div class="card wide">
       <h3>Importer un fichier CSV</h3>
       <p class="muted">1re colonne : numéro de téléphone · 2e colonne : message.<br>
       Séparateur « ; », « , » ou tabulation — une ligne = un SMS. Un doublon (numéro ET message identiques) n'est envoyé qu'une fois.<br>

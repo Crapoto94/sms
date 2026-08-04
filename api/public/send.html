@@ -13,6 +13,7 @@
       <button class="tab active" data-tab="composer">Envoyer un message</button>
       <button class="tab" data-tab="messages">Mes messages</button>
       <button class="tab" data-tab="books">Carnets d'adresses</button>
+      <button id="btnTheme" class="ghost">Mode clair</button>
       <button id="logout" class="ghost">Déconnexion</button>
       <span id="currentUser" class="muted"></span>
     </div>
@@ -71,11 +72,12 @@
           <option value="sent">Envoyé</option>
           <option value="delivered">Remis</option>
           <option value="failed">Échec</option>
+          <option value="cancelled">Annulé</option>
         </select>
       </div>
       <table>
         <thead>
-          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>
+          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th><th></th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
       </table>
@@ -92,6 +94,7 @@
         <div class="row">
           <h2 id="bookContactsTitle"></h2>
           <div>
+            <button id="btnAddContact" class="ghost">+ Ajouter un contact</button>
             <button id="btnImportBook" class="ghost">Importer CSV</button>
             <button id="btnBackBooks" class="ghost">← Retour</button>
           </div>
@@ -108,7 +111,7 @@
 
   <div id="bookModal" class="overlay hidden">
     <div class="card">
-      <h3>Nouveau carnet d'adresses</h3>
+      <h3 id="bookModalTitle">Nouveau carnet d'adresses</h3>
       <label for="bookName">Nom du carnet</label>
       <input id="bookName" placeholder="ex : Clients 2026">
       <div class="row" style="margin-top:16px">
@@ -116,6 +119,37 @@
         <button id="btnCancelBook" class="ghost">Annuler</button>
       </div>
       <p id="bookModalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="contactModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="contactModalTitle">Nouveau contact</h3>
+      <label for="contactFirstName">Prénom</label>
+      <input id="contactFirstName" autocomplete="off">
+      <label for="contactLastName">Nom</label>
+      <input id="contactLastName" autocomplete="off">
+      <label for="contactEntity">Entité / société</label>
+      <input id="contactEntity" autocomplete="off">
+      <label for="contactPhone">Téléphone</label>
+      <input id="contactPhone" placeholder="ex : 06 12 34 56 78" autocomplete="off">
+      <div class="row" style="margin-top:16px">
+        <button id="btnSaveContact">Créer</button>
+        <button id="btnCancelContact" class="ghost">Annuler</button>
+      </div>
+      <p id="contactModalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="confirmModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="confirmTitle">Confirmer l'envoi</h3>
+      <div id="confirmBody"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnConfirmSend">Confirmer l'envoi</button>
+        <button id="btnCancelConfirm" class="ghost">Annuler</button>
+      </div>
+      <p id="confirmError" class="error"></p>
     </div>
   </div>
 
@@ -143,6 +177,26 @@
         <p id="importResult" class="muted"></p>
       </div>
       <p id="importError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="importResultModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="importResultTitle">Import terminé</h3>
+      <div id="importResultBody"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnCloseImportResult">Fermer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="smsHistoryModal" class="overlay hidden">
+    <div class="card wide">
+      <h3 id="smsHistoryTitle">SMS envoyés</h3>
+      <div id="smsHistoryBody" style="max-height:60vh;overflow:auto"></div>
+      <div class="row" style="margin-top:16px">
+        <button id="btnCloseSmsHistory">Fermer</button>
+      </div>
     </div>
   </div>
 

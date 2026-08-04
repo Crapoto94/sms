@@ -149,6 +149,9 @@ if (!messageCols.includes('campaign_id')) {
 if (!messageCols.includes('scheduled_at')) {
   db.exec('ALTER TABLE messages ADD COLUMN scheduled_at TEXT');
 }
+if (!messageCols.includes('cancelled_at')) {
+  db.exec('ALTER TABLE messages ADD COLUMN cancelled_at TEXT');
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');

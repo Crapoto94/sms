@@ -19,6 +19,46 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c]));
 
+// ---------- Mode clair / sombre ----------
+function initTheme() {
+  const btn = $('btnTheme');
+  if (!btn) return;
+  const apply = (light) => {
+    document.body.classList.toggle('light', light);
+    btn.textContent = light ? 'Mode sombre' : 'Mode clair';
+  };
+  apply(localStorage.getItem('sms-theme') === 'light');
+  btn.addEventListener('click', () => {
+    const light = !document.body.classList.contains('light');
+    localStorage.setItem('sms-theme', light ? 'light' : 'dark');
+    apply(light);
+  });
+}
+initTheme();
+
+// ---------- Historique SMS d'un numéro / d'un carnet ----------
+async function openSmsHistory(title, url) {
+  const msgs = await api(url);
+  $('smsHistoryTitle').textContent = title + (msgs.length ? ` (${msgs.length})` : '');
+  $('smsHistoryBody').innerHTML = msgs.length
+    ? `<table>
+        <thead><tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr></thead>
+        <tbody>${msgs.map((m) => `<tr>
+          <td>${m.id}</td>
+          <td>${fmtDate(m.created_at)}</td>
+          <td class="code">${esc(m.recipient)}</td>
+          <td>${esc(m.body)}</td>
+          <td>${stateOf(m.status)}</td>
+          <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+          <td class="muted">${esc(m.error || '')}</td>
+        </tr>`).join('')}</tbody>
+      </table>`
+    : '<p class="muted">Aucun SMS envoyé vers ce numéro.</p>';
+  $('smsHistoryModal').classList.remove('hidden');
+}
+
+$('btnCloseSmsHistory').addEventListener('click', () => $('smsHistoryModal').classList.add('hidden'));
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -192,7 +232,41 @@ function smsSegments(len, s) {
   return len <= (GSM7 === 153 ? 160 : 70) ? 1 : Math.ceil(len / GSM7);
 }
 
-$('btnSendSingle').addEventListener('click', async () => {
+// ---------- Confirmation avant envoi ----------
+let pendingSend = null;
+
+function scheduleLabel() {
+  const v = $('scheduleAt').value;
+  return v ? `le ${fmtDate(new Date(v).toISOString())}` : 'immédiatement';
+}
+
+function askConfirm(title, bodyHtml, onConfirm) {
+  $('confirmTitle').textContent = title;
+  $('confirmBody').innerHTML = bodyHtml;
+  $('confirmError').textContent = '';
+  pendingSend = onConfirm;
+  $('confirmModal').classList.remove('hidden');
+}
+
+$('btnCancelConfirm').addEventListener('click', () => {
+  pendingSend = null;
+  $('confirmModal').classList.add('hidden');
+});
+
+$('btnConfirmSend').addEventListener('click', async () => {
+  const fn = pendingSend;
+  if (!fn) return;
+  $('confirmError').textContent = '';
+  try {
+    await fn();
+    pendingSend = null;
+    $('confirmModal').classList.add('hidden');
+  } catch (e) {
+    $('confirmError').textContent = e.message;
+  }
+});
+
+$('btnSendSingle').addEventListener('click', () => {
   $('composerError').textContent = '';
   const recipient = $('smsRecipient').value.trim().replace(/[\s.\-()]/g, '');
   const body = $('smsBody').value.trim();
@@ -204,24 +278,26 @@ $('btnSendSingle').addEventListener('click', async () => {
     $('composerError').textContent = 'Le message est vide.';
     return;
   }
-  try {
+  askConfirm('Confirmer l\'envoi du SMS', `
+    <p><b>Destinataire :</b> <span class="code">${esc(recipient)}</span></p>
+    <p><b>Message :</b><br>${esc(body)}</p>
+    <p class="muted">Envoi ${scheduleLabel()}.</p>
+  `, async () => {
     const res = await api('/admin/api/messages', {
       method: 'POST',
       body: JSON.stringify({ recipient, message: body, scheduledAt: scheduledIso() })
     });
     $('composerSummary').classList.remove('hidden');
     $('composerSummary').textContent = res.status === 'scheduled'
-      ? `Message programmé (${fmtDate(res.createdAt)}).`
-      : 'Message envoyé.';
+      ? `Message programmé : pris en compte, envoi prévu ${scheduleLabel()}.`
+      : 'Message pris en compte, envoi immédiat.';
     $('smsRecipient').value = '';
     $('smsBody').value = '';
     updateComposerCount();
-  } catch (e) {
-    $('composerError').textContent = e.message;
-  }
+  });
 });
 
-$('btnSendToSelected').addEventListener('click', async () => {
+$('btnSendToSelected').addEventListener('click', () => {
   $('composerError').textContent = '';
   const checks = Array.from(document.querySelectorAll('#recipientList input:checked'));
   const body = $('smsBody').value.trim();
@@ -238,30 +314,41 @@ $('btnSendToSelected').addEventListener('click', async () => {
     return;
   }
   const contactIds = checks.map((c) => Number(c.dataset.id));
-  try {
+  const book = books.find((b) => b.id === composerBookId);
+  askConfirm(`Confirmer l'envoi au carnet (${checks.length} destinataire${checks.length > 1 ? 's' : ''})`, `
+    <p><b>Carnet :</b> ${esc(book ? book.name : '')}</p>
+    <p><b>Destinataires :</b> ${checks.length}</p>
+    <p><b>Message :</b><br>${esc(body)}</p>
+    <p class="muted">Envoi ${scheduleLabel()}.</p>
+  `, async () => {
     const res = await api('/admin/api/campaigns', {
       method: 'POST',
       body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso() })
     });
     $('composerSummary').classList.remove('hidden');
     $('composerSummary').textContent = res.status === 'scheduled'
-      ? `${res.count} SMS programmés pour le carnet « ${res.bookName} ».`
-      : `${res.count} SMS envoyé(s) au carnet « ${res.bookName} ».`;
+      ? `${res.count} SMS programmés pour le carnet « ${res.bookName} » : pris en compte, envoi prévu ${scheduleLabel()}.`
+      : `${res.count} SMS pris en compte pour le carnet « ${res.bookName} », envoi immédiat.`;
     checks.forEach((c) => { c.checked = false; });
     selectedContacts = new Set();
     updateComposerCount();
-  } catch (e) {
-    $('composerError').textContent = e.message;
-  }
+  });
 });
 
 // ---------- Messages ----------
+const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
 const MESSAGE_HEADERS = '<tr><th>Date</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>';
 
 function stateOf(s) {
   return badge({
-    scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec'
+    scheduled: 'Programmé', pending: 'En attente', sending: 'En cours', sent: 'Envoyé', delivered: 'Remis', failed: 'Échec', cancelled: 'Annulé'
   }[s] || s, s);
+}
+
+function cancelButton(m) {
+  return CANCELABLE.includes(m.status)
+    ? `<button data-cancelmsg="${m.id}" class="ghost">Annuler</button>`
+    : '';
 }
 
 function messageRow(m) {
@@ -273,6 +360,7 @@ function messageRow(m) {
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td class="muted">${esc(m.error || '')}</td>
+    <td>${cancelButton(m)}</td>
   </tr>`;
 }
 
@@ -305,15 +393,17 @@ function renderMessageList(messages) {
     for (const m of c.rows) byStatus[m.status] = (byStatus[m.status] || 0) + 1;
     const delivered = byStatus.delivered || 0;
     const failed = byStatus.failed || 0;
-    const inFlight = (byStatus.pending || 0) + (byStatus.sending || 0);
+    const inFlight = (byStatus.pending || 0) + (byStatus.sending || 0) + (byStatus.scheduled || 0);
+    const cancelable = c.rows.some((m) => CANCELABLE.includes(m.status));
     const first = c.rows[0];
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push(`<tr class="campaign-row" data-campaign="${c.id}">
       <td colspan="7">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+      <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>`);
     html.push(`<tr class="campaign-detail hidden" data-campaign="${c.id}">
-      <td colspan="7">
+      <td colspan="8">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
@@ -327,11 +417,37 @@ function renderMessageList(messages) {
 
 function bindCampaignToggles() {
   document.querySelectorAll('.campaign-row').forEach((row) => {
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
       const id = row.dataset.campaign;
       const detail = document.querySelector(`.campaign-detail[data-campaign="${id}"]`);
       if (detail) detail.classList.toggle('hidden');
     });
+  });
+}
+
+async function cancelMessage(id) {
+  try {
+    await api(`/admin/api/messages/${id}/cancel`, { method: 'POST' });
+    loadMessages();
+  } catch (e) { alert(e.message); }
+}
+
+async function cancelCampaign(id) {
+  if (!confirm('Annuler tous les envois pas encore terminés de cette campagne ?')) return;
+  try {
+    const res = await api(`/admin/api/campaigns/${id}/cancel`, { method: 'POST' });
+    alert(`${res.cancelled} message(s) annulé(s).`);
+    loadMessages();
+  } catch (e) { alert(e.message); }
+}
+
+function bindMessageActions() {
+  document.querySelectorAll('[data-cancelmsg]').forEach((b) => {
+    b.addEventListener('click', () => cancelMessage(Number(b.dataset.cancelmsg)));
+  });
+  document.querySelectorAll('[data-cancelcamp]').forEach((b) => {
+    b.addEventListener('click', () => cancelCampaign(Number(b.dataset.cancelcamp)));
   });
 }
 
@@ -340,8 +456,9 @@ async function loadMessages() {
   const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
-    : '<tr><td colspan="7" class="muted">Aucun message dans votre groupe.</td></tr>';
+    : '<tr><td colspan="8" class="muted">Aucun message dans votre groupe.</td></tr>';
   bindCampaignToggles();
+  bindMessageActions();
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
@@ -352,16 +469,38 @@ let viewBookId = null;
 async function loadBooks() {
   books = await api('/admin/api/address-books');
   $('booksList').innerHTML = books.length
-    ? books.map((b) => `<div class="row" style="border:1px solid #334155;border-radius:8px;padding:12px;margin-bottom:10px">
+    ? books.map((b) => `<div class="book-card">
         <div>
           <strong>${esc(b.name)}</strong>
           <span class="muted"> · ${b.contact_count} contact(s)${b.group_name ? ` · ${esc(b.group_name)}` : ''}</span>
+          <span data-bookhistory="${b.id}" class="sms-pastille${b.message_count ? '' : ' empty'}" title="Voir les SMS envoyés">${b.message_count || 0}</span>
         </div>
-        <button data-openbook="${b.id}" class="ghost">Ouvrir</button>
+        <div>
+          <button data-renamebook="${b.id}" data-name="${esc(b.name)}" class="ghost">Renommer</button>
+          <button data-delbook="${b.id}" class="ghost">Supprimer</button>
+          <button data-openbook="${b.id}" class="ghost">Ouvrir</button>
+        </div>
       </div>`).join('')
     : '<p class="muted">Aucun carnet d\'adresses. Créez-en un pour commencer.</p>';
   document.querySelectorAll('[data-openbook]').forEach((b) => {
     b.addEventListener('click', () => openBook(Number(b.dataset.openbook)));
+  });
+  document.querySelectorAll('[data-renamebook]').forEach((b) => {
+    b.addEventListener('click', () => openBookModal(Number(b.dataset.renamebook), b.dataset.name));
+  });
+  document.querySelectorAll('[data-delbook]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer ce carnet et tous ses contacts ?')) return;
+      await api(`/admin/api/address-books/${b.dataset.delbook}`, { method: 'DELETE' });
+      loadBooks();
+      loadComposer();
+    });
+  });
+  document.querySelectorAll('[data-bookhistory]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const book = books.find((x) => x.id === Number(b.dataset.bookhistory));
+      openSmsHistory(`SMS envoyés — ${book ? book.name : ''}`, `/admin/api/messages?bookId=${b.dataset.bookhistory}&limit=200`);
+    });
   });
 }
 
@@ -376,20 +515,37 @@ async function openBook(bookId) {
 
 async function loadContacts() {
   const rows = await api(`/admin/api/address-books/${viewBookId}/contacts`);
+  const phones = rows.map((c) => c.phone);
+  let counts = {};
+  try {
+    const r = await api(`/admin/api/messages/counts?recipients=${encodeURIComponent(phones.join(','))}`);
+    counts = r.counts || {};
+  } catch { /* pastilles vides si le comptage échoue */ }
   $('contactsBody').innerHTML = rows.length
     ? rows.map((c) => `<tr>
         <td>${esc(c.first_name || '')}</td>
         <td>${esc(c.last_name || '')}</td>
         <td>${esc(c.entity || '')}</td>
-        <td class="code">${esc(c.phone)}</td>
-        <td><button data-delcontact="${c.id}" class="ghost">Supprimer</button></td>
+        <td class="code">${esc(c.phone)} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
+        <td>
+          <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+          <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
+        </td>
       </tr>`).join('')
     : '<tr><td colspan="5" class="muted">Aucun contact.</td></tr>';
+  document.querySelectorAll('[data-editcontact]').forEach((b) => {
+    b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
+  });
   document.querySelectorAll('[data-delcontact]').forEach((b) => {
     b.addEventListener('click', async () => {
       if (!confirm('Supprimer ce contact ?')) return;
       await api(`/admin/api/contacts/${b.dataset.delcontact}`, { method: 'DELETE' });
       loadContacts();
+    });
+  });
+  document.querySelectorAll('[data-recipient]').forEach((b) => {
+    b.addEventListener('click', () => {
+      openSmsHistory(`SMS envoyés vers ${b.dataset.recipient}`, `/admin/api/messages?recipient=${encodeURIComponent(b.dataset.recipient)}&limit=200`);
     });
   });
 }
@@ -400,26 +556,87 @@ $('btnBackBooks').addEventListener('click', () => {
   loadBooks();
 });
 
-$('btnNewBook').addEventListener('click', () => {
-  $('bookName').value = '';
+let pendingBookId = null;
+let pendingContactId = null;
+
+function openBookModal(id = null, name = '') {
+  pendingBookId = id;
+  $('bookName').value = name;
   $('bookModalError').textContent = '';
+  $('bookModalTitle').textContent = id === null ? 'Nouveau carnet d\'adresses' : 'Renommer le carnet';
+  $('btnSaveBook').textContent = id === null ? 'Créer' : 'Enregistrer';
   $('bookModal').classList.remove('hidden');
   $('bookName').focus();
-});
+}
+
+$('btnNewBook').addEventListener('click', () => openBookModal(null));
 $('btnCancelBook').addEventListener('click', () => $('bookModal').classList.add('hidden'));
 
 $('btnSaveBook').addEventListener('click', async () => {
   $('bookModalError').textContent = '';
   try {
-    await api('/admin/api/address-books', {
-      method: 'POST',
-      body: JSON.stringify({ name: $('bookName').value })
-    });
+    if (pendingBookId === null) {
+      await api('/admin/api/address-books', {
+        method: 'POST',
+        body: JSON.stringify({ name: $('bookName').value })
+      });
+    } else {
+      await api(`/admin/api/address-books/${pendingBookId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: $('bookName').value })
+      });
+    }
     $('bookModal').classList.add('hidden');
     loadBooks();
     loadComposer();
   } catch (e) {
     $('bookModalError').textContent = e.message;
+  }
+});
+
+// ---------- Ajout / édition de contact ----------
+function openContactModal(id = null, data = null) {
+  pendingContactId = id;
+  $('contactFirstName').value = data ? data.cname : '';
+  $('contactLastName').value = data ? data.clast : '';
+  $('contactEntity').value = data ? data.centity : '';
+  $('contactPhone').value = data ? data.cphone : '';
+  $('contactModalError').textContent = '';
+  $('contactModalTitle').textContent = id === null ? 'Nouveau contact' : 'Modifier le contact';
+  $('btnSaveContact').textContent = id === null ? 'Créer' : 'Enregistrer';
+  $('contactModal').classList.remove('hidden');
+  $('contactFirstName').focus();
+}
+
+$('btnAddContact').addEventListener('click', () => openContactModal(null));
+$('btnCancelContact').addEventListener('click', () => $('contactModal').classList.add('hidden'));
+
+$('btnSaveContact').addEventListener('click', async () => {
+  $('contactModalError').textContent = '';
+  const body = {
+    firstName: $('contactFirstName').value,
+    lastName: $('contactLastName').value,
+    entity: $('contactEntity').value,
+    phone: $('contactPhone').value
+  };
+  try {
+    if (pendingContactId === null) {
+      await api(`/admin/api/address-books/${viewBookId}/contacts`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      });
+    } else {
+      await api(`/admin/api/contacts/${pendingContactId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body)
+      });
+    }
+    $('contactModal').classList.add('hidden');
+    loadContacts();
+    loadBooks();
+    loadComposer();
+  } catch (e) {
+    $('contactModalError').textContent = e.message;
   }
 });
 
@@ -535,16 +752,45 @@ $('btnConfirmImport').addEventListener('click', async () => {
       })
     });
     $('csvHeader').classList.add('hidden');
-    const overwritten = res.replaced > 0 ? ` · ${res.replaced} contact(s) remplacé(s)` : '';
-    $('importResult').textContent =
-      `Import terminé : ${res.created} contact(s) ajouté(s)${overwritten} · ${res.duplicates} doublon(s) ignoré(s) · ${res.invalid.length} ligne(s) invalide(s).`;
     loadContacts();
     loadBooks();
     loadComposer();
+    showImportResult(res);
   } catch (e) {
     $('importError').textContent = e.message;
   }
 });
+
+function showImportResult(res) {
+  const created = Number(res.created || 0);
+  const replaced = Number(res.replaced || 0);
+  const duplicates = Number(res.duplicates || 0);
+  const invalid = Array.isArray(res.invalid) ? res.invalid : [];
+  const lines = [];
+  if (created === 0 && replaced === 0 && invalid.length === 0) {
+    lines.push('<p class="muted">Aucun changement : tous les numéros étaient déjà présents ou le fichier était vide.</p>');
+  } else {
+    lines.push('<p style="margin-top:12px">');
+    if (created > 0) lines.push(`<span class="badge ok">${created} numéro(s) importé(s)</span> `);
+    if (replaced > 0) lines.push(`<span class="badge pending">${replaced} contact(s) mis à jour</span> `);
+    if (duplicates > 0) lines.push(`<span class="badge off">${duplicates} doublon(s) ignoré(s)</span> `);
+    if (invalid.length > 0) lines.push(`<span class="badge failed">${invalid.length} ligne(s) invalide(s)</span> `);
+    lines.push('</p>');
+  }
+  if (invalid.length > 0) {
+    lines.push('<p class="error" style="margin:12px 0 4px">Lignes invalides (non importées) :</p><ul class="import-invalid-list">');
+    invalid.slice(0, 20).forEach((i) => {
+      lines.push(`<li>Ligne ${i.row ?? '—'} : ${esc(i.phone || '(vide)')} — ${esc(i.error || 'invalide')}</li>`);
+    });
+    if (invalid.length > 20) lines.push(`<li>… et ${invalid.length - 20} autre(s)</li>`);
+    lines.push('</ul>');
+  }
+  $('importResultTitle').textContent = (created + replaced) > 0 ? 'Import réussi' : 'Import terminé';
+  $('importResultBody').innerHTML = lines.join('');
+  $('importResultModal').classList.remove('hidden');
+}
+
+$('btnCloseImportResult').addEventListener('click', () => $('importResultModal').classList.add('hidden'));
 
 // ---------- Rafraîchissement automatique ----------
 loadSession().then(() => showTab('composer'));
