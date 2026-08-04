@@ -351,11 +351,18 @@ function cancelButton(m) {
     : '';
 }
 
+let recipientCounts = {};
+
+function recipientPastille(phone) {
+  const n = Number(recipientCounts[phone] || 0);
+  return `<span data-recipient="${esc(phone)}" class="sms-pastille${n ? '' : ' empty'}" title="Voir les SMS envoyés à ${esc(phone)}">${n}</span>`;
+}
+
 function messageRow(m) {
   return `<tr>
     <td>${m.id}</td>
     <td>${fmtDate(m.created_at)}</td>
-    <td class="code">${esc(m.recipient)}</td>
+    <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${esc(m.body)}</td>
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
@@ -367,7 +374,7 @@ function messageRow(m) {
 function campaignDetailRow(m) {
   return `<tr>
     <td>${fmtDate(m.created_at)}</td>
-    <td class="code">${esc(m.recipient)}</td>
+    <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td class="muted">${esc(m.error || '')}</td>
@@ -449,11 +456,24 @@ function bindMessageActions() {
   document.querySelectorAll('[data-cancelcamp]').forEach((b) => {
     b.addEventListener('click', () => cancelCampaign(Number(b.dataset.cancelcamp)));
   });
+  document.querySelectorAll('[data-recipient]').forEach((b) => {
+    b.addEventListener('click', () => {
+      openSmsHistory(`SMS envoyés vers ${b.dataset.recipient}`, `/admin/api/messages?recipient=${encodeURIComponent(b.dataset.recipient)}&limit=200`);
+    });
+  });
 }
 
 async function loadMessages() {
   const status = $('statusFilter').value;
   const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
+  recipientCounts = {};
+  const phones = [...new Set(messages.map((m) => m.recipient))];
+  if (phones.length) {
+    try {
+      const r = await api(`/admin/api/messages/counts?recipients=${encodeURIComponent(phones.join(','))}`);
+      recipientCounts = r.counts || {};
+    } catch { /* pastilles vides si le comptage échoue */ }
+  }
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
     : '<tr><td colspan="8" class="muted">Aucun message dans votre groupe.</td></tr>';
