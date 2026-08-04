@@ -82,6 +82,50 @@ CREATE TABLE IF NOT EXISTS claim_state (
 
 INSERT INTO claim_state (id, round_started, claimed)
 SELECT 1, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM claim_state WHERE id = 1);
+
+CREATE TABLE IF NOT EXISTS groups (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT    NOT NULL UNIQUE,
+  created_at TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS address_books (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id   INTEGER NOT NULL,
+  name       TEXT    NOT NULL,
+  created_at TEXT    NOT NULL,
+  UNIQUE (group_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_address_books_group ON address_books(group_id);
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  address_book_id INTEGER NOT NULL,
+  first_name      TEXT,
+  last_name       TEXT,
+  entity          TEXT,
+  phone           TEXT    NOT NULL,
+  created_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_contacts_book ON contacts(address_book_id);
 `);
+
+// Migrations : colonnes ajoutées sur des bases existantes (CREATE TABLE
+// IF NOT EXISTS ne modifie pas les tables déjà présentes).
+const accountCols = db.prepare('PRAGMA table_info(accounts)').all().map((c) => c.name);
+if (!accountCols.includes('role')) {
+  db.exec("ALTER TABLE accounts ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+}
+if (!accountCols.includes('group_id')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN group_id INTEGER');
+}
+const messageCols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
+if (!messageCols.includes('group_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN group_id INTEGER');
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');
 
 module.exports = db;

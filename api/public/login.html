@@ -9,7 +9,7 @@
 <body class="center">
   <form id="loginForm" class="card">
     <h1>Passerelle SMS</h1>
-    <p class="muted">Console d'administration</p>
+    <p class="muted">Console d'administration et d'envoi de SMS</p>
     <label for="login">Identifiant <span class="muted">(laisser vide pour le compte admin)</span></label>
     <input id="login" type="text" autocomplete="username" autofocus>
     <label for="password">Mot de passe</label>
@@ -30,7 +30,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        location.href = '/';
+        location.href = data.isAdmin ? '/' : '/send.html';
       } else {
         document.getElementById('error').textContent = data.error || 'Connexion impossible';
       }

@@ -15,6 +15,7 @@
       <button class="tab" data-tab="messages">Messages</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="accounts">Comptes</button>
+      <button class="tab" data-tab="groups">Groupes</button>
       <a id="btnDocs" class="ghost" href="/docs" target="_blank" rel="noopener">Docs API</a>
       <button id="logout" class="ghost">Déconnexion</button>
       <span id="currentUser" class="muted"></span>
@@ -65,7 +66,7 @@
       </div>
       <table>
         <thead>
-          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Erreur</th></tr>
+          <tr><th>ID</th><th>Date</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
       </table>
@@ -102,9 +103,22 @@
       <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe. Laissez l'identifiant vide sur l'écran de connexion pour utiliser le compte admin (mot de passe défini dans docker-compose, <code>ADMIN_PASSWORD</code>).</p>
       <table>
         <thead>
-          <tr><th>ID</th><th>Identifiant</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
+          <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
         </thead>
         <tbody id="accountsBody"></tbody>
+      </table>
+    </section>
+    <section id="groups" class="panel hidden">
+      <div class="row">
+        <h2>Groupes</h2>
+        <button id="btnNewGroup">+ Nouveau groupe</button>
+      </div>
+      <p class="muted">Les membres d'un groupe partagent les mêmes carnets d'adresses et ne voient que les messages envoyés depuis leur groupe. Chaque compte non-admin doit être rattaché à un groupe.</p>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Nom</th><th>Membres</th><th>Messages</th><th>Créé le</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="groupsBody"></tbody>
       </table>
     </section>
   </main>
@@ -138,11 +152,33 @@
       </div>
       <label for="accountPassword">Mot de passe <span class="muted">(8 caractères minimum)</span></label>
       <input id="accountPassword" type="password" autocomplete="new-password">
+      <label for="accountRole">Rôle</label>
+      <select id="accountRole">
+        <option value="user">Utilisateur</option>
+        <option value="admin">Administrateur</option>
+      </select>
+      <label for="accountGroup">Groupe <span class="muted">(utilisateurs uniquement)</span></label>
+      <select id="accountGroup">
+        <option value="">Aucun</option>
+      </select>
       <div class="row" style="margin-top:16px">
         <button id="btnSaveAccount">Créer</button>
         <button id="btnCancelAccount" class="ghost">Annuler</button>
       </div>
       <p id="accountModalError" class="error"></p>
+    </div>
+  </div>
+
+  <div id="groupModal" class="overlay hidden">
+    <div class="card">
+      <h3 id="groupModalTitle">Nouveau groupe</h3>
+      <label for="groupName">Nom</label>
+      <input id="groupName" placeholder="ex : Direction, Commercial…">
+      <div class="row" style="margin-top:16px">
+        <button id="btnSaveGroup">Créer</button>
+        <button id="btnCancelGroup" class="ghost">Annuler</button>
+      </div>
+      <p id="groupModalError" class="error"></p>
     </div>
   </div>
 

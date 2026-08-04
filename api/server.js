@@ -9,7 +9,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.20';
+const APP_VERSION = process.env.APP_VERSION || '1.21';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -72,7 +72,7 @@ function logAuthAttempt(req, keyId, reason) {
 }
 
 // ---------- Sessions de l'interface web ----------
-const sessions = new Map(); // sid -> { exp, accountId|null, login, isAdmin }
+const sessions = new Map(); // sid -> { exp, accountId|null, login, role, groupId|null, isAdmin }
 
 function parseCookies(req) {
   const out = {};
@@ -308,6 +308,13 @@ function requireSession(req, res, next) {
   next();
 }
 
+function requireAdmin(req, res, next) {
+  if (req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Accès réservé à l’administrateur' });
+  }
+  next();
+}
+
 const webApp = express();
 webApp.use(express.json());
 webApp.use((_req, res, next) => {
@@ -321,14 +328,15 @@ webApp.post('/admin/login', (req, res) => {
 
   let accountId = null;
   let sessionLogin;
-  let isAdmin = false;
+  let role = 'user';
+  let groupId = null;
 
   if (login === '') {
     if (password !== ADMIN_PASSWORD) {
       logAuthAttempt(req, null, '401 Mot de passe admin incorrect');
       return res.status(401).json({ error: 'Mot de passe incorrect' });
     }
-    isAdmin = true;
+    role = 'admin';
     sessionLogin = 'admin';
   } else {
     const row = db.prepare('SELECT * FROM accounts WHERE login = ?').get(login);
@@ -338,19 +346,38 @@ webApp.post('/admin/login', (req, res) => {
     }
     accountId = row.id;
     sessionLogin = row.login;
+    role = row.role === 'admin' ? 'admin' : 'user';
+    groupId = row.group_id || null;
   }
 
   const sid = newToken();
-  sessions.set(sid, { exp: Date.now() + SESSION_TTL_MS, accountId, login: sessionLogin, isAdmin });
+  sessions.set(sid, {
+    exp: Date.now() + SESSION_TTL_MS,
+    accountId,
+    login: sessionLogin,
+    role,
+    groupId,
+    isAdmin: role === 'admin'
+  });
   res.setHeader(
     'Set-Cookie',
     `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
   );
-  res.json({ ok: true, login: sessionLogin, isAdmin });
+  res.json({ ok: true, login: sessionLogin, isAdmin: role === 'admin', role, groupId });
 });
 
 webApp.get('/admin/api/session', requireSession, (req, res) => {
-  res.json({ login: req.session.login, isAdmin: req.session.isAdmin, version: APP_VERSION });
+  const g = req.session.groupId
+    ? db.prepare('SELECT name FROM groups WHERE id = ?').get(req.session.groupId)
+    : null;
+  res.json({
+    login: req.session.login,
+    isAdmin: req.session.isAdmin,
+    role: req.session.role,
+    groupId: req.session.groupId,
+    groupName: g ? g.name : null,
+    version: APP_VERSION
+  });
 });
 
 webApp.post('/admin/logout', (req, res) => {
@@ -379,14 +406,23 @@ webApp.use('/css', express.static(path.join(PUBLIC_DIR, 'css')));
 webApp.use('/js', express.static(path.join(PUBLIC_DIR, 'js')));
 
 webApp.get(['/', '/index.html'], (req, res) => {
-  if (!sessionValid(req)) return res.redirect('/login.html');
+  const s = sessionValid(req);
+  if (!s) return res.redirect('/login.html');
+  if (s.role !== 'admin') return res.redirect('/send.html');
   renderHtml('index.html')(req, res);
+});
+
+webApp.get('/send.html', (req, res) => {
+  const s = sessionValid(req);
+  if (!s) return res.redirect('/login.html');
+  if (s.role === 'admin') return res.redirect('/');
+  renderHtml('send.html')(req, res);
 });
 
 // ---------- API d'administration (protégée par session) ----------
 webApp.use('/admin/api', requireSession);
 
-webApp.get('/admin/api/keys', (_req, res) => {
+webApp.get('/admin/api/keys', requireAdmin, (_req, res) => {
   const keys = db.prepare(
     `SELECT id, label, type, device_id, created_at, expires_at, revoked, last_used_at, last_seen_at
      FROM keys ORDER BY id DESC`
@@ -394,7 +430,7 @@ webApp.get('/admin/api/keys', (_req, res) => {
   res.json(keys.map((k) => ({ ...k, expired: isExpired(k) })));
 });
 
-webApp.post('/admin/api/keys', (req, res) => {
+webApp.post('/admin/api/keys', requireAdmin, (req, res) => {
   const label = String(req.body.label || '').trim();
   const type = String(req.body.type || '');
   const rawDays = req.body.days;
@@ -426,19 +462,19 @@ webApp.post('/admin/api/keys', (req, res) => {
   });
 });
 
-webApp.post('/admin/api/keys/:id/revoke', (req, res) => {
+webApp.post('/admin/api/keys/:id/revoke', requireAdmin, (req, res) => {
   const info = db.prepare('UPDATE keys SET revoked = 1 WHERE id = ?').run(Number(req.params.id));
   if (info.changes === 0) return res.status(404).json({ error: 'Clé introuvable' });
   res.json({ ok: true });
 });
 
-webApp.delete('/admin/api/keys/:id', (req, res) => {
+webApp.delete('/admin/api/keys/:id', requireAdmin, (req, res) => {
   const info = db.prepare('DELETE FROM keys WHERE id = ?').run(Number(req.params.id));
   if (info.changes === 0) return res.status(404).json({ error: 'Clé introuvable' });
   res.json({ ok: true });
 });
 
-webApp.get('/admin/api/gateways', (_req, res) => {
+webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
   const gateways = db.prepare(`
     SELECT
       k.id, k.label, k.device_id, k.last_seen_at, k.last_used_at,
@@ -454,11 +490,12 @@ webApp.get('/admin/api/gateways', (_req, res) => {
   res.json(gateways);
 });
 
-webApp.get('/admin/api/messages/export', (req, res) => {
+webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const status = String(req.query.status || '');
   const base = `
-    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id
+    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name
     FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+    LEFT JOIN groups g ON g.id = m.group_id
   `;
   const rows = status
     ? db.prepare(`${base} WHERE m.status = ? ORDER BY m.id ASC`).all(status)
@@ -494,12 +531,23 @@ webApp.get('/admin/api/messages', (req, res) => {
   const status = String(req.query.status || '');
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
   const base = `
-    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id
+    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name
     FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+    LEFT JOIN groups g ON g.id = m.group_id
   `;
-  const rows = status
-    ? db.prepare(`${base} WHERE m.status = ? ORDER BY m.id DESC LIMIT ?`).all(status, limit)
-    : db.prepare(`${base} ORDER BY m.id DESC LIMIT ?`).all(limit);
+  const cond = [];
+  const params = [];
+  if (status) {
+    cond.push('m.status = ?');
+    params.push(status);
+  }
+  if (req.session.role !== 'admin') {
+    cond.push('m.group_id = ?');
+    params.push(req.session.groupId);
+  }
+  const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
+  const rows = db.prepare(`${base} ${where} ORDER BY m.id DESC LIMIT ?`)
+    .all(...params, limit);
   res.json(rows);
 });
 
@@ -513,10 +561,11 @@ webApp.post('/admin/api/messages', (req, res) => {
   if (message.length > MAX_MESSAGE_LENGTH) {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
+  const groupId = req.session.role === 'admin' ? (Number(req.body.groupId) || null) : req.session.groupId;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at) VALUES (?, ?, ?, ?)'
-  ).run(recipient, message, 'pending', createdAt);
+    'INSERT INTO messages (recipient, body, status, created_at, group_id) VALUES (?, ?, ?, ?, ?)'
+  ).run(recipient, message, 'pending', createdAt, groupId);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -526,7 +575,7 @@ webApp.post('/admin/api/messages', (req, res) => {
   });
 });
 
-webApp.post('/admin/api/messages/import', (req, res) => {
+webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
   const input = Array.isArray(req.body.messages) ? req.body.messages : [];
   const MAX_IMPORT = 5000;
   if (input.length === 0) return res.status(400).json({ error: 'Aucune ligne à importer' });
@@ -556,16 +605,17 @@ webApp.post('/admin/api/messages/import', (req, res) => {
     seen.add(key);
     toInsert.push([recipient, message]);
   }
+  const groupId = Number(req.body.groupId) || null;
   const createdAt = isoNow();
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, created_at) VALUES (?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, created_at, group_id) VALUES (?, ?, ?, ?, ?)'
   );
   let created = 0;
   if (toInsert.length) {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        insert.run(recipient, message, 'pending', createdAt);
+        insert.run(recipient, message, 'pending', createdAt, groupId);
         created++;
       }
       db.exec('COMMIT');
@@ -577,7 +627,7 @@ webApp.post('/admin/api/messages/import', (req, res) => {
   res.status(201).json({ rows: input.length, duplicates, invalid, created });
 });
 
-webApp.get('/admin/api/logs', (req, res) => {
+webApp.get('/admin/api/logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
   const rows = db.prepare(`
     SELECT l.id, l.key_id, l.device_id, l.reports, l.claimed, l.created_at, k.label AS gateway_label
@@ -587,7 +637,7 @@ webApp.get('/admin/api/logs', (req, res) => {
   res.json(rows);
 });
 
-webApp.get('/admin/api/auth-logs', (req, res) => {
+webApp.get('/admin/api/auth-logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
   const rows = db.prepare(`
     SELECT a.id, a.key_id, a.ip, a.reason, a.created_at, k.label AS gateway_label
@@ -598,18 +648,23 @@ webApp.get('/admin/api/auth-logs', (req, res) => {
 });
 
 // ---------- Gestion des comptes (protégée par session) ----------
-const accountFields = 'id, login, disabled, created_at';
+const accountFields = `
+  a.id, a.login, a.role, a.group_id, a.disabled, a.created_at,
+  g.name AS group_name
+`;
 
-webApp.get('/admin/api/accounts', (_req, res) => {
+webApp.get('/admin/api/accounts', requireAdmin, (_req, res) => {
   const rows = db.prepare(
-    `SELECT ${accountFields} FROM accounts ORDER BY id ASC`
+    `SELECT ${accountFields} FROM accounts a LEFT JOIN groups g ON g.id = a.group_id ORDER BY a.id ASC`
   ).all();
   res.json(rows);
 });
 
-webApp.post('/admin/api/accounts', (req, res) => {
+webApp.post('/admin/api/accounts', requireAdmin, (req, res) => {
   const login = String((req.body || {}).login || '').trim();
   const password = String((req.body || {}).password || '');
+  const role = (req.body || {}).role === 'admin' ? 'admin' : 'user';
+  const groupId = Number(req.body.groupId) || null;
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(login)) {
     return res.status(400).json({ error: 'Identifiant invalide (3 à 32 caractères : lettres, chiffres, . _ -)' });
   }
@@ -619,13 +674,50 @@ webApp.post('/admin/api/accounts', (req, res) => {
   if (db.prepare('SELECT 1 FROM accounts WHERE login = ?').get(login)) {
     return res.status(409).json({ error: 'Cet identifiant existe déjà' });
   }
+  if (groupId && !db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
+    return res.status(400).json({ error: 'Groupe introuvable' });
+  }
   const info = db.prepare(
-    'INSERT INTO accounts (login, password_hash, disabled, created_at) VALUES (?, ?, 0, ?)'
-  ).run(login, hashPassword(password), isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, login, disabled: 0, created_at: isoNow() });
+    'INSERT INTO accounts (login, password_hash, role, group_id, disabled, created_at) VALUES (?, ?, ?, ?, 0, ?)'
+  ).run(login, hashPassword(password), role, groupId, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, login, role, group_id: groupId, disabled: 0, created_at: isoNow() });
 });
 
-webApp.post('/admin/api/accounts/:id/password', (req, res) => {
+webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ error: 'Compte introuvable' });
+
+  const sets = [];
+  const params = [];
+  if (body.role !== undefined) {
+    const role = body.role === 'admin' ? 'admin' : 'user';
+    if (req.session.accountId === id && role !== 'admin') {
+      return res.status(400).json({ error: 'Impossible de retirer le rôle admin de votre propre compte' });
+    }
+    sets.push('role = ?');
+    params.push(role);
+  }
+  if (body.groupId !== undefined) {
+    const groupId = Number(body.groupId) || null;
+    if (groupId && !db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
+      return res.status(400).json({ error: 'Groupe introuvable' });
+    }
+    sets.push('group_id = ?');
+    params.push(groupId);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucune modification demandée' });
+  params.push(id);
+  db.prepare(`UPDATE accounts SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+
+  if (req.session.accountId === id && body.groupId !== undefined) {
+    req.session.groupId = Number(body.groupId) || null;
+  }
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/accounts/:id/password', requireAdmin, (req, res) => {
   const password = String((req.body || {}).password || '');
   if (password.length < PASSWORD_MIN_LENGTH) {
     return res.status(400).json({ error: `Mot de passe trop court (${PASSWORD_MIN_LENGTH} caractères minimum)` });
@@ -636,7 +728,7 @@ webApp.post('/admin/api/accounts/:id/password', (req, res) => {
   res.json({ ok: true });
 });
 
-webApp.post('/admin/api/accounts/:id/disable', (req, res) => {
+webApp.post('/admin/api/accounts/:id/disable', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (req.session.accountId === id) {
     return res.status(400).json({ error: 'Impossible de désactiver le compte avec lequel vous êtes connecté' });
@@ -647,7 +739,7 @@ webApp.post('/admin/api/accounts/:id/disable', (req, res) => {
   res.json({ ok: true });
 });
 
-webApp.delete('/admin/api/accounts/:id', (req, res) => {
+webApp.delete('/admin/api/accounts/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   if (req.session.accountId === id) {
     return res.status(400).json({ error: 'Impossible de supprimer le compte avec lequel vous êtes connecté' });
@@ -657,7 +749,241 @@ webApp.delete('/admin/api/accounts/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-webApp.get('/admin/api/stats', (_req, res) => {
+// ---------- Groupes (admin) ----------
+webApp.get('/admin/api/groups', requireAdmin, (_req, res) => {
+  const rows = db.prepare(`
+    SELECT g.*,
+      (SELECT COUNT(*) FROM accounts a WHERE a.group_id = g.id) AS member_count,
+      (SELECT COUNT(*) FROM messages m WHERE m.group_id = g.id) AS message_count
+    FROM groups g ORDER BY g.id ASC
+  `).all();
+  res.json(rows);
+});
+
+webApp.post('/admin/api/groups', requireAdmin, (req, res) => {
+  const name = String((req.body || {}).name || '').trim();
+  if (name.length < 2 || name.length > 64) {
+    return res.status(400).json({ error: 'Nom de groupe invalide (2 à 64 caractères)' });
+  }
+  if (db.prepare('SELECT 1 FROM groups WHERE name = ?').get(name)) {
+    return res.status(409).json({ error: 'Ce nom de groupe existe déjà' });
+  }
+  const info = db.prepare('INSERT INTO groups (name, created_at) VALUES (?, ?)')
+    .run(name, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, name, created_at: isoNow(), member_count: 0, message_count: 0 });
+});
+
+webApp.patch('/admin/api/groups/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const name = String((req.body || {}).name || '').trim();
+  if (name.length < 2 || name.length > 64) {
+    return res.status(400).json({ error: 'Nom de groupe invalide (2 à 64 caractères)' });
+  }
+  const dup = db.prepare('SELECT 1 FROM groups WHERE name = ? AND id <> ?').get(name, id);
+  if (dup) return res.status(409).json({ error: 'Ce nom de groupe existe déjà' });
+  const info = db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+  res.json({ ok: true });
+});
+
+webApp.delete('/admin/api/groups/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const info = db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+  db.prepare('UPDATE accounts SET group_id = NULL WHERE group_id = ?').run(id);
+  db.prepare('UPDATE messages SET group_id = NULL WHERE group_id = ?').run(id);
+  db.prepare('DELETE FROM contacts WHERE address_book_id IN (SELECT id FROM address_books WHERE group_id = ?)').run(id);
+  db.prepare('DELETE FROM address_books WHERE group_id = ?').run(id);
+  res.json({ ok: true });
+});
+
+// ---------- Carnets d'adresses & contacts (groupes) ----------
+function requireGroupBook(req, res) {
+  const bookId = Number(req.params.bookId);
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
+  if (!book) return { error: 'Carnet introuvable' };
+  if (req.session.role !== 'admin' && book.group_id !== req.session.groupId) {
+    return { error: 'Carnet introuvable' };
+  }
+  return { book };
+}
+
+webApp.get('/admin/api/address-books', (req, res) => {
+  let books;
+  if (req.session.role === 'admin') {
+    books = db.prepare(`
+      SELECT ab.*, g.name AS group_name,
+        (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
+      FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+      ORDER BY ab.id ASC
+    `).all();
+  } else {
+    books = db.prepare(`
+      SELECT ab.*, g.name AS group_name,
+        (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
+      FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+      WHERE ab.group_id = ? ORDER BY ab.id ASC
+    `).all(req.session.groupId);
+  }
+  res.json(books);
+});
+
+webApp.post('/admin/api/address-books', (req, res) => {
+  const name = String((req.body || {}).name || '').trim();
+  const groupId = req.session.role === 'admin'
+    ? (Number(req.body.groupId) || null)
+    : req.session.groupId;
+  if (name.length < 1 || name.length > 64) {
+    return res.status(400).json({ error: 'Nom de carnet invalide (1 à 64 caractères)' });
+  }
+  if (!groupId) {
+    return res.status(400).json({ error: 'Un groupe est requis pour créer un carnet' });
+  }
+  if (!db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
+    return res.status(400).json({ error: 'Groupe introuvable' });
+  }
+  if (db.prepare('SELECT 1 FROM address_books WHERE group_id = ? AND name = ?').get(groupId, name)) {
+    return res.status(409).json({ error: 'Ce nom de carnet existe déjà dans ce groupe' });
+  }
+  const info = db.prepare('INSERT INTO address_books (group_id, name, created_at) VALUES (?, ?, ?)')
+    .run(groupId, name, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, group_id: groupId, name, created_at: isoNow(), contact_count: 0 });
+});
+
+webApp.patch('/admin/api/address-books/:bookId', (req, res) => {
+  const checked = requireGroupBook(req, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  const name = String((req.body || {}).name || '').trim();
+  if (name.length < 1 || name.length > 64) {
+    return res.status(400).json({ error: 'Nom de carnet invalide (1 à 64 caractères)' });
+  }
+  const book = checked.book;
+  const dup = db.prepare('SELECT 1 FROM address_books WHERE group_id = ? AND name = ? AND id <> ?')
+    .get(book.group_id, name, book.id);
+  if (dup) return res.status(409).json({ error: 'Ce nom de carnet existe déjà dans ce groupe' });
+  db.prepare('UPDATE address_books SET name = ? WHERE id = ?').run(name, book.id);
+  res.json({ ok: true });
+});
+
+webApp.delete('/admin/api/address-books/:bookId', (req, res) => {
+  const checked = requireGroupBook(req, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(checked.book.id);
+  db.prepare('DELETE FROM address_books WHERE id = ?').run(checked.book.id);
+  res.json({ ok: true });
+});
+
+webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
+  const checked = requireGroupBook(req, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '500', 10) || 500, 1), 2000);
+  const rows = db.prepare(`
+    SELECT id, first_name, last_name, entity, phone, created_at
+    FROM contacts WHERE address_book_id = ? ORDER BY id ASC LIMIT ?
+  `).all(checked.book.id, limit);
+  res.json(rows);
+});
+
+webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
+  const checked = requireGroupBook(req, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  const first = String((req.body || {}).firstName || '').trim();
+  const last = String((req.body || {}).lastName || '').trim();
+  const entity = String((req.body || {}).entity || '').trim();
+  const phone = String((req.body || {}).phone || '').trim();
+  if (!/^\+?[0-9]{4,15}$/.test(phone)) {
+    return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  }
+  if (!first && !last && !entity) {
+    return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
+  }
+  const info = db.prepare(
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(checked.book.id, first, last, entity, phone, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, first_name: first, last_name: last, entity, phone, created_at: isoNow() });
+});
+
+webApp.delete('/admin/api/contacts/:contactId', (req, res) => {
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(Number(req.params.contactId));
+  if (!contact) return res.status(404).json({ error: 'Contact introuvable' });
+  const checked = requireGroupBook({ ...req, params: { bookId: contact.address_book_id } }, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  db.prepare('DELETE FROM contacts WHERE id = ?').run(contact.id);
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
+  const checked = requireGroupBook(req, res);
+  if (checked.error) return res.status(404).json({ error: checked.error });
+  const body = req.body || {};
+  const mp = body.map || {};
+  const map = {
+    firstName: String(mp.firstName !== undefined ? mp.firstName : (body.firstName || '')),
+    lastName: String(mp.lastName !== undefined ? mp.lastName : (body.lastName || '')),
+    entity: String(mp.entity !== undefined ? mp.entity : (body.entity || '')),
+    phone: String(mp.phone !== undefined ? mp.phone : (body.phone || ''))
+  };
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  const phoneIdx = map.phone ? parseInt(map.phone, 10) : -1;
+  if (phoneIdx < 0) {
+    return res.status(400).json({ error: 'Le numéro de téléphone doit être mappé sur une colonne' });
+  }
+  const idx = (c) => {
+    const n = parseInt(c, 10);
+    return Number.isInteger(n) && n >= 0 ? n : -1;
+  };
+  const fi = idx(map.firstName);
+  const li = idx(map.lastName);
+  const ei = idx(map.entity);
+
+  const invalid = [];
+  const toInsert = [];
+  const seen = new Set();
+  for (let r = 0; r < rows.length; r++) {
+    const raw = Array.isArray(rows[r]) ? rows[r] : [];
+    const phone = String(raw[phoneIdx] == null ? '' : raw[phoneIdx]).trim().replace(/[\s.\-()]/g, '');
+    const first = fi >= 0 ? String(raw[fi] == null ? '' : raw[fi]).trim() : '';
+    const last = li >= 0 ? String(raw[li] == null ? '' : raw[li]).trim() : '';
+    const entity = ei >= 0 ? String(raw[ei] == null ? '' : raw[ei]).trim() : '';
+    if (!/^\+?[0-9]{4,15}$/.test(phone)) {
+      invalid.push({ row: r + 2, phone, error: 'Numéro invalide' });
+      continue;
+    }
+    const key = phone;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    toInsert.push({ first, last, entity, phone });
+  }
+
+  const bookId = checked.book.id;
+  const overwrite = body.overwrite === true;
+  const replaced = overwrite
+    ? db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(bookId).changes
+    : 0;
+  const insert = db.prepare(
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  const createdAt = isoNow();
+  db.exec('BEGIN');
+  try {
+    for (const c of toInsert) {
+      insert.run(bookId, c.first, c.last, c.entity, c.phone, createdAt);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.status(201).json({
+    rows: rows.length,
+    created: toInsert.length,
+    duplicates: rows.length - toInsert.length - invalid.length,
+    invalid,
+    replaced
+  });
+});
+
+webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
   const byStatus = {};
   for (const r of db.prepare('SELECT status, COUNT(*) AS c FROM messages GROUP BY status').all()) {
     byStatus[r.status] = r.c;

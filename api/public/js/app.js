@@ -43,11 +43,13 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
+    $('groups').classList.toggle('hidden', currentTab !== 'groups');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
     if (currentTab === 'messages') loadMessages();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'accounts') loadAccounts();
+    if (currentTab === 'groups') loadGroups();
   });
 });
 
@@ -185,9 +187,10 @@ async function loadMessages() {
         <td>${esc(m.body)}</td>
         <td>${stateOf(m.status)}</td>
         <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+        <td>${esc(m.group_name || '—')}</td>
         <td class="muted">${esc(m.error || '')}</td>
       </tr>`).join('')
-    : '<tr><td colspan="7" class="muted">Aucun message.</td></tr>';
+    : '<tr><td colspan="8" class="muted">Aucun message.</td></tr>';
 }
 
 $('statusFilter').addEventListener('change', loadMessages);
@@ -418,6 +421,15 @@ $('logLimit').addEventListener('change', loadLogs);
 
 // ---------- Comptes ----------
 let pendingAccountId = null;
+let pendingAccountEdit = false;
+let groupsCache = [];
+
+async function loadGroupsOptions() {
+  try {
+    groupsCache = await api('/admin/api/groups');
+  } catch { groupsCache = []; }
+  return groupsCache;
+}
 
 async function loadAccounts() {
   const accounts = await api('/admin/api/accounts');
@@ -425,21 +437,31 @@ async function loadAccounts() {
     ? accounts.map((a) => {
         const state = a.disabled ? badge('Désactivé', 'revoked') : badge('Actif', 'ok');
         const toggleLabel = a.disabled ? 'Activer' : 'Désactiver';
+        const roleBadge = a.role === 'admin' ? badge('Admin', 'ok') : badge('Utilisateur', 'off');
         return `<tr>
           <td>${a.id}</td>
           <td>${esc(a.login)}</td>
+          <td>${roleBadge}</td>
+          <td>${esc(a.group_name || '—')}</td>
           <td>${fmtDate(a.created_at)}</td>
           <td>${state}</td>
           <td>
-            <button data-pwd="${a.id}" class="ghost">Réinitialiser le mot de passe</button>
+            <button data-editacc="${a.id}" class="ghost">Éditer</button>
+            <button data-pwd="${a.id}" class="ghost">Mot de passe</button>
             <button data-toggle="${a.id}" data-disabled="${a.disabled ? 1 : 0}" class="ghost">${toggleLabel}</button>
             <button data-delacc="${a.id}" class="danger">Supprimer</button>
           </td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="5" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
+    : '<tr><td colspan="7" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
   document.querySelectorAll('[data-pwd]').forEach((b) => {
     b.addEventListener('click', () => openAccountModal(Number(b.dataset.pwd)));
+  });
+  document.querySelectorAll('[data-editacc]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const a = accounts.find((x) => x.id === Number(b.dataset.editacc));
+      if (a) openAccountModal(a.id, a);
+    });
   });
   document.querySelectorAll('[data-toggle]').forEach((b) => {
     b.addEventListener('click', async () => {
@@ -463,36 +485,65 @@ async function loadAccounts() {
   });
 }
 
-function openAccountModal(id = null) {
+async function fillGroupSelect(value) {
+  const groups = groupsCache.length ? groupsCache : await loadGroupsOptions();
+  const options = ['<option value="">Aucun</option>']
+    .concat(groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`));
+  $('accountGroup').innerHTML = options.join('');
+  $('accountGroup').value = value != null ? String(value) : '';
+}
+
+async function openAccountModal(id = null, account = null) {
   pendingAccountId = id;
+  pendingAccountEdit = !!(id && account);
   $('accountModalError').textContent = '';
   $('accountPassword').value = '';
+  await fillGroupSelect(account ? account.group_id : '');
   if (id === null) {
     $('accountModalTitle').textContent = 'Nouveau compte';
     $('accountLoginWrap').classList.remove('hidden');
     $('accountLogin').value = '';
+    $('accountRole').value = 'user';
     $('btnSaveAccount').textContent = 'Créer';
+  } else if (pendingAccountEdit) {
+    $('accountModalTitle').textContent = `Éditer « ${account.login} »`;
+    $('accountLoginWrap').classList.add('hidden');
+    $('accountRole').value = account.role;
+    $('btnSaveAccount').textContent = 'Enregistrer';
   } else {
     $('accountModalTitle').textContent = 'Réinitialiser le mot de passe';
     $('accountLoginWrap').classList.add('hidden');
     $('btnSaveAccount').textContent = 'Enregistrer';
   }
   $('accountModal').classList.remove('hidden');
-  $('accountPassword').focus();
+  if (id === null) $('accountLogin').focus();
+  else $('accountPassword').focus();
 }
 
-$('btnNewAccount').addEventListener('click', () => openAccountModal(null));
+$('btnNewAccount').addEventListener('click', async () => {
+  await loadGroupsOptions();
+  openAccountModal(null);
+});
 $('btnCancelAccount').addEventListener('click', () => $('accountModal').classList.add('hidden'));
 
 $('btnSaveAccount').addEventListener('click', async () => {
   $('accountModalError').textContent = '';
   try {
-    if (pendingAccountId === null) {
+    const role = $('accountRole').value;
+    const groupId = $('accountGroup').value ? Number($('accountGroup').value) : null;
+    if (pendingAccountEdit) {
+      await api(`/admin/api/accounts/${pendingAccountId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role, groupId })
+      });
+    } else if (pendingAccountId === null) {
       await api('/admin/api/accounts', {
         method: 'POST',
         body: JSON.stringify({
           login: $('accountLogin').value,
-          password: $('accountPassword').value
+          password: $('accountPassword').value,
+          role,
+          groupId
         })
       });
     } else {
@@ -505,6 +556,78 @@ $('btnSaveAccount').addEventListener('click', async () => {
     loadAccounts();
   } catch (e) {
     $('accountModalError').textContent = e.message;
+  }
+});
+
+// ---------- Groupes ----------
+let pendingGroupId = null;
+
+async function loadGroups() {
+  const groups = await api('/admin/api/groups');
+  $('groupsBody').innerHTML = groups.length
+    ? groups.map((g) => `<tr>
+        <td>${g.id}</td>
+        <td>${esc(g.name)}</td>
+        <td>${g.member_count}</td>
+        <td>${g.message_count}</td>
+        <td>${fmtDate(g.created_at)}</td>
+        <td>
+          <button data-editgroup="${g.id}" data-name="${esc(g.name)}" class="ghost">Renommer</button>
+          <button data-delgroup="${g.id}" class="danger">Supprimer</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">Aucun groupe. Créez un groupe puis rattachez-y les comptes utilisateurs.</td></tr>';
+  document.querySelectorAll('[data-editgroup]').forEach((b) => {
+    b.addEventListener('click', () => {
+      pendingGroupId = Number(b.dataset.editgroup);
+      $('groupModalTitle').textContent = 'Renommer le groupe';
+      $('groupName').value = b.dataset.name;
+      $('btnSaveGroup').textContent = 'Enregistrer';
+      $('groupModalError').textContent = '';
+      $('groupModal').classList.remove('hidden');
+      $('groupName').focus();
+    });
+  });
+  document.querySelectorAll('[data-delgroup]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer ce groupe ? Les comptes et messages ne seront plus rattachés à aucun groupe, et les carnets du groupe seront supprimés.')) return;
+      try {
+        await api(`/admin/api/groups/${b.dataset.delgroup}`, { method: 'DELETE' });
+        loadGroups();
+      } catch (e) { alert(e.message); }
+    });
+  });
+}
+
+$('btnNewGroup').addEventListener('click', () => {
+  pendingGroupId = null;
+  $('groupModalTitle').textContent = 'Nouveau groupe';
+  $('groupName').value = '';
+  $('btnSaveGroup').textContent = 'Créer';
+  $('groupModalError').textContent = '';
+  $('groupModal').classList.remove('hidden');
+  $('groupName').focus();
+});
+$('btnCancelGroup').addEventListener('click', () => $('groupModal').classList.add('hidden'));
+
+$('btnSaveGroup').addEventListener('click', async () => {
+  $('groupModalError').textContent = '';
+  try {
+    if (pendingGroupId === null) {
+      await api('/admin/api/groups', {
+        method: 'POST',
+        body: JSON.stringify({ name: $('groupName').value })
+      });
+    } else {
+      await api(`/admin/api/groups/${pendingGroupId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: $('groupName').value })
+      });
+    }
+    $('groupModal').classList.add('hidden');
+    loadGroups();
+  } catch (e) {
+    $('groupModalError').textContent = e.message;
   }
 });
 
