@@ -50,7 +50,7 @@ const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date
 const attachmentUpload = multer({
   storage: multer.diskStorage({
     destination: ATTACHMENTS_DIR,
-    filename: (_req, _file, cb) => cb(null, newToken())
+    filename: (_req, _file, cb) => cb(null, crypto.randomBytes(12).toString('base64url'))
   }),
   limits: { fileSize: MAX_ATTACHMENT_SIZE }
 });
@@ -281,7 +281,7 @@ apiApp.get('/health', (_req, res) => res.json({ ok: true }));
 
 apiApp.get('/api/v1/attachments/:token', (req, res) => {
   const token = String(req.params.token || '');
-  if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return res.status(404).end();
+  if (!/^[A-Za-z0-9_-]{16,100}$/.test(token)) return res.status(404).end();
   const attachment = db.prepare('SELECT * FROM attachments WHERE token = ?').get(token);
   if (!attachment) return res.status(404).end();
   if (attachment.expires_at && Date.parse(attachment.expires_at) <= Date.now()) return res.status(410).end();
