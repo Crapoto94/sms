@@ -277,15 +277,11 @@ function repairFilename(name) {
 function messageAttachment(m) {
   if (!m.attachment_name) return '—';
   const opened = Number(m.attachment_open_count || 0);
-  const state = opened ? badge(`Ouverte (${opened})`, 'ok') : badge('Non ouverte', 'off');
+  const state = opened
+    ? `<button type="button" class="badge ok attachment-open-info" data-attachment-info="${m.attachment_id}" title="Voir les détails des ouvertures">Ouverte (${opened})</button>`
+    : badge('Non ouverte', 'off');
   const file = `<a href="/admin/api/attachments/${m.attachment_id}/preview" target="_blank" rel="noopener">${esc(repairFilename(m.attachment_name))}</a>`;
   return `${state} ${file}`;
-}
-
-function messageAttachmentInfo(m) {
-  return m.attachment_id
-    ? ` <button type="button" class="attachment-info" data-attachment-info="${m.attachment_id}" title="Informations d'ouverture de la pièce jointe">i</button>`
-    : '';
 }
 
 function cancelButton(m) {
@@ -307,7 +303,7 @@ function adminMessageRow(m) {
     <td>${fmtDate(m.created_at)}</td>
     <td>${messageOrigin(m)}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
-    <td>${esc(m.body)}${messageAttachmentInfo(m)}</td>
+    <td>${esc(m.body)}</td>
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td>${esc(m.group_name || '—')}</td>
@@ -325,7 +321,7 @@ function campaignDetailRow(m) {
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td>${esc(m.group_name || '—')}</td>
-    <td>${messageAttachment(m)}${messageAttachmentInfo(m)}</td>
+    <td>${messageAttachment(m)}</td>
     <td class="muted">${esc(m.error || '')}</td>
   </tr>`;
 }
@@ -355,7 +351,7 @@ function renderMessageList(messages) {
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-      <td colspan="10">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${messageAttachment(first)} · ${esc(first.body)}${messageAttachmentInfo(first)} · cliquer pour le détail</span></td>
+      <td colspan="10">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${messageAttachment(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">
