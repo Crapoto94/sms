@@ -6,7 +6,9 @@ let currentTab = 'keys';
 
 const fmtDate = (iso) => {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const value = typeof iso === 'string' && /^\d+$/.test(iso) ? Number(iso) : iso;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
 };
 

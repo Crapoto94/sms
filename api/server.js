@@ -40,6 +40,19 @@ const newToken = () => crypto.randomBytes(32).toString('base64url');
 const isoNow = () => new Date().toISOString();
 const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date.now();
 
+function normalizeIncomingDate(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  const text = String(value || '').trim();
+  if (/^\d+$/.test(text)) {
+    const date = new Date(Number(text));
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? isoNow() : new Date(parsed).toISOString();
+}
+
 // Envoi différé : si une heure est fournie (ISO ou heure locale), le message
 // reste "scheduled" (Programmé) jusqu'à cette heure, puis passe en "pending"
 // et est récupéré par les passerelles.
@@ -355,7 +368,7 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
       const providerId = String(m.providerId || m.id || '').trim();
       const sender = String(m.sender || '').trim();
       const body = String(m.body || '').trim();
-      const receivedAt = String(m.receivedAt || nowIso);
+      const receivedAt = normalizeIncomingDate(m.receivedAt || nowIso);
       if (!providerId || !sender) continue;
       const info = insert.run(req.apiKey.id, deviceId, providerId, sender, body, receivedAt, nowIso);
       if (info.changes > 0) accepted++;
