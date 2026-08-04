@@ -1211,6 +1211,13 @@ webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
   res.json({ messages: byStatus, keys: byKeyType, gatewaysOnline: online });
 });
 
+webApp.get('/admin/api/gateways/online', requireSession, (_req, res) => {
+  const online = db.prepare(
+    "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
+  ).get(new Date(Date.now() - 3 * 60 * 1000).toISOString()).c;
+  res.json({ online });
+});
+
 apiApp.listen(PORT_API, '0.0.0.0', () => {
   console.log(`[api] écoute sur le port ${PORT_API}`);
 });

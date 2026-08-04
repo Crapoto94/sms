@@ -36,6 +36,22 @@ function initTheme() {
 }
 initTheme();
 
+// ---------- Passerelles en ligne (bandeau) ----------
+function updateOnlineBadge(n) {
+  const el = $('onlineBadge');
+  if (!el) return;
+  el.textContent = n;
+  el.classList.toggle('off', !n);
+  el.title = `${n} passerelle(s) active(s)`;
+}
+
+async function refreshOnlineBadge() {
+  try {
+    const stats = await api('/admin/api/gateways/online');
+    updateOnlineBadge(stats.online);
+  } catch { /* silencieux */ }
+}
+
 // ---------- Historique SMS d'un numéro / d'un carnet ----------
 async function openSmsHistory(title, url) {
   const msgs = await api(url);
@@ -815,7 +831,9 @@ $('btnCloseImportResult').addEventListener('click', () => $('importResultModal')
 
 // ---------- Rafraîchissement automatique ----------
 loadSession().then(() => showTab('composer'));
+refreshOnlineBadge();
 setInterval(() => {
+  refreshOnlineBadge();
   if (currentTab === 'messages') loadMessages();
   if (currentTab === 'composer') loadComposer();
 }, 10000);
