@@ -120,6 +120,17 @@ class SettingsActivity : AppCompatActivity() {
         } else {
             getString(R.string.last_sync_never)
         }
+        val incoming = Config.getLastIncomingSms(this)
+        binding.textLastIncoming.text = if (incoming != null) {
+            getString(
+                R.string.last_incoming_label,
+                incoming.sender,
+                SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(incoming.timestamp)),
+                incoming.body
+            )
+        } else {
+            getString(R.string.last_incoming_never)
+        }
     }
 
     private fun setSwitchChecked(checked: Boolean) {

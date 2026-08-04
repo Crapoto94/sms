@@ -59,6 +59,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.last_sync_never)
         }
+        val incoming = Config.getLastIncomingSms(this)
+        binding.textLastIncoming.text = if (incoming != null) {
+            getString(
+                R.string.last_incoming_label,
+                incoming.sender,
+                java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date(incoming.timestamp)),
+                incoming.body
+            )
+        } else {
+            getString(R.string.last_incoming_never)
+        }
         if (!defaultSmsPromptDone && !SmsSender.isDefaultSmsApp(this)) {
             defaultSmsPromptDone = true
             ensureSmsPermissionsAndOpen()

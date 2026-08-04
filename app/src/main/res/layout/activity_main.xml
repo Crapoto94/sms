@@ -46,6 +46,14 @@
                 android:layout_marginTop="2dp"
                 android:textColor="?attr/colorOnSurfaceVariant"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/textLastIncoming"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textSize="12sp" />
         </LinearLayout>
 
         <com.google.android.material.button.MaterialButton

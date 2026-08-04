@@ -190,6 +190,7 @@ class SmsGatewayService : Service() {
         try {
             if (api.sendIncoming(messages)) {
                 Config.setLastIncomingSmsId(this, messages.maxOf { it.id })
+                messages.maxByOrNull { it.date }?.let { Config.setLastIncomingSms(this, it) }
                 SmsLog.add(
                     this,
                     SmsLog.Entry(now(), SmsLog.TYPE_STATUT, "", "", "", null, "${messages.size} SMS reçus remontés à l'API")
@@ -285,8 +286,10 @@ class SmsGatewayService : Service() {
 
     private fun buildNotification(): Notification {
         val lastSync = Config.getLastSyncAt(this)
+        val lastIncoming = Config.getLastIncomingSms(this)
         val lastInfo = when {
             lastError != null -> "Erreur : $lastError"
+            lastIncoming != null -> "Dernier SMS reçu de ${lastIncoming.sender} • ${sentCount} SMS envoyés"
             lastSync > 0 -> {
                 val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastSync))
                 "Dernière connexion API $time • $sentCount SMS envoyés"

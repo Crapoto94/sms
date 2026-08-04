@@ -67,6 +67,24 @@ object Config {
         prefs(context).edit().putLong(KEY_LAST_INCOMING_SMS_ID, id).apply()
     }
 
+    fun getLastIncomingSms(context: Context): IncomingSmsDisplay? {
+        val timestamp = prefs(context).getLong(KEY_LAST_INCOMING_AT, 0L)
+        if (timestamp <= 0L) return null
+        return IncomingSmsDisplay(
+            timestamp,
+            prefs(context).getString(KEY_LAST_INCOMING_SENDER, "") ?: "",
+            prefs(context).getString(KEY_LAST_INCOMING_BODY, "") ?: ""
+        )
+    }
+
+    fun setLastIncomingSms(context: Context, sms: IncomingSms) {
+        prefs(context).edit()
+            .putLong(KEY_LAST_INCOMING_AT, sms.date)
+            .putString(KEY_LAST_INCOMING_SENDER, sms.sender)
+            .putString(KEY_LAST_INCOMING_BODY, sms.body)
+            .apply()
+    }
+
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences("sms_gateway", Context.MODE_PRIVATE)
 
@@ -76,4 +94,13 @@ object Config {
     private const val KEY_POLLING_INTERVAL_MS = "polling_interval_ms"
     private const val KEY_LAST_SYNC_AT = "last_sync_at"
     private const val KEY_LAST_INCOMING_SMS_ID = "last_incoming_sms_id"
+    private const val KEY_LAST_INCOMING_AT = "last_incoming_at"
+    private const val KEY_LAST_INCOMING_SENDER = "last_incoming_sender"
+    private const val KEY_LAST_INCOMING_BODY = "last_incoming_body"
 }
+
+data class IncomingSmsDisplay(
+    val timestamp: Long,
+    val sender: String,
+    val body: String
+)
