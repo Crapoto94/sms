@@ -51,6 +51,22 @@ object Config {
             .apply()
     }
 
+    /** Dernière synchronisation réussie avec l'API (epoch ms). */
+    fun getLastSyncAt(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_SYNC_AT, 0L)
+
+    fun setLastSyncAt(context: Context, ms: Long) {
+        prefs(context).edit().putLong(KEY_LAST_SYNC_AT, ms).apply()
+    }
+
+    /** Dernier _id de SMS reçu traité (dédoublonnage de la remontée à l'API). */
+    fun getLastIncomingSmsId(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_INCOMING_SMS_ID, 0L)
+
+    fun setLastIncomingSmsId(context: Context, id: Long) {
+        prefs(context).edit().putLong(KEY_LAST_INCOMING_SMS_ID, id).apply()
+    }
+
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences("sms_gateway", Context.MODE_PRIVATE)
 
@@ -58,4 +74,6 @@ object Config {
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_API_KEY = "api_key"
     private const val KEY_POLLING_INTERVAL_MS = "polling_interval_ms"
+    private const val KEY_LAST_SYNC_AT = "last_sync_at"
+    private const val KEY_LAST_INCOMING_SMS_ID = "last_incoming_sms_id"
 }

@@ -72,6 +72,39 @@ class ApiClient(private val context: Context) {
         }
     }
 
+    /**
+     * Remonte les SMS reçus (lus dans la boîte de réception du téléphone).
+     * @return true si le serveur a accepté la requête.
+     */
+    fun sendIncoming(messages: List<IncomingSms>): Boolean {
+        val url = "${Config.getBaseUrl(context)}/api/v1/gateway/incoming"
+        val arr = JSONArray()
+        for (m in messages) {
+            arr.put(JSONObject().apply {
+                put("providerId", m.id)
+                put("sender", m.sender)
+                put("body", m.body)
+                put("receivedAt", m.date)
+            })
+        }
+        val payload = JSONObject().apply {
+            put("deviceId", Config.getDeviceId(context))
+            put("messages", arr)
+        }
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${Config.getGatewayApiKey(context)}")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                val detail = response.body?.string()?.take(200).orEmpty()
+                throw ApiException("HTTP ${response.code}: $detail")
+            }
+            return true
+        }
+    }
+
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
@@ -80,6 +113,13 @@ class ApiClient(private val context: Context) {
 data class SyncResult(
     val messages: List<OutgoingMessage>,
     val intervalMs: Long
+)
+
+data class IncomingSms(
+    val id: Long,
+    val sender: String,
+    val body: String,
+    val date: Long
 )
 
 class ApiException(message: String) : Exception(message)

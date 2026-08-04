@@ -50,6 +50,15 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         SmsLog.load(this)
         refresh()
+        binding.textLastSync.text = if (Config.getLastSyncAt(this) > 0) {
+            getString(
+                R.string.last_sync_label,
+                java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date(Config.getLastSyncAt(this)))
+            )
+        } else {
+            getString(R.string.last_sync_never)
+        }
         if (!defaultSmsPromptDone && !SmsSender.isDefaultSmsApp(this)) {
             defaultSmsPromptDone = true
             ensureSmsPermissionsAndOpen()

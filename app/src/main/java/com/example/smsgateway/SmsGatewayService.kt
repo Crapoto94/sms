@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
+import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -32,6 +34,7 @@ class SmsGatewayService : Service() {
     private lateinit var worker: HandlerThread
     private lateinit var handler: Handler
     private val api by lazy { ApiClient(this) }
+    private lateinit var wakeLock: PowerManager.WakeLock
 
     @Volatile private var lastPollTime: Long? = null
     @Volatile private var lastError: String? = null
@@ -43,8 +46,15 @@ class SmsGatewayService : Service() {
 
     private val cycleRunnable = object : Runnable {
         override fun run() {
-            runCatching { tick() }
-                .onFailure { Log.w(TAG, "cycle error", it) }
+            try {
+                tick()
+            } catch (t: Throwable) {
+                // Une exception ne doit JAMAIS arrêter la boucle : on la journalise
+                // et on replanifie le cycle suivant, sinon la passerelle se
+                // déconnecte silencieusement jusqu'à un redémarrage manuel.
+                Log.w(TAG, "cycle error", t)
+                handler.postDelayed(this, pollIntervalMs)
+            }
         }
     }
 
@@ -52,6 +62,10 @@ class SmsGatewayService : Service() {
         super.onCreate()
         isRunning = true
         createNotificationChannel()
+        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SmsGateway:cpu")
+        wakeLock.setReferenceCounted(false)
+        wakeLock.acquire()
         worker = HandlerThread("SmsGatewayWorker").also { it.start() }
         handler = Handler(worker.looper)
     }
@@ -79,6 +93,9 @@ class SmsGatewayService : Service() {
         isRunning = false
         handler.removeCallbacksAndMessages(null)
         worker.quitSafely()
+        if (this::wakeLock.isInitialized && wakeLock.isHeld) {
+            wakeLock.release()
+        }
         super.onDestroy()
     }
 
@@ -154,8 +171,64 @@ class SmsGatewayService : Service() {
 
         lastPollTime = System.currentTimeMillis()
         lastError = null
+        Config.setLastSyncAt(this, lastPollTime)
         pollIntervalMs = result.intervalMs
+
+        reportIncomingMessages()
+
         return result.messages
+    }
+
+    /**
+     * Lit les SMS reçus depuis le dernier traitement et les remonte à l'API.
+     * L'index lu n'est avancé qu'après acceptation par le serveur (dédoublonnage
+     * côté serveur via device_id + provider_id).
+     */
+    private fun reportIncomingMessages() {
+        val messages = collectIncomingMessages()
+        if (messages.isEmpty()) return
+        try {
+            if (api.sendIncoming(messages)) {
+                Config.setLastIncomingSmsId(this, messages.maxOf { it.id })
+                SmsLog.add(
+                    this,
+                    SmsLog.Entry(now(), SmsLog.TYPE_STATUT, "", "", "", null, "${messages.size} SMS reçus remontés à l'API")
+                )
+            }
+        } catch (e: Exception) {
+            SmsLog.add(
+                this,
+                SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Remontée des SMS reçus impossible : ${e.message}")
+            )
+        }
+    }
+
+    private fun collectIncomingMessages(): List<IncomingSms> {
+        val out = mutableListOf<IncomingSms>()
+        try {
+            val lastId = Config.getLastIncomingSmsId(this)
+            val uri = Uri.parse("content://sms/inbox")
+            contentResolver.query(
+                uri, null, "_id > ?", arrayOf(lastId.toString()), "_id ASC"
+            )?.use { c ->
+                val idCol = c.getColumnIndex("_id")
+                val addrCol = c.getColumnIndex("address")
+                val bodyCol = c.getColumnIndex("body")
+                val dateCol = c.getColumnIndex("date")
+                while (c.moveToNext()) {
+                    val id = if (idCol >= 0) c.getLong(idCol) else 0L
+                    val sender = if (addrCol >= 0) c.getString(addrCol) ?: "" else ""
+                    val body = if (bodyCol >= 0) c.getString(bodyCol) ?: "" else ""
+                    val date = if (dateCol >= 0) c.getLong(dateCol) else System.currentTimeMillis()
+                    if (id > 0 && body.isNotBlank()) {
+                        out.add(IncomingSms(id, sender.trim(), body, date))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "lecture des SMS reçus impossible", e)
+        }
+        return out
     }
 
     private fun sendMessage(message: OutgoingMessage) {
@@ -211,13 +284,14 @@ class SmsGatewayService : Service() {
     }
 
     private fun buildNotification(): Notification {
+        val lastSync = Config.getLastSyncAt(this)
         val lastInfo = when {
             lastError != null -> "Erreur : $lastError"
-            lastPollTime != null -> {
-                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastPollTime!!))
-                "Dernière vérification $time • $sentCount SMS envoyés"
+            lastSync > 0 -> {
+                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastSync))
+                "Dernière connexion API $time • $sentCount SMS envoyés"
             }
-            else -> "En attente de la première vérification…"
+            else -> "En attente de la première connexion…"
         }
         val contentIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),

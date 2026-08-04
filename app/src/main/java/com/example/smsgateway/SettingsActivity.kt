@@ -4,16 +4,30 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.example.smsgateway.databinding.ActivitySettingsBinding
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class SettingsActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private var pendingAction: (() -> Unit)? = null
+    private var updatingSwitch = false
+
+    private val stateHandler = Handler(Looper.getMainLooper())
+    private val statePoller = object : Runnable {
+        override fun run() {
+            updateServiceStateUi()
+            stateHandler.postDelayed(this, 300)
+        }
+    }
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -21,6 +35,7 @@ class SettingsActivity : AppCompatActivity() {
                 pendingAction?.invoke()
             } else {
                 Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_LONG).show()
+                setSwitchChecked(false)
             }
             pendingAction = null
         }
@@ -51,14 +66,27 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(SmsSender.manualDefaultSmsIntent())
         }
 
-        binding.btnStart.setOnClickListener { ensurePermissionsAndStart() }
-        binding.btnStop.setOnClickListener { SmsGatewayService.stop(this) }
+        binding.switchService.setOnCheckedChangeListener { _, checked ->
+            if (updatingSwitch) return@setOnCheckedChangeListener
+            if (checked) {
+                ensurePermissionsAndStart()
+            } else {
+                SmsGatewayService.stop(this)
+                Toast.makeText(this, R.string.service_stopped, Toast.LENGTH_SHORT).show()
+            }
+        }
         binding.btnSendTestSms.setOnClickListener { sendTestSms() }
     }
 
     override fun onResume() {
         super.onResume()
         refreshUi()
+        stateHandler.post(statePoller)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        stateHandler.removeCallbacks(statePoller)
     }
 
     private fun refreshUi() {
@@ -69,11 +97,35 @@ class SettingsActivity : AppCompatActivity() {
         } else {
             getString(R.string.status_default_sms_missing)
         }
-        binding.textServiceState.text = if (SmsGatewayService.isRunning) {
+        updateServiceStateUi()
+    }
+
+    /** Reflète l'état réel du service en temps réel (interrogé toutes les 300 ms). */
+    private fun updateServiceStateUi() {
+        val running = SmsGatewayService.isRunning
+        binding.textServiceState.text = if (running) {
             getString(R.string.status_service_running)
         } else {
             getString(R.string.status_service_stopped)
         }
+        if (binding.switchService.isChecked != running) {
+            setSwitchChecked(running)
+        }
+        val lastSync = Config.getLastSyncAt(this)
+        binding.textLastSync.text = if (lastSync > 0) {
+            getString(
+                R.string.last_sync_label,
+                SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(lastSync))
+            )
+        } else {
+            getString(R.string.last_sync_never)
+        }
+    }
+
+    private fun setSwitchChecked(checked: Boolean) {
+        updatingSwitch = true
+        binding.switchService.isChecked = checked
+        updatingSwitch = false
     }
 
     private fun ensurePermissionsAndStart() {
@@ -130,6 +182,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun startGateway() {
         if (!SmsSender.isDefaultSmsApp(this)) {
             Toast.makeText(this, R.string.make_default_first, Toast.LENGTH_LONG).show()
+            setSwitchChecked(false)
             refreshUi()
             return
         }
