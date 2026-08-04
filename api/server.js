@@ -18,7 +18,7 @@ const MAX_MESSAGE_LENGTH = 1000;
 //  - intervalle conseillé aux passerelles (renvoyé dans /sync)
 //  - passerelle « active » = synchronisée il y a moins de 2 intervalles
 //  - message en attente depuis >= 1 intervalle = prenable par le premier venu
-const SYNC_INTERVAL_SEC = parseInt(process.env.SYNC_INTERVAL_SEC || '15', 10);
+const SYNC_INTERVAL_SEC = parseInt(process.env.SYNC_INTERVAL_SEC || '60', 10);
 const ESCALATION_MS = parseInt(process.env.ESCALATION_SEC || String(SYNC_INTERVAL_SEC), 10) * 1000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
