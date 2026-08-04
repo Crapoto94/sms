@@ -213,6 +213,34 @@ textarea[readonly] { resize: none; height: 120px; }
 .sms-pastille:hover { background: #2563eb; color: #fff; }
 .sms-pastille.empty { background: var(--ghost-hover); color: var(--muted); cursor: default; }
 
+/* Pastille « passerelles en ligne » (bandeau) */
+.online-pastille {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #14532d;
+  color: #bbf7d0;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+body.light .online-pastille { background: #bbf7d0; color: #14532d; }
+.online-pastille::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+}
+.online-pastille.off { background: #450a0a; color: #fecaca; }
+body.light .online-pastille.off { background: #fee2e2; color: #7f1d1d; }
+.online-pastille.off::before { background: #f87171; }
+
 /* Page utilisateur (envoi) */
 .composer { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
 .recipients { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }

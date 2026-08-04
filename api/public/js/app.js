@@ -190,12 +190,28 @@ $('btnCopyToken').addEventListener('click', async () => {
 $('btnCloseToken').addEventListener('click', () => $('tokenModal').classList.add('hidden'));
 
 // ---------- Passerelles ----------
+function updateOnlineBadge(n) {
+  const el = $('onlineBadge');
+  if (!el) return;
+  el.textContent = n;
+  el.classList.toggle('off', !n);
+  el.title = `${n} passerelle(s) active(s)`;
+}
+
+async function refreshOnlineBadge() {
+  try {
+    const stats = await api('/admin/api/stats');
+    updateOnlineBadge(stats.gatewaysOnline);
+  } catch { /* silencieux */ }
+}
+
 async function loadGateways() {
   const [gateways, stats] = await Promise.all([
     api('/admin/api/gateways'),
     api('/admin/api/stats')
   ]);
   $('online').textContent = `${stats.gatewaysOnline} passerelle(s) en ligne`;
+  updateOnlineBadge(stats.gatewaysOnline);
   $('gatewaysBody').innerHTML = gateways.length
     ? gateways.map((g) => {
         const online = g.last_seen_at && Date.now() - new Date(g.last_seen_at).getTime() < 3 * 60 * 1000;
@@ -1174,7 +1190,9 @@ $('btnCloseBookImportResult').addEventListener('click', () => $('bookImportResul
 
 // ---------- Rafraîchissement automatique ----------
 loadKeys();
+refreshOnlineBadge();
 setInterval(() => {
+  refreshOnlineBadge();
   if (currentTab === 'gateways') loadGateways();
   if (currentTab === 'messages') loadMessages();
   if (currentTab === 'logs') loadLogs();
