@@ -1502,19 +1502,31 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   const createdAt = isoNow();
   const groupId = book.group_id;
   let campaignId;
+  const clonedAttachmentPaths = [];
   db.exec('BEGIN');
   try {
     const info = db.prepare(
       'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(bookId, groupId, withAttachment.body, req.session.accountId, scheduledAt, createdAt);
+    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
       'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    for (const c of contacts) insert.run(c.phone, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, createdAt, groupId, campaignId, scheduledAt);
+    for (const c of contacts) {
+      let messageBody = message;
+      let attachmentId = null;
+      if (withAttachment.attachment) {
+        const copy = cloneAttachment(withAttachment.attachment);
+        clonedAttachmentPaths.push(copy.path);
+        attachmentId = copy.id;
+        messageBody = `${message}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
+      }
+      insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, createdAt, groupId, campaignId, scheduledAt);
+    }
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
+    for (const filePath of clonedAttachmentPaths) fs.rmSync(filePath, { force: true });
     throw err;
   }
   res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
