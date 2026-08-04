@@ -74,7 +74,7 @@
       </div>
       <table id="messagesSentTable">
         <thead>
-          <tr><th>ID</th><th>Date</th><th>Origine</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th><th></th></tr>
+          <tr><th>ID</th><th>Date</th><th>Origine</th><th>Destinataire</th><th>Message</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Pièce jointe</th><th>Erreur</th><th></th></tr>
         </thead>
         <tbody id="messagesBody"></tbody>
       </table>
@@ -383,6 +383,8 @@
         <button type="button" data-emoji="🎈" title="Ballon">🎈</button>
       </div>
       <textarea id="smsBody" maxlength="1000" rows="4" placeholder="Contenu du SMS…"></textarea>
+      <label for="smsAttachment">Pièce jointe <span class="muted">(10 Mo maximum, un lien public sera ajouté au SMS)</span></label>
+      <input id="smsAttachment" type="file">
       <p class="muted" style="margin-top:4px"><span id="smsCounter">0</span>/1000 · <span id="smsSegments">1 segment</span></p>
       <div class="row" style="margin-top:16px">
         <button id="btnSendMessage">Envoyer</button>

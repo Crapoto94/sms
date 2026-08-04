@@ -95,6 +95,17 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+async function uploadAttachment(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/admin/api/attachments', { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 // ---------- Onglets ----------
 function showTab(tab) {
   currentTab = tab;
@@ -300,6 +311,7 @@ $('btnSendSingle').addEventListener('click', () => {
   $('composerError').textContent = '';
   const recipient = $('smsRecipient').value.trim().replace(/[\s.\-()]/g, '');
   const body = $('smsBody').value.trim();
+  const attachmentFile = $('smsAttachment').files[0] || null;
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     $('composerError').textContent = 'Numéro de téléphone invalide.';
     return;
@@ -311,11 +323,13 @@ $('btnSendSingle').addEventListener('click', () => {
   askConfirm('Confirmer l\'envoi du SMS', `
     <p><b>Destinataire :</b> <span class="code">${esc(recipient)}</span></p>
     <p><b>Message :</b><br>${esc(body)}</p>
+    ${attachmentFile ? `<p><b>Pièce jointe :</b> ${esc(attachmentFile.name)}</p>` : ''}
     <p class="muted">Envoi ${scheduleLabel()}.</p>
   `, async () => {
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
     const res = await api('/admin/api/messages', {
       method: 'POST',
-      body: JSON.stringify({ recipient, message: body, scheduledAt: scheduledIso() })
+      body: JSON.stringify({ recipient, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
     });
     $('composerSummary').classList.remove('hidden');
     $('composerSummary').textContent = res.status === 'scheduled'
@@ -323,6 +337,7 @@ $('btnSendSingle').addEventListener('click', () => {
       : 'Message pris en compte, envoi immédiat.';
     $('smsRecipient').value = '';
     $('smsBody').value = '';
+    $('smsAttachment').value = '';
     updateComposerCount();
   });
 });
@@ -331,6 +346,7 @@ $('btnSendToSelected').addEventListener('click', () => {
   $('composerError').textContent = '';
   const checks = Array.from(document.querySelectorAll('#recipientList input:checked'));
   const body = $('smsBody').value.trim();
+  const attachmentFile = $('smsAttachment').files[0] || null;
   if (!checks.length) {
     $('composerError').textContent = 'Cochez au moins un destinataire.';
     return;
@@ -349,11 +365,13 @@ $('btnSendToSelected').addEventListener('click', () => {
     <p><b>Carnet :</b> ${esc(book ? book.name : '')}</p>
     <p><b>Destinataires :</b> ${checks.length}</p>
     <p><b>Message :</b><br>${esc(body)}</p>
+    ${attachmentFile ? `<p><b>Pièce jointe :</b> ${esc(attachmentFile.name)}</p>` : ''}
     <p class="muted">Envoi ${scheduleLabel()}.</p>
   `, async () => {
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
     const res = await api('/admin/api/campaigns', {
       method: 'POST',
-      body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso() })
+      body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
     });
     $('composerSummary').classList.remove('hidden');
     $('composerSummary').textContent = res.status === 'scheduled'
@@ -362,6 +380,7 @@ $('btnSendToSelected').addEventListener('click', () => {
     checks.forEach((c) => { c.checked = false; });
     selectedContacts = new Set();
     updateComposerCount();
+    $('smsAttachment').value = '';
   });
 });
 

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
+const multer = require('multer');
 const db = require('./db');
 
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
@@ -14,6 +15,7 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
 const MAX_MESSAGE_LENGTH = 1000;
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 // Répartition de charge entre passerelles :
 //  - intervalle conseillé aux passerelles (renvoyé dans /sync)
 //  - passerelle « active » = synchronisée il y a moins de 2 intervalles
@@ -21,6 +23,9 @@ const MAX_MESSAGE_LENGTH = 1000;
 const SYNC_INTERVAL_SEC = parseInt(process.env.SYNC_INTERVAL_SEC || '60', 10);
 const ESCALATION_MS = parseInt(process.env.ESCALATION_SEC || String(SYNC_INTERVAL_SEC), 10) * 1000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const ATTACHMENTS_DIR = path.join(DATA_DIR, 'attachments');
+fs.mkdirSync(ATTACHMENTS_DIR, { recursive: true });
 
 // Une passerelle est « en ligne » si elle s'est synchronisée il y a moins de
 // OFFLINE_WINDOW_MS. Au démarrage du serveur, une grâce de STARTUP_GRACE_MS
@@ -39,6 +44,45 @@ const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const newToken = () => crypto.randomBytes(32).toString('base64url');
 const isoNow = () => new Date().toISOString();
 const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date.now();
+
+const attachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: ATTACHMENTS_DIR,
+    filename: (_req, _file, cb) => cb(null, newToken())
+  }),
+  limits: { fileSize: MAX_ATTACHMENT_SIZE }
+});
+
+function publicAttachmentUrl(req, token) {
+  const base = String(process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.hostname}:${PORT_API}`).replace(/\/$/, '');
+  return `${base}/api/v1/attachments/${encodeURIComponent(token)}`;
+}
+
+function findAttachment(req, attachmentId, owner) {
+  const id = Number(attachmentId);
+  if (!Number.isInteger(id) || id < 1) return { error: 'Pièce jointe invalide' };
+  const attachment = db.prepare('SELECT * FROM attachments WHERE id = ?').get(id);
+  if (!attachment) return { error: 'Pièce jointe introuvable' };
+  if (owner && owner.keyId != null && attachment.owner_key_id !== owner.keyId) {
+    return { error: 'Pièce jointe non autorisée' };
+  }
+  if (owner && owner.accountId != null && attachment.owner_account_id !== owner.accountId) {
+    return { error: 'Pièce jointe non autorisée' };
+  }
+  return { attachment };
+}
+
+function messageBodyWithAttachment(req, body, attachmentId, owner) {
+  const checked = attachmentId ? findAttachment(req, attachmentId, owner) : { attachment: null };
+  if (checked.error) return checked;
+  if (!checked.attachment) return { body };
+  const suffix = `\n\nPièce jointe : ${publicAttachmentUrl(req, checked.attachment.token)}`;
+  const fullBody = body + suffix;
+  if (fullBody.length > MAX_MESSAGE_LENGTH) {
+    return { error: `Message trop long avec le lien de la pièce jointe (max ${MAX_MESSAGE_LENGTH} caractères)` };
+  }
+  return { body: fullBody, attachment: checked.attachment };
+}
 
 function normalizeIncomingDate(value) {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -198,10 +242,70 @@ apiApp.use((_req, res, next) => {
 
 apiApp.get('/health', (_req, res) => res.json({ ok: true }));
 
+apiApp.get('/api/v1/attachments/:token', (req, res) => {
+  const token = String(req.params.token || '');
+  if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return res.status(404).end();
+  const attachment = db.prepare('SELECT * FROM attachments WHERE token = ?').get(token);
+  if (!attachment) return res.status(404).end();
+  const filePath = path.join(ATTACHMENTS_DIR, attachment.stored_name);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  db.prepare('UPDATE attachments SET opened_at = ?, open_count = open_count + 1 WHERE id = ?')
+    .run(isoNow(), attachment.id);
+  res.type(attachment.mime_type || 'application/octet-stream');
+  res.setHeader(
+    'Content-Disposition',
+    `inline; filename*=UTF-8''${encodeURIComponent(attachment.original_name)}`
+  );
+  res.sendFile(filePath);
+});
+
+function uploadSingle(req, res, next) {
+  attachmentUpload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'Pièce jointe trop volumineuse (max 10 Mo)' });
+    }
+    return res.status(400).json({ error: 'Upload de la pièce jointe impossible' });
+  });
+}
+
+apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle, (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  const createdAt = isoNow();
+  try {
+    const info = db.prepare(`
+      INSERT INTO attachments
+        (token, original_name, stored_name, mime_type, size, owner_key_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.file.filename,
+      req.file.originalname || 'piece-jointe',
+      req.file.filename,
+      req.file.mimetype || 'application/octet-stream',
+      req.file.size,
+      req.apiKey.id,
+      createdAt
+    );
+    res.status(201).json({
+      id: info.lastInsertRowid,
+      name: req.file.originalname || 'piece-jointe',
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      size: req.file.size,
+      url: publicAttachmentUrl(req, req.file.filename)
+    });
+  } catch (err) {
+    fs.rmSync(req.file.path, { force: true });
+    throw err;
+  }
+});
+
 // Envoi d'un SMS demandé par une application web (clé type "web")
 apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
+  const withAttachment = messageBodyWithAttachment(
+    req, message, req.body.attachmentId, { keyId: req.apiKey.id }
+  );
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
   }
@@ -209,16 +313,20 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
   if (message.length > MAX_MESSAGE_LENGTH) {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
+  if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(recipient, message, 'pending', 'web', req.apiKey.label, createdAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, createdAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
-    message,
+    message: withAttachment.body,
     status: 'pending',
-    createdAt
+    createdAt,
+    attachment: withAttachment.attachment
+      ? { id: withAttachment.attachment.id, name: withAttachment.attachment.original_name, url: publicAttachmentUrl(req, withAttachment.attachment.token) }
+      : null
   });
 });
 
@@ -505,6 +613,36 @@ webApp.get('/send.html', (req, res) => {
 // ---------- API d'administration (protégée par session) ----------
 webApp.use('/admin/api', requireSession);
 
+webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  const createdAt = isoNow();
+  try {
+    const info = db.prepare(`
+      INSERT INTO attachments
+        (token, original_name, stored_name, mime_type, size, owner_account_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.file.filename,
+      req.file.originalname || 'piece-jointe',
+      req.file.filename,
+      req.file.mimetype || 'application/octet-stream',
+      req.file.size,
+      req.session.accountId,
+      createdAt
+    );
+    res.status(201).json({
+      id: info.lastInsertRowid,
+      name: req.file.originalname || 'piece-jointe',
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      size: req.file.size,
+      url: publicAttachmentUrl(req, req.file.filename)
+    });
+  } catch (err) {
+    fs.rmSync(req.file.path, { force: true });
+    throw err;
+  }
+});
+
 webApp.get('/admin/api/keys', requireAdmin, (_req, res) => {
   const keys = db.prepare(
     `SELECT id, label, type, device_id, created_at, expires_at, revoked, last_used_at, last_seen_at
@@ -577,9 +715,11 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
 webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const status = String(req.query.status || '');
   const base = `
-    SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name
-    FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
-    LEFT JOIN groups g ON g.id = m.group_id
+     SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
+       a.original_name AS attachment_name, a.opened_at AS attachment_opened_at, a.open_count AS attachment_open_count
+     FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+     LEFT JOIN attachments a ON a.id = m.attachment_id
+     LEFT JOIN groups g ON g.id = m.group_id
   `;
   const rows = status
     ? db.prepare(`${base} WHERE m.status = ? ORDER BY m.id ASC`).all(status)
@@ -591,7 +731,7 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
   const statusLabel = {
     scheduled: 'programmé', pending: 'en attente', sending: 'en cours', sent: 'envoyé', delivered: 'remis', failed: 'échec', cancelled: 'annulé'
   };
-  const header = ['ID', 'Date', 'Origine', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Erreur'];
+  const header = ['ID', 'Date', 'Origine', 'Destinataire', 'Message', 'Statut', 'Envoyé le', 'Remis le', 'Échec le', 'Passerelle', 'Appareil', 'Pièce jointe', 'Ouvertures', 'Erreur'];
   const lines = rows.map((m) => [
     m.id,
     m.created_at,
@@ -604,6 +744,8 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
     m.failed_at,
     m.gateway_label,
     m.device_id,
+    m.attachment_name,
+    m.attachment_open_count || 0,
     m.error
   ].map(esc).join(';'));
   const csv = '\uFEFF' + header.join(';') + '\r\n' + lines.join('\r\n');
@@ -619,9 +761,11 @@ webApp.get('/admin/api/messages', (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
   const base = `
     SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
-      c.address_book_id AS campaign_book_id, ab.name AS campaign_book_name
+      c.address_book_id AS campaign_book_id, ab.name AS campaign_book_name,
+      a.original_name AS attachment_name, a.opened_at AS attachment_opened_at, a.open_count AS attachment_open_count
     FROM messages m
     LEFT JOIN keys k ON k.id = m.claimed_by
+    LEFT JOIN attachments a ON a.id = m.attachment_id
     LEFT JOIN groups g ON g.id = m.group_id
     LEFT JOIN campaigns c ON c.id = m.campaign_id
     LEFT JOIN address_books ab ON ab.id = c.address_book_id
@@ -698,6 +842,12 @@ webApp.get('/admin/api/messages/counts', (req, res) => {
 webApp.post('/admin/api/messages', (req, res) => {
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
+  const withAttachment = messageBodyWithAttachment(
+    req,
+    message,
+    req.body.attachmentId,
+    req.session.role === 'admin' ? null : { accountId: req.session.accountId }
+  );
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
   }
@@ -705,6 +855,7 @@ webApp.post('/admin/api/messages', (req, res) => {
   if (message.length > MAX_MESSAGE_LENGTH) {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
+  if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
   const groupId = req.session.role === 'admin' ? (Number(req.body.groupId) || null) : req.session.groupId;
   const sched = scheduleInfo(req.body.scheduledAt);
   if (sched && sched.error) return res.status(400).json({ error: sched.error });
@@ -712,14 +863,17 @@ webApp.post('/admin/api/messages', (req, res) => {
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, message, status, 'console', 'Console', createdAt, groupId, scheduledAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, createdAt, groupId, scheduledAt);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
-    message,
+    message: withAttachment.body,
     status,
-    createdAt
+    createdAt,
+    attachment: withAttachment.attachment
+      ? { id: withAttachment.attachment.id, name: withAttachment.attachment.original_name, url: publicAttachmentUrl(req, withAttachment.attachment.token) }
+      : null
   });
 });
 
@@ -756,14 +910,14 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
   const groupId = Number(req.body.groupId) || null;
   const createdAt = isoNow();
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
   );
   let created = 0;
   if (toInsert.length) {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        insert.run(recipient, message, 'pending', 'console', 'Console', createdAt, groupId);
+        insert.run(recipient, message, 'pending', 'console', 'Console', null, createdAt, groupId);
         created++;
       }
       db.exec('COMMIT');
@@ -1211,6 +1365,12 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     ? body.contactIds.map(Number).filter(Number.isInteger)
     : [];
   const message = String(body.message || '').trim();
+  const withAttachment = messageBodyWithAttachment(
+    req,
+    message,
+    body.attachmentId,
+    req.session.role === 'admin' ? null : { accountId: req.session.accountId }
+  );
   if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
   const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
   if (!book) return res.status(404).json({ error: 'Carnet introuvable' });
@@ -1222,6 +1382,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   if (message.length > MAX_MESSAGE_LENGTH) {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
+  if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
   const sched = scheduleInfo(body.scheduledAt);
   if (sched && sched.error) return res.status(400).json({ error: sched.error });
   const placeholders = contactIds.map(() => '?').join(',');
@@ -1240,12 +1401,12 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   try {
     const info = db.prepare(
       'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
+    ).run(bookId, groupId, withAttachment.body, req.session.accountId, scheduledAt, createdAt);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
-      'INSERT INTO messages (recipient, body, status, origin, origin_label, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    for (const c of contacts) insert.run(c.phone, message, status, 'console', 'Console', createdAt, groupId, campaignId, scheduledAt);
+    for (const c of contacts) insert.run(c.phone, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, createdAt, groupId, campaignId, scheduledAt);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');

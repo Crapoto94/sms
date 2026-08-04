@@ -88,8 +88,10 @@
             <button type="button" data-emoji="👍" title="OK">👍</button>
             <button type="button" data-emoji="🎈" title="Ballon">🎈</button>
           </div>
-          <textarea id="smsBody" maxlength="1000" rows="8" placeholder="Contenu du SMS…"></textarea>
-          <label for="scheduleAt">Envoyer à <span class="muted">(optionnel — vide = immédiat)</span></label>
+           <textarea id="smsBody" maxlength="1000" rows="8" placeholder="Contenu du SMS…"></textarea>
+           <label for="smsAttachment">Pièce jointe <span class="muted">(10 Mo maximum, un lien public sera ajouté au SMS)</span></label>
+           <input id="smsAttachment" type="file">
+           <label for="scheduleAt">Envoyer à <span class="muted">(optionnel — vide = immédiat)</span></label>
           <input id="scheduleAt" type="datetime-local">
           <div class="row" style="margin-top:16px">
             <button id="btnSendSingle">Envoyer</button>

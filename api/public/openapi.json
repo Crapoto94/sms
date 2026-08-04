@@ -6,7 +6,7 @@
     "description": "API permettant à une application web de demander l'envoi d'un SMS. Le SMS est mis en file d'attente puis envoyé par la passerelle (le téléphone) au prochain cycle de synchronisation.\n\nL'authentification se fait par **Bearer token** : une clé API de type **Web** (créée dans la console d'administration)."
   },
   "tags": [
-    { "name": "Messages", "description": "Envoi de SMS" },
+    { "name": "Messages", "description": "Envoi de SMS et pièces jointes" },
     { "name": "Système", "description": "Vérification de disponibilité" }
   ],
   "security": [
@@ -36,8 +36,28 @@
             "description": "Contenu du SMS (jusqu'à 1000 caractères ; au-delà de 160, le message est envoyé en plusieurs segments).",
             "maxLength": 1000,
             "example": "Votre colis sera livré demain."
+          },
+          "attachmentId": {
+            "type": "integer",
+            "description": "Identifiant retourné par l'upload d'une pièce jointe. Le serveur ajoute automatiquement au SMS un lien public suivi.",
+            "example": 7
           }
         }
+      },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 7 },
+          "name": { "type": "string", "example": "brochure.pdf" },
+          "mimeType": { "type": "string", "example": "application/pdf" },
+          "size": { "type": "integer", "example": 24576 },
+          "url": { "type": "string", "format": "uri", "description": "Lien public non authentifié. Chaque ouverture est comptabilisée." }
+        }
+      },
+      "AttachmentUploadResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/Attachment" }
+        ]
       },
       "MessageCreated": {
         "type": "object",
@@ -63,6 +83,10 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "attachment": {
+            "allOf": [ { "$ref": "#/components/schemas/Attachment" } ],
+            "nullable": true
           }
         }
       },
@@ -78,6 +102,53 @@
     }
   },
   "paths": {
+    "/api/v1/attachments": {
+      "post": {
+        "tags": ["Messages"],
+        "summary": "Uploader une pièce jointe",
+        "description": "Upload authentifié d'un fichier. Utilisez l'identifiant retourné dans `attachmentId` lors de la création du SMS.",
+        "operationId": "uploadAttachment",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Pièce jointe uploadée.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AttachmentUploadResponse" } } }
+          },
+          "400": { "description": "Fichier manquant ou upload invalide.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "Clé API manquante ou invalide.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "Fichier supérieur à 10 Mo.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/v1/attachments/{token}": {
+      "get": {
+        "tags": ["Messages"],
+        "summary": "Ouvrir une pièce jointe",
+        "description": "Endpoint public sans authentification. L'ouverture est enregistrée puis le fichier est retourné.",
+        "operationId": "openAttachment",
+        "security": [],
+        "parameters": [
+          { "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Fichier de la pièce jointe." },
+          "404": { "description": "Pièce jointe introuvable." }
+        }
+      }
+    },
     "/api/v1/messages": {
       "post": {
         "tags": ["Messages"],

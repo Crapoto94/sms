@@ -74,6 +74,17 @@ async function api(path, options = {}) {
   return res.json();
 }
 
+async function uploadAttachment(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch('/admin/api/attachments', { method: 'POST', body: form });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 // ---------- Onglets ----------
 document.querySelectorAll('.tab').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -242,12 +253,19 @@ const stateOf = (s) => badge({
 
 let msgView = 'sent';
 
-const MESSAGE_HEADERS = '<tr><th>Date</th><th>Origine</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Erreur</th></tr>';
+const MESSAGE_HEADERS = '<tr><th>Date</th><th>Origine</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Groupe</th><th>Pièce jointe</th><th>Erreur</th></tr>';
 
 function messageOrigin(m) {
   if (m.origin === 'web') return `${badge('API WEB', 'ok')} ${esc(m.origin_label || '')}`;
   if (m.origin === 'console') return badge('Console', 'off');
   return esc(m.origin_label || m.origin || '—');
+}
+
+function messageAttachment(m) {
+  if (!m.attachment_name) return '—';
+  const opened = Number(m.attachment_open_count || 0);
+  const state = opened ? badge(`Ouverte (${opened})`, 'ok') : badge('Non ouverte', 'off');
+  return `${state} <span class="muted">${esc(m.attachment_name)}</span>`;
 }
 
 function cancelButton(m) {
@@ -273,6 +291,7 @@ function adminMessageRow(m) {
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td>${esc(m.group_name || '—')}</td>
+    <td>${messageAttachment(m)}</td>
     <td class="muted">${esc(m.error || '')}</td>
     <td>${cancelButton(m)}</td>
   </tr>`;
@@ -286,6 +305,7 @@ function campaignDetailRow(m) {
     <td>${stateOf(m.status)}</td>
     <td>${esc(m.gateway_label || m.device_id || '—')}</td>
     <td>${esc(m.group_name || '—')}</td>
+    <td>${messageAttachment(m)}</td>
     <td class="muted">${esc(m.error || '')}</td>
   </tr>`;
 }
@@ -315,11 +335,11 @@ function renderMessageList(messages) {
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-      <td colspan="9">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
+      <td colspan="10">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${messageAttachment(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">
-      <td colspan="10">
+      <td colspan="11">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
@@ -386,7 +406,7 @@ async function loadMessages() {
   }
   $('messagesBody').innerHTML = messages.length
     ? renderMessageList(messages)
-    : '<tr><td colspan="10" class="muted">Aucun message.</td></tr>';
+    : '<tr><td colspan="11" class="muted">Aucun message.</td></tr>';
   bindCampaignToggles();
   bindMessageActions();
 }
@@ -436,6 +456,7 @@ $('btnExport').addEventListener('click', () => {
 $('btnNewMessage').addEventListener('click', () => {
   $('smsRecipient').value = '';
   $('smsBody').value = '';
+  $('smsAttachment').value = '';
   updateSmsCounter();
   $('messageError').textContent = '';
   $('messageModal').classList.remove('hidden');
@@ -472,6 +493,7 @@ $('btnSendMessage').addEventListener('click', () => {
   $('messageError').textContent = '';
   const recipient = $('smsRecipient').value.trim();
   const message = $('smsBody').value.trim();
+  const attachmentFile = $('smsAttachment').files[0] || null;
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     $('messageError').textContent = 'Numéro de téléphone invalide.';
     return;
@@ -484,15 +506,18 @@ $('btnSendMessage').addEventListener('click', () => {
   $('confirmBody').innerHTML = `
     <p><b>Destinataire :</b> <span class="code">${esc(recipient)}</span></p>
     <p><b>Message :</b><br>${esc(message)}</p>
+    ${attachmentFile ? `<p><b>Pièce jointe :</b> ${esc(attachmentFile.name)}</p>` : ''}
     <p class="muted">Envoi immédiat.</p>`;
   $('confirmError').textContent = '';
   $('confirmModal').classList.remove('hidden');
   pendingAdminSend = async () => {
+    const attachment = attachmentFile ? await uploadAttachment(attachmentFile) : null;
     await api('/admin/api/messages', {
       method: 'POST',
-      body: JSON.stringify({ recipient, message })
+      body: JSON.stringify({ recipient, message, attachmentId: attachment ? attachment.id : null })
     });
     $('messageModal').classList.add('hidden');
+    $('smsAttachment').value = '';
     loadMessages();
   };
 });

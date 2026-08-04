@@ -36,8 +36,23 @@ CREATE TABLE IF NOT EXISTS messages (
   error        TEXT,
   origin       TEXT    NOT NULL DEFAULT 'console',
   origin_label TEXT,
+  attachment_id INTEGER,
   created_at   TEXT    NOT NULL,
   updated_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  token            TEXT    NOT NULL UNIQUE,
+  original_name    TEXT    NOT NULL,
+  stored_name      TEXT    NOT NULL UNIQUE,
+  mime_type        TEXT    NOT NULL,
+  size             INTEGER NOT NULL,
+  owner_key_id     INTEGER,
+  owner_account_id INTEGER,
+  created_at       TEXT    NOT NULL,
+  opened_at        TEXT,
+  open_count       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_status    ON messages(status);
@@ -173,6 +188,9 @@ if (!messageCols.includes('origin')) {
 }
 if (!messageCols.includes('origin_label')) {
   db.exec('ALTER TABLE messages ADD COLUMN origin_label TEXT');
+}
+if (!messageCols.includes('attachment_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN attachment_id INTEGER');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
