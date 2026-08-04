@@ -32,8 +32,12 @@
       <div class="composer">
         <div>
           <div id="singleRecipient">
-            <label for="smsRecipient">Numéro</label>
-            <input id="smsRecipient" placeholder="ex : 06 12 34 56 78" autocomplete="off">
+            <label for="smsRecipient">Numéros</label>
+            <div class="row" style="justify-content:flex-start; gap:8px">
+              <input id="smsRecipient" placeholder="ex : 06 12 34 56 78" autocomplete="off">
+              <button id="btnAddRecipient" type="button" class="ghost" title="Ajouter ce numéro">+</button>
+            </div>
+            <div id="singleRecipients" class="recipients" style="margin-top:8px"></div>
           </div>
           <div id="bookRecipient" class="hidden">
             <div class="row">
