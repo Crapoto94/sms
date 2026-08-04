@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const db = require('./db');
 
@@ -359,18 +360,27 @@ webApp.post('/admin/logout', (req, res) => {
 
 const sendFile = (name) => (_req, res) => res.sendFile(path.join(PUBLIC_DIR, name));
 
+// Injecte la version dans le HTML (fichiers et URLs d'assets suffixés
+// par "?v=…" pour casser le cache navigateur/proxy à chaque release).
+const renderHtml = (name) => (_req, res) => {
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, name), 'utf8')
+    .replace(/__APP_VERSION__/g, APP_VERSION);
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('html').send(html);
+};
+
 apiApp.get('/docs', sendFile('docs.html'));
 apiApp.get('/openapi.json', sendFile('openapi.json'));
 webApp.get('/docs', sendFile('docs.html'));
 webApp.get('/openapi.json', sendFile('openapi.json'));
 
-webApp.get('/login.html', sendFile('login.html'));
+webApp.get('/login.html', renderHtml('login.html'));
 webApp.use('/css', express.static(path.join(PUBLIC_DIR, 'css')));
 webApp.use('/js', express.static(path.join(PUBLIC_DIR, 'js')));
 
 webApp.get(['/', '/index.html'], (req, res) => {
   if (!sessionValid(req)) return res.redirect('/login.html');
-  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+  renderHtml('index.html')(req, res);
 });
 
 // ---------- API d'administration (protégée par session) ----------
