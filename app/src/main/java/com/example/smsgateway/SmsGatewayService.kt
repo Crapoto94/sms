@@ -171,7 +171,7 @@ class SmsGatewayService : Service() {
 
         lastPollTime = System.currentTimeMillis()
         lastError = null
-        Config.setLastSyncAt(this, lastPollTime)
+        Config.setLastSyncAt(this, lastPollTime!!)
         pollIntervalMs = result.intervalMs
 
         reportIncomingMessages()
