@@ -405,21 +405,22 @@ function renderMessageList(messages) {
     const first = c.rows[0];
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
-    html.push(`<tr class="campaign-row" data-campaign="${c.id}">
+    html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
       <td colspan="7">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
-    </tr>`);
-    html.push(`<tr class="campaign-detail hidden" data-campaign="${c.id}">
+    </tr>
+    <tr class="campaign-detail hidden" data-campaign="${c.id}">
       <td colspan="8">
         <table>
           <thead>${MESSAGE_HEADERS}</thead>
           <tbody>${c.rows.map((m) => campaignDetailRow(m)).join('')}</tbody>
         </table>
       </td>
-    </tr>`);
+    </tr>` });
   }
-  for (const m of singles) html.push(messageRow(m));
-  return html.join('');
+  for (const m of singles) html.push({ time: Date.parse(m.created_at), html: messageRow(m) });
+  html.sort((a, b) => b.time - a.time);
+  return html.map((e) => e.html).join('');
 }
 
 function bindCampaignToggles() {

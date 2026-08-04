@@ -159,6 +159,7 @@ label { display: block; margin: 12px 0 4px; font-size: 13px; color: var(--label)
   justify-content: center;
   z-index: 10;
 }
+.overlay.above { z-index: 20; }
 
 .card {
   background: var(--panel);
