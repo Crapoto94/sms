@@ -214,8 +214,7 @@ async function loadGateways() {
   updateOnlineBadge(stats.gatewaysOnline);
   $('gatewaysBody').innerHTML = gateways.length
     ? gateways.map((g) => {
-        const online = g.last_seen_at && Date.now() - new Date(g.last_seen_at).getTime() < 3 * 60 * 1000;
-        const state = online ? badge('En ligne', 'ok') : badge('Hors ligne', 'off');
+        const state = g.online ? badge('En ligne', 'ok') : badge('Hors ligne', 'off');
         return `<tr>
           <td>${esc(g.label || '—')}</td>
           <td class="code">${esc(g.device_id || '—')}</td>

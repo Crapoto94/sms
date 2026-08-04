@@ -9,7 +9,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.23';
+const APP_VERSION = process.env.APP_VERSION || '1.24';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -18,10 +18,22 @@ const MAX_MESSAGE_LENGTH = 1000;
 //  - intervalle conseillé aux passerelles (renvoyé dans /sync)
 //  - passerelle « active » = synchronisée il y a moins de 2 intervalles
 //  - message en attente depuis >= 1 intervalle = prenable par le premier venu
-const SYNC_INTERVAL_SEC = parseInt(process.env.SYNC_INTERVAL_SEC || '60', 10);
-const ACTIVE_WINDOW_MS = parseInt(process.env.ACTIVE_WINDOW_SEC || String(SYNC_INTERVAL_SEC * 2), 10) * 1000;
+const SYNC_INTERVAL_SEC = parseInt(process.env.SYNC_INTERVAL_SEC || '15', 10);
 const ESCALATION_MS = parseInt(process.env.ESCALATION_SEC || String(SYNC_INTERVAL_SEC), 10) * 1000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+// Une passerelle est « en ligne » si elle s'est synchronisée il y a moins de
+// OFFLINE_WINDOW_MS. Au démarrage du serveur, une grâce de STARTUP_GRACE_MS
+// est accordée : les passerelles synchronisées peu avant un redémarrage ne
+// sont pas marquées hors ligne pendant qu'elles se resynchronisent. Cette
+// grâce est bornée et redevient la fenêtre normale une fois dépassée.
+const SERVER_STARTED_AT = Date.now();
+const OFFLINE_WINDOW_MS = parseInt(process.env.OFFLINE_WINDOW_SEC || '180', 10) * 1000;
+const STARTUP_GRACE_MS = parseInt(process.env.STARTUP_GRACE_SEC || '120', 10) * 1000;
+const onlineCutoffIso = () => new Date(Math.max(
+  Date.now() - OFFLINE_WINDOW_MS,
+  SERVER_STARTED_AT - STARTUP_GRACE_MS
+)).toISOString();
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const newToken = () => crypto.randomBytes(32).toString('base64url');
@@ -256,12 +268,12 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       "SELECT COUNT(*) AS c FROM messages WHERE status = 'pending'"
     ).get().c;
 
-    const activeCutoff = new Date(now.getTime() - ACTIVE_WINDOW_MS).toISOString();
+    const activeCutoff = onlineCutoffIso();
     let activeCount = db.prepare(
       "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
     ).get(activeCutoff).c;
     const selfFresh = req.apiKey.last_seen_at &&
-      Date.parse(req.apiKey.last_seen_at) >= now.getTime() - ACTIVE_WINDOW_MS;
+      Date.parse(req.apiKey.last_seen_at) >= Date.parse(activeCutoff);
     if (!selfFresh) activeCount++;
     activeCount = Math.max(1, activeCount);
 
@@ -502,6 +514,7 @@ webApp.delete('/admin/api/keys/:id', requireAdmin, (req, res) => {
 });
 
 webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
+  const cutoff = onlineCutoffIso();
   const gateways = db.prepare(`
     SELECT
       k.id, k.label, k.device_id, k.last_seen_at, k.last_used_at,
@@ -513,7 +526,7 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
     FROM keys k
     WHERE k.type = 'gateway'
     ORDER BY k.last_seen_at DESC
-  `).all();
+  `).all().map((g) => ({ ...g, online: !!(g.last_seen_at && g.last_seen_at > cutoff) }));
   res.json(gateways);
 });
 
@@ -1207,14 +1220,14 @@ webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
   }
   const online = db.prepare(
     "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
-  ).get(new Date(Date.now() - 3 * 60 * 1000).toISOString()).c;
+  ).get(onlineCutoffIso()).c;
   res.json({ messages: byStatus, keys: byKeyType, gatewaysOnline: online });
 });
 
 webApp.get('/admin/api/gateways/online', requireSession, (_req, res) => {
   const online = db.prepare(
     "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
-  ).get(new Date(Date.now() - 3 * 60 * 1000).toISOString()).c;
+  ).get(onlineCutoffIso()).c;
   res.json({ online });
 });
 
