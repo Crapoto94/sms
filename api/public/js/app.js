@@ -102,6 +102,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
+    $('help').classList.toggle('hidden', currentTab !== 'help');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
     if (currentTab === 'messages') {

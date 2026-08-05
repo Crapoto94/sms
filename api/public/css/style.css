@@ -1085,3 +1085,330 @@ body.center .brand-mark svg { width: 21px; height: 21px; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- 12. Onglet Aide ---------- */
+
+#help > p,
+.help-block > p {
+  max-width: 82ch;
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+#help strong { color: var(--text); font-weight: 600; }
+#help em { font-style: normal; color: var(--text); }
+
+.help-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 30px;
+}
+
+.help-toc a {
+  padding: 6px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-full);
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-decoration: none;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.help-toc a:hover {
+  background: var(--accent-quiet);
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.help-block {
+  margin: 0 0 44px;
+  scroll-margin-top: 24px;
+}
+
+.help-block:last-child { margin-bottom: 6px; }
+
+.help-block > h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.help-block > h3::before {
+  content: '';
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* --- Figures --- */
+
+.figure {
+  margin: 20px 0 10px;
+  padding: 22px 20px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-soft);
+}
+
+.figure svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: inherit;
+}
+
+.figure figcaption {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* Jetons graphiques des schemas */
+.d-panel        { fill: var(--panel-2); stroke: var(--border-strong); stroke-width: 1.5; }
+.d-panel-soft   { fill: var(--input-bg); stroke: var(--border); stroke-width: 1.25; }
+.d-panel-accent { fill: var(--accent-quiet); stroke: var(--accent-line); stroke-width: 1.5; }
+.d-chrome       { fill: var(--border-strong); }
+.d-queue        { fill: var(--accent); opacity: 0.55; }
+
+.d-t  { fill: var(--text);  font-size: 13px;   font-weight: 600; }
+.d-s  { fill: var(--label); font-size: 11.5px; }
+.d-m  { fill: var(--muted); font-size: 10.5px; }
+.d-a  { fill: var(--accent); font-size: 11.5px; font-weight: 600; }
+.d-big        { fill: var(--text);   font-size: 26px; font-weight: 600; }
+.d-big-accent { fill: var(--accent); font-size: 26px; font-weight: 700; }
+
+.d-line        { stroke: var(--border-strong); stroke-width: 2; fill: none; stroke-linecap: round; }
+.d-line-accent { stroke: var(--accent); stroke-width: 2; fill: none; stroke-linecap: round; }
+.d-dash        { stroke-dasharray: 6 7; }
+.d-head        { fill: var(--border-strong); }
+.d-head-accent { fill: var(--accent); }
+
+.d-icon { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.d-dot  { fill: var(--accent); }
+.d-dot-accent { fill: var(--accent); }
+.d-check { fill: none; stroke: var(--tone-ok-fg); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.d-badge   { fill: var(--accent); }
+.d-badge-t { fill: var(--accent-fg); font-size: 11.5px; font-weight: 700; }
+.d-pill    { fill: var(--tone-ok-bg); stroke: var(--tone-ok-line); stroke-width: 1; }
+.d-pill-t  { fill: var(--tone-ok-fg); font-size: 10px; font-weight: 600; }
+
+.d-fill-neutral { fill: var(--tone-neutral-bg); stroke: var(--tone-neutral-line); stroke-width: 1.25; }
+.d-fill-info    { fill: var(--tone-info-bg);    stroke: var(--tone-info-line);    stroke-width: 1.25; }
+.d-fill-ok      { fill: var(--tone-ok-bg);      stroke: var(--tone-ok-line);      stroke-width: 1.25; }
+.d-fill-violet  { fill: var(--tone-violet-bg);  stroke: var(--tone-violet-line);  stroke-width: 1.25; }
+.d-fill-danger  { fill: var(--tone-danger-bg);  stroke: var(--tone-danger-line);  stroke-width: 1.25; }
+.d-txt-neutral { fill: var(--tone-neutral-fg); font-size: 12.5px; font-weight: 600; }
+.d-txt-info    { fill: var(--tone-info-fg);    font-size: 12.5px; font-weight: 600; }
+.d-txt-ok      { fill: var(--tone-ok-fg);      font-size: 12.5px; font-weight: 600; }
+.d-txt-violet  { fill: var(--tone-violet-fg);  font-size: 12.5px; font-weight: 600; }
+.d-txt-danger  { fill: var(--tone-danger-fg);  font-size: 12.5px; font-weight: 600; }
+
+/* --- Listes explicatives --- */
+
+.help-steps,
+.help-list {
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: help-step;
+  display: grid;
+  gap: 10px;
+}
+
+.help-steps li,
+.help-list li {
+  position: relative;
+  padding: 11px 14px 11px 44px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.help-steps li b,
+.help-list li b { color: var(--text); font-weight: 600; }
+
+.help-steps li::before {
+  counter-increment: help-step;
+  content: counter(help-step);
+  position: absolute;
+  left: 12px;
+  top: 11px;
+  width: 21px;
+  height: 21px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 11.5px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.help-list li::before {
+  content: '';
+  position: absolute;
+  left: 20px;
+  top: 20px;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+}
+
+/* --- Cartes de roles --- */
+
+.help-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.help-card {
+  padding: 16px 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel-2);
+}
+
+.help-card h4 {
+  margin: 10px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.help-card p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--text-2);
+}
+
+.help-card-tag {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.tag-admin { background: var(--tone-violet-bg); color: var(--tone-violet-fg); border-color: var(--tone-violet-line); }
+.tag-user  { background: var(--tone-info-bg);   color: var(--tone-info-fg);   border-color: var(--tone-info-line); }
+.tag-key   { background: var(--tone-warn-bg);   color: var(--tone-warn-fg);   border-color: var(--tone-warn-line); }
+
+/* --- Blocs de fonctionnalites --- */
+
+.help-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.help-feature {
+  padding: 16px 18px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel-2);
+}
+
+.help-feature h4 {
+  margin: 0 0 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.help-feature ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.help-feature li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.help-feature li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+/* --- Matrice des droits --- */
+
+.help-matrix td.y { color: var(--tone-ok-fg); }
+.help-matrix td.n { color: var(--muted); }
+.help-matrix td.p { color: var(--tone-warn-fg); }
+.help-matrix td:not(:first-child) { text-align: center; font-size: 12.5px; }
+.help-matrix th:not(:first-child) { text-align: center; }
+
+/* --- Glossaire --- */
+
+.help-gloss {
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: minmax(150px, 200px) 1fr;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.help-gloss dt,
+.help-gloss dd {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.help-gloss dt:first-of-type,
+.help-gloss dt:first-of-type + dd { border-top: none; }
+
+.help-gloss dt { font-weight: 600; color: var(--text); background: var(--panel-2); }
+.help-gloss dd { color: var(--text-2); }
+
+@media (max-width: 720px) {
+  .help-gloss { grid-template-columns: 1fr; }
+  .help-gloss dd { border-top: none; padding-top: 0; }
+  .help-gloss dt:first-of-type + dd { border-top: none; }
+  .figure { padding: 14px 10px 12px; }
+  .help-features,
+  .help-cards { grid-template-columns: 1fr; }
+}
