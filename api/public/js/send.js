@@ -197,6 +197,7 @@ function renderSingleRecipients() {
     button.addEventListener('click', () => {
       singleRecipients = singleRecipients.filter((phone) => phone !== button.dataset.removeRecipient);
       renderSingleRecipients();
+      renderSingleBookContacts();
       updateComposerCount();
     });
   });
@@ -212,6 +213,7 @@ function addSingleRecipient() {
   $('smsRecipient').value = '';
   $('composerError').textContent = '';
   renderSingleRecipients();
+  renderSingleBookContacts();
   updateComposerCount();
   return true;
 }
@@ -222,6 +224,53 @@ $('smsRecipient').addEventListener('keydown', (event) => {
     event.preventDefault();
     addSingleRecipient();
   }
+});
+
+// ---------- Choix des numéros depuis un carnet (mode unitaire) ----------
+let singleBookContacts = [];
+
+async function loadSingleBookContacts() {
+  const bookId = Number($('singleBookSelect').value || 0);
+  singleBookContacts = bookId ? await api(`/admin/api/address-books/${bookId}/contacts`) : [];
+  renderSingleBookContacts();
+}
+
+function singleContactText(c) {
+  return [c.first_name, c.last_name, c.entity, c.phone].filter(Boolean).join(' ').toLowerCase();
+}
+
+function renderSingleBookContacts() {
+  const q = $('singleBookSearch').value.trim().toLowerCase();
+  const filtered = q
+    ? singleBookContacts.filter((c) => singleContactText(c).includes(q))
+    : singleBookContacts;
+  $('singleBookContacts').innerHTML = filtered.length
+    ? filtered.map((c) => {
+        const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.entity || c.phone;
+        const phone = normalizeRecipient(c.phone);
+        const checked = singleRecipients.includes(phone) ? 'checked' : '';
+        const disabled = c.blacklisted ? 'disabled' : '';
+        return `<label class="contact-row"><input type="checkbox" data-book-phone="${esc(c.phone)}" ${checked} ${disabled}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(c.phone)}</span>${c.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : ''}</span></label>`;
+      }).join('')
+    : `<div class="contact-list-empty muted">${singleBookContacts.length ? 'Aucun contact ne correspond à la recherche.' : 'Choisissez un carnet pour afficher les contacts.'}</div>`;
+}
+
+$('singleBookSelect').addEventListener('change', () => {
+  $('singleBookSearch').value = '';
+  loadSingleBookContacts();
+});
+$('singleBookSearch').addEventListener('input', renderSingleBookContacts);
+$('singleBookContacts').addEventListener('change', (event) => {
+  const checkbox = event.target.closest('[data-book-phone]');
+  if (!checkbox) return;
+  const phone = normalizeRecipient(checkbox.dataset.bookPhone);
+  if (checkbox.checked) {
+    if (!singleRecipients.includes(phone)) singleRecipients.push(phone);
+  } else {
+    singleRecipients = singleRecipients.filter((p) => p !== phone);
+  }
+  renderSingleRecipients();
+  updateComposerCount();
 });
 
 document.querySelectorAll('input[name=mode]').forEach((r) => {
@@ -244,7 +293,18 @@ async function loadComposer() {
     bookSelect.value = books.length ? String(books[0].id) : '';
   }
   fillExcludeBookSelect('excludeBookSelect', bookSelect.value);
+  fillSingleBookSelect();
   await loadRecipients();
+}
+
+function fillSingleBookSelect() {
+  const select = $('singleBookSelect');
+  const prev = select.value;
+  select.innerHTML = ['<option value="">—</option>']
+    .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`))
+    .join('');
+  select.value = books.some((b) => String(b.id) === prev) ? prev : '';
+  if (select.value) loadSingleBookContacts();
 }
 
 function fillExcludeBookSelect(selectId, primaryId) {
@@ -470,6 +530,7 @@ $('btnSendSingle').addEventListener('click', () => {
     $('composerSummary').textContent = `${recipients.length} message(s) pris en compte, envoi ${scheduleLabel()}.`;
     singleRecipients = [];
     renderSingleRecipients();
+    renderSingleBookContacts();
     $('smsRecipient').value = '';
     $('smsBody').value = '';
     $('smsAttachment').value = '';

@@ -46,6 +46,18 @@
               <button id="btnAddRecipient" type="button" class="ghost" title="Ajouter ce numéro">+</button>
             </div>
             <div id="singleRecipients" class="recipients" style="margin-top:8px"></div>
+            <details id="singleFromBook" style="margin-top:14px">
+              <summary>… ou choisir des numéros dans un carnet d'adresses</summary>
+              <div class="book-picker">
+                <label for="singleBookSelect">Carnet d'adresses</label>
+                <select id="singleBookSelect"><option value="">—</option></select>
+                <label for="singleBookSearch">Rechercher (nom, entité, numéro)</label>
+                <input id="singleBookSearch" placeholder="Tapez pour filtrer…" autocomplete="off">
+                <div id="singleBookContacts" class="recipients" style="margin-top:8px">
+                  <div class="contact-list-empty muted">Choisissez un carnet pour afficher les contacts.</div>
+                </div>
+              </div>
+            </details>
           </div>
           <div id="bookRecipient" class="hidden">
             <div class="row">
