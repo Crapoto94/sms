@@ -769,6 +769,22 @@ function campaignDetailRow(m) {
   </tr>`;
 }
 
+function campaignKpi(c, byStatus) {
+  if (c.rows.length <= 5) return '';
+  const chips = [];
+  const defs = [
+    ['kpi-ok', 'Remis', byStatus.delivered],
+    ['kpi-sent', 'Envoyés', byStatus.sent],
+    ['kpi-flight', 'En cours', (byStatus.pending || 0) + (byStatus.sending || 0) + (byStatus.scheduled || 0)],
+    ['kpi-fail', 'Échecs', byStatus.failed],
+    ['kpi-off', 'Annulés', byStatus.cancelled]
+  ];
+  for (const [cls, label, n] of defs) {
+    if (n > 0) chips.push(`<span class="kpi ${cls}" title="${label}">${label} <b>${n}</b></span>`);
+  }
+  return `<div class="campaign-kpi"><span class="kpi kpi-total" title="Destinataires">Total <b>${c.rows.length}</b></span>${chips.join('')}</div>`;
+}
+
 function renderMessageList(messages) {
   const campaigns = new Map();
   const singles = [];
@@ -792,9 +808,10 @@ function renderMessageList(messages) {
     const cancelable = c.rows.some((m) => CANCELABLE.includes(m.status));
     const first = c.rows[0];
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
+    const sender = first.creator_login || first.created_by_label || 'Console';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-       <td colspan="9">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${esc(first.body)} · cliquer pour le détail</span></td>
+       <td colspan="9">${summary}${campaignKpi(c, byStatus)}<span class="muted">${fmtDate(first.created_at)}${schedNote} · Envoyé par <b>${esc(sender)}</b> · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">

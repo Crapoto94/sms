@@ -20,6 +20,7 @@
       <button class="tab" data-tab="books">Carnets</button>
       <button class="tab" data-tab="fleet">Vérification flotte</button>
       <button class="tab" data-tab="logs">Logs</button>
+      <button class="tab" data-tab="journal">Journal</button>
       <button class="tab" data-tab="accounts">Comptes</button>
       <button class="tab" data-tab="groups">Groupes</button>
     </nav>
@@ -192,6 +193,23 @@
         <tbody id="authLogsBody"></tbody>
       </table></div>
     </section>
+    <section id="journal" class="panel hidden">
+      <div class="row">
+        <h2>Journal de la console</h2>
+        <span class="muted">Connexions à la console et envois (quantitatif)</span>
+        <select id="journalLimit">
+          <option value="50">50 entrées</option>
+          <option value="100" selected>100 entrées</option>
+          <option value="200">200 entrées</option>
+        </select>
+      </div>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Détail</th><th>Quantité</th><th>IP</th></tr>
+        </thead>
+        <tbody id="journalBody"></tbody>
+      </table></div>
+    </section>
     <section id="accounts" class="panel hidden">
       <div class="row">
         <h2>Comptes d'accès à la console</h2>
@@ -200,7 +218,7 @@
       <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe. Laissez l'identifiant vide sur l'écran de connexion pour utiliser le compte admin (mot de passe défini dans docker-compose, <code>ADMIN_PASSWORD</code>).</p>
       <div class="table-wrap"><table>
         <thead>
-          <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>E-mail</th><th>Resp.</th><th>Créé le</th><th>État</th><th>Actions</th></tr>
+          <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>E-mail</th><th>Resp.</th><th>Créé le</th><th>Dernière connexion</th><th>État</th><th>Actions</th></tr>
         </thead>
         <tbody id="accountsBody"></tbody>
       </table></div>

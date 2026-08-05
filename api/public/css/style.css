@@ -501,6 +501,40 @@ input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.55); curs
 body.light input[type=datetime-local]::-webkit-calendar-picker-indicator,
 body.light input[type=date]::-webkit-calendar-picker-indicator { filter: none; }
 
+/* Sélecteur de date/heure d'envoi différé : mis en avant */
+.schedule-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px 4px 12px;
+  border: 1.5px solid var(--tone-info-line);
+  border-radius: var(--r);
+  background: var(--input-bg);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.schedule-pick svg { flex: 0 0 auto; color: var(--tone-info-fg); }
+.schedule-pick input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  font-size: 13.5px;
+}
+.schedule-pick input:focus { outline: none; box-shadow: none; border: none; }
+.schedule-pick:hover { border-color: var(--accent); }
+.schedule-pick:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.schedule-pick input[type=datetime-local]::-webkit-calendar-picker-indicator {
+  filter: invert(0.55);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+}
+body.light .schedule-pick input[type=datetime-local]::-webkit-calendar-picker-indicator { filter: none; }
+
 label {
   display: block;
   margin: 14px 0 5px;
@@ -957,6 +991,33 @@ code {
 }
 .campaign-detail table { margin: 0; }
 .campaign-detail .summary { color: var(--summary); }
+
+/* KPI de délivrance dans le bandeau d'une campagne */
+.campaign-kpi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.campaign-kpi .kpi {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.campaign-kpi .kpi b { font-weight: 600; }
+.campaign-kpi .kpi-total  { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border-color: var(--tone-neutral-line); }
+.campaign-kpi .kpi-ok     { background: var(--tone-ok-bg); color: var(--tone-ok-fg); border-color: var(--tone-ok-line); }
+.campaign-kpi .kpi-sent   { background: var(--tone-info-bg); color: var(--tone-info-fg); border-color: var(--tone-info-line); }
+.campaign-kpi .kpi-flight { background: var(--tone-violet-bg); color: var(--tone-violet-fg); border-color: var(--tone-violet-line); }
+.campaign-kpi .kpi-fail   { background: var(--tone-danger-bg); color: var(--tone-danger-fg); border-color: var(--tone-danger-line); }
+.campaign-kpi .kpi-off    { background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); border-color: var(--tone-neutral-line); }
 
 /* ---------- 14. Page de connexion ---------- */
 

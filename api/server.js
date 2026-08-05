@@ -282,6 +282,24 @@ function logAuthAttempt(req, keyId, reason) {
   } catch (_) { /* ne bloque jamais la réponse */ }
 }
 
+// ---------- Journal de la console (connexions et envois, quantitatif) ----------
+function logConsole(req, action, detail, count) {
+  try {
+    const s = req.session;
+    db.prepare(
+      'INSERT INTO console_logs (login, role, action, detail, count, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      s ? s.login : 'admin',
+      s ? s.role : 'admin',
+      action,
+      detail || null,
+      count || 1,
+      req.socket.remoteAddress || req.ip || '',
+      isoNow()
+    );
+  } catch (_) { /* ne bloque jamais la réponse */ }
+}
+
 // ---------- Sessions de l'interface web ----------
 const sessions = new Map(); // sid -> { exp, accountId|null, login, role, groupId|null, isAdmin }
 
@@ -693,14 +711,20 @@ webApp.post('/admin/login', (req, res) => {
   }
 
   const sid = newToken();
-  sessions.set(sid, {
+  const session = {
     exp: Date.now() + SESSION_TTL_MS,
     accountId,
     login: sessionLogin,
     role,
     groupId,
     isAdmin: role === 'admin'
-  });
+  };
+  sessions.set(sid, session);
+  req.session = session;
+  if (accountId) {
+    db.prepare('UPDATE accounts SET last_login_at = ? WHERE id = ?').run(isoNow(), accountId);
+  }
+  logConsole(req, 'connexion', `Connexion à la console${accountId ? '' : ' (admin)'}`);
   res.setHeader(
     'Set-Cookie',
     `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
@@ -1064,6 +1088,7 @@ webApp.post('/admin/api/messages', (req, res) => {
   const info = db.prepare(
     'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, scheduledAt);
+  logConsole(req, 'envoi', null, 1);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
@@ -1125,7 +1150,18 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
       throw err;
     }
   }
+  if (created > 0) logConsole(req, 'import', `${toInsert.length} ligne(s) lue(s)`, created);
   res.status(201).json({ rows: input.length, duplicates, invalid, created });
+});
+
+webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const rows = db.prepare(`
+    SELECT id, login, role, action, detail, count, ip, created_at
+    FROM console_logs
+    ORDER BY id DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
 });
 
 // Annulation d'un message pas encore envoyé (programmé, en attente, en cours
@@ -1185,7 +1221,7 @@ webApp.get('/admin/api/auth-logs', requireAdmin, (req, res) => {
 
 // ---------- Gestion des comptes (protégée par session) ----------
 const accountFields = `
-  a.id, a.login, a.role, a.group_id, a.email, a.is_group_manager, a.disabled, a.created_at,
+  a.id, a.login, a.role, a.group_id, a.email, a.is_group_manager, a.disabled, a.created_at, a.last_login_at,
   g.name AS group_name
 `;
 
@@ -1665,6 +1701,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     for (const filePath of clonedAttachmentPaths) fs.rmSync(filePath, { force: true });
     throw err;
   }
+  logConsole(req, 'campagne', book.name, contacts.length);
   res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
 });
 
@@ -1754,6 +1791,7 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     db.exec('ROLLBACK');
     throw err;
   }
+  logConsole(req, 'verif flotte', book.name, contacts.length);
   res.status(201).json({ id: checkId, bookName: book.name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt });
 });
 

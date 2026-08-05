@@ -136,7 +136,10 @@
              <option value="0">Sans expiration</option>
            </select>
            <label for="scheduleAt">Envoyer à <span class="muted">(optionnel — vide = immédiat)</span></label>
-          <input id="scheduleAt" type="datetime-local">
+          <div class="schedule-pick">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            <input id="scheduleAt" type="datetime-local" step="300" title="Choisissez une date et une heure (minutes par pas de 5) — vide = envoi immédiat">
+          </div>
           <div class="row" style="margin-top:16px">
             <button id="btnSendSingle">Envoyer</button>
             <button id="btnSendToSelected" class="hidden">Envoyer aux contacts cochés</button>

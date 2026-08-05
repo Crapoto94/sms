@@ -136,6 +136,19 @@ CREATE TABLE IF NOT EXISTS auth_logs (
 
 CREATE INDEX IF NOT EXISTS idx_auth_logs_created ON auth_logs(created_at);
 
+CREATE TABLE IF NOT EXISTS console_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  login      TEXT    NOT NULL,
+  role       TEXT,
+  action     TEXT    NOT NULL,
+  detail     TEXT,
+  count      INTEGER NOT NULL DEFAULT 1,
+  ip         TEXT,
+  created_at TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_console_logs_created ON console_logs(created_at);
+
 CREATE TABLE IF NOT EXISTS accounts (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   login         TEXT    NOT NULL UNIQUE,
@@ -237,6 +250,9 @@ if (!accountCols.includes('email')) {
 }
 if (!accountCols.includes('is_group_manager')) {
   db.exec('ALTER TABLE accounts ADD COLUMN is_group_manager INTEGER NOT NULL DEFAULT 0');
+}
+if (!accountCols.includes('last_login_at')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN last_login_at TEXT');
 }
 const keyCols = db.prepare('PRAGMA table_info(keys)').all().map((c) => c.name);
 if (!keyCols.includes('app_version')) {

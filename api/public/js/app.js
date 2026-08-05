@@ -98,6 +98,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('books').classList.toggle('hidden', currentTab !== 'books');
     $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
+    $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
     if (currentTab === 'keys') loadKeys();
@@ -109,6 +110,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (currentTab === 'books') loadBooks();
     if (currentTab === 'fleet') loadFleet();
     if (currentTab === 'logs') loadLogs();
+    if (currentTab === 'journal') loadJournal();
     if (currentTab === 'accounts') loadAccounts();
     if (currentTab === 'groups') loadGroups();
   });
@@ -329,6 +331,22 @@ function campaignDetailRow(m) {
   </tr>`;
 }
 
+function campaignKpi(c, byStatus) {
+  if (c.rows.length <= 5) return '';
+  const chips = [];
+  const defs = [
+    ['kpi-ok', 'Remis', byStatus.delivered],
+    ['kpi-sent', 'Envoyés', byStatus.sent],
+    ['kpi-flight', 'En cours', (byStatus.pending || 0) + (byStatus.sending || 0) + (byStatus.scheduled || 0)],
+    ['kpi-fail', 'Échecs', byStatus.failed],
+    ['kpi-off', 'Annulés', byStatus.cancelled]
+  ];
+  for (const [cls, label, n] of defs) {
+    if (n > 0) chips.push(`<span class="kpi ${cls}" title="${label}">${label} <b>${n}</b></span>`);
+  }
+  return `<div class="campaign-kpi"><span class="kpi kpi-total" title="Destinataires">Total <b>${c.rows.length}</b></span>${chips.join('')}</div>`;
+}
+
 function renderMessageList(messages) {
   const campaigns = new Map();
   const singles = [];
@@ -352,9 +370,10 @@ function renderMessageList(messages) {
     const cancelable = c.rows.some((m) => CANCELABLE.includes(m.status));
     const first = c.rows[0];
     const schedNote = first.scheduled_at ? ` · programmé le ${fmtDate(first.scheduled_at)}` : '';
+    const sender = first.creator_login || first.created_by_label || 'Console';
     const summary = `<span class="badge ok">Carnet</span> <strong>${esc(c.book)}</strong> · ${c.rows.length} destinataire(s) · <b class="summary">${delivered} délivré(s)</b>${failed ? ` · ${failed} échec(s)` : ''}${inFlight ? ` · ${inFlight} en cours` : ''}`;
     html.push({ time: Date.parse(first.created_at), html: `<tr class="campaign-row" data-campaign="${c.id}">
-      <td colspan="10">${summary}<br><span class="muted">${fmtDate(first.created_at)}${schedNote} · ${messageOrigin(first)} · ${messageAttachment(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
+      <td colspan="10">${summary}${campaignKpi(c, byStatus)}<span class="muted">${fmtDate(first.created_at)}${schedNote} · Envoyé par <b>${esc(sender)}</b> · ${messageOrigin(first)} · ${messageAttachment(first)} · ${esc(first.body)} · cliquer pour le détail</span></td>
       <td>${cancelable ? `<button data-cancelcamp="${c.id}" class="ghost">Annuler</button>` : ''}</td>
     </tr>
     <tr class="campaign-detail hidden" data-campaign="${c.id}">
@@ -746,6 +765,31 @@ async function loadLogs() {
 }
 $('logLimit').addEventListener('change', loadLogs);
 
+// ---------- Journal de la console ----------
+const JOURNAL_LABELS = {
+  connexion: 'Connexion',
+  envoi: 'Envoi SMS',
+  import: 'Import CSV',
+  campagne: 'Campagne',
+  'verif flotte': 'Vérification flotte'
+};
+
+async function loadJournal() {
+  const limit = $('journalLimit').value;
+  const logs = await api(`/admin/api/console-logs?limit=${limit}`);
+  $('journalBody').innerHTML = logs.length
+    ? logs.map((l) => `<tr>
+        <td>${fmtDate(l.created_at)}</td>
+        <td>${esc(l.login)}</td>
+        <td>${esc(JOURNAL_LABELS[l.action] || l.action)}</td>
+        <td class="muted">${esc(l.detail || '—')}</td>
+        <td>${l.count}</td>
+        <td class="code">${esc(l.ip || '—')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">Aucune activité enregistrée pour le moment.</td></tr>';
+}
+$('journalLimit').addEventListener('change', loadJournal);
+
 // ---------- Comptes ----------
 let pendingAccountId = null;
 let pendingAccountEdit = false;
@@ -773,6 +817,7 @@ async function loadAccounts() {
           <td>${esc(a.email || '—')}</td>
           <td><input type="checkbox" data-manager="${a.id}" ${a.is_group_manager ? 'checked' : ''} ${a.role !== 'admin' && !a.group_id ? 'disabled' : ''}></td>
           <td>${fmtDate(a.created_at)}</td>
+          <td>${a.last_login_at ? fmtDate(a.last_login_at) : '<span class="muted">jamais</span>'}</td>
           <td>${state}</td>
           <td>
             <button data-editacc="${a.id}" class="ghost">Éditer</button>
@@ -782,7 +827,7 @@ async function loadAccounts() {
           </td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="9" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Aucun compte. Les comptes se connectent avec un identifiant et un mot de passe.</td></tr>';
   document.querySelectorAll('[data-pwd]').forEach((b) => {
     b.addEventListener('click', () => openAccountModal(Number(b.dataset.pwd)));
   });
