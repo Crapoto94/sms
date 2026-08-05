@@ -14,6 +14,7 @@
       <button class="tab active" data-tab="composer">Envoyer un message</button>
       <button class="tab" data-tab="messages">Mes messages</button>
       <button class="tab" data-tab="books">Carnets d'adresses</button>
+      <button class="tab" data-tab="fleet">Vérification flotte</button>
       <button id="btnTheme" class="ghost">Mode clair</button>
       <button id="logout" class="ghost">Déconnexion</button>
       <span id="currentUser" class="muted"></span>
@@ -113,6 +114,46 @@
           </div>
           <div id="composerSummary" class="muted hidden" style="margin-top:12px"></div>
           <p id="composerError" class="error"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="fleet" class="panel hidden">
+      <div class="row">
+        <h2>Vérification de flotte</h2>
+        <span class="muted">Une réponse est attendue pendant 72 heures après remise.</span>
+      </div>
+      <div class="composer">
+        <div>
+          <label for="fleetBookSelect">Carnet d'adresses</label>
+          <select id="fleetBookSelect"><option value="">—</option></select>
+          <div id="fleetContactList" class="recipients" style="margin-top:10px">
+            <div class="contact-list-empty muted">Choisissez un carnet.</div>
+          </div>
+        </div>
+        <div>
+          <label for="fleetMessage">Message de vérification</label>
+          <textarea id="fleetMessage" maxlength="1000" rows="5">Test de vérification de flotte : merci de répondre à ce message.</textarea>
+          <button id="btnStartFleet" style="margin-top:12px">Lancer la vérification</button>
+          <p id="fleetError" class="error"></p>
+        </div>
+      </div>
+      <div class="row" style="margin-top:24px">
+        <h3>Vérifications précédentes</h3>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
+          <tbody id="fleetChecksBody"></tbody>
+        </table>
+      </div>
+      <div id="fleetDetail" class="hidden" style="margin-top:20px">
+        <div class="row"><h3 id="fleetDetailTitle"></h3><button id="btnExportFleet" class="ghost">Exporter CSV</button></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
+            <tbody id="fleetItemsBody"></tbody>
+          </table>
         </div>
       </div>
     </section>

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS messages (
   attachment_id INTEGER,
   created_by    INTEGER,
   created_by_label TEXT,
+  fleet_check_id INTEGER,
   created_at   TEXT    NOT NULL,
   updated_at   TEXT
 );
@@ -68,6 +69,40 @@ CREATE TABLE IF NOT EXISTS attachment_opens (
   referer       TEXT,
   accept_language TEXT
 );
+
+CREATE TABLE IF NOT EXISTS fleet_checks (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id            INTEGER,
+  address_book_id     INTEGER NOT NULL,
+  message             TEXT NOT NULL,
+  created_by          INTEGER,
+  created_by_label    TEXT,
+  response_hours      INTEGER NOT NULL DEFAULT 72,
+  created_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fleet_check_items (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  fleet_check_id INTEGER NOT NULL,
+  message_id     INTEGER NOT NULL UNIQUE,
+  contact_id     INTEGER,
+  first_name     TEXT,
+  last_name      TEXT,
+  entity         TEXT,
+  phone          TEXT NOT NULL,
+  state          TEXT NOT NULL DEFAULT 'pending',
+  sent_at       TEXT,
+  delivered_at  TEXT,
+  failed_at     TEXT,
+  error         TEXT,
+  response_at   TEXT,
+  response_sender TEXT,
+  response_body TEXT,
+  UNIQUE (fleet_check_id, phone)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fleet_items_check ON fleet_check_items(fleet_check_id);
+CREATE INDEX IF NOT EXISTS idx_fleet_items_phone ON fleet_check_items(phone, response_at);
 
 CREATE INDEX IF NOT EXISTS idx_attachment_opens_attachment ON attachment_opens(attachment_id, opened_at);
 
@@ -217,6 +252,9 @@ if (!messageCols.includes('created_by')) {
 }
 if (!messageCols.includes('created_by_label')) {
   db.exec('ALTER TABLE messages ADD COLUMN created_by_label TEXT');
+}
+if (!messageCols.includes('fleet_check_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN fleet_check_id INTEGER');
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');

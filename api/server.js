@@ -178,6 +178,62 @@ function normalizePhone(input) {
   return s;
 }
 
+const FLEET_RESPONSE_HOURS = 72;
+
+function updateFleetItemForMessage(messageId, status, at, error) {
+  const state = status === 'failed' ? 'failed' : status === 'delivered' ? 'delivered' : 'sent';
+  db.prepare(`
+    UPDATE fleet_check_items SET
+      state = CASE WHEN response_at IS NULL THEN ? ELSE 'replied' END,
+      sent_at = CASE WHEN ? = 'sent' THEN COALESCE(sent_at, ?) ELSE sent_at END,
+      delivered_at = CASE WHEN ? = 'delivered' THEN COALESCE(delivered_at, ?) ELSE delivered_at END,
+      failed_at = CASE WHEN ? = 'failed' THEN COALESCE(failed_at, ?) ELSE failed_at END,
+      error = CASE WHEN ? = 'failed' THEN ? ELSE error END
+    WHERE message_id = ?
+  `).run(
+    state,
+    status, at,
+    status, at,
+    status, at,
+    status, error || null,
+    messageId
+  );
+}
+
+function refreshFleetTimeouts() {
+  const now = Date.now();
+  const rows = db.prepare(`
+    SELECT id, delivered_at FROM fleet_check_items
+    WHERE response_at IS NULL AND state = 'delivered' AND delivered_at IS NOT NULL
+  `).all();
+  const update = db.prepare("UPDATE fleet_check_items SET state = 'no_response' WHERE id = ? AND response_at IS NULL");
+  for (const row of rows) {
+    if (now - Date.parse(row.delivered_at) >= FLEET_RESPONSE_HOURS * 3600000) update.run(row.id);
+  }
+}
+
+function recordFleetResponse(sender, body, receivedAt) {
+  const phone = normalizePhone(sender);
+  if (!phone) return;
+  refreshFleetTimeouts();
+  const rows = db.prepare(`
+    SELECT i.id, i.delivered_at, c.response_hours
+    FROM fleet_check_items i JOIN fleet_checks c ON c.id = i.fleet_check_id
+    WHERE i.phone = ? AND i.response_at IS NULL AND i.state = 'delivered'
+    ORDER BY i.id ASC
+  `).all(phone);
+  for (const row of rows) {
+    const deliveredAt = Date.parse(row.delivered_at || '');
+    if (!Number.isNaN(deliveredAt) && Date.parse(receivedAt) - deliveredAt <= (row.response_hours || FLEET_RESPONSE_HOURS) * 3600000) {
+      db.prepare(`
+        UPDATE fleet_check_items SET state = 'replied', response_at = ?, response_sender = ?, response_body = ?
+        WHERE id = ? AND response_at IS NULL
+      `).run(receivedAt, sender, body, row.id);
+      break;
+    }
+  }
+}
+
 // ---------- Rate limiting (simple, en mémoire) ----------
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '30', 10);
@@ -431,7 +487,10 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
         status, nowIso,
         error, nowIso, id
       );
-      if (info.changes > 0) reportAccepted.push(id);
+       if (info.changes > 0) {
+         reportAccepted.push(id);
+         updateFleetItemForMessage(id, status, nowIso, error);
+       }
     }
 
     // Répartition de charge : chaque passerelle récupère sa part de la file
@@ -533,6 +592,7 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
   );
   const nowIso = isoNow();
   let accepted = 0;
+  const acceptedMessages = [];
   db.exec('BEGIN');
   try {
     for (const m of messages) {
@@ -542,12 +602,18 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
       const receivedAt = normalizeIncomingDate(m.receivedAt || nowIso);
       if (!providerId || !sender) continue;
       const info = insert.run(req.apiKey.id, deviceId, providerId, sender, body, receivedAt, nowIso);
-      if (info.changes > 0) accepted++;
+       if (info.changes > 0) {
+         accepted++;
+         acceptedMessages.push({ sender, body, receivedAt });
+       }
     }
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
+  }
+  for (const message of acceptedMessages) {
+    recordFleetResponse(message.sender, message.body, message.receivedAt);
   }
   res.json({ accepted });
 });
@@ -1536,6 +1602,122 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     throw err;
   }
   res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
+});
+
+webApp.post('/admin/api/fleet-checks', (req, res) => {
+  const body = req.body || {};
+  const bookId = Number(body.bookId);
+  const message = String(body.message || '').trim();
+  const contactIds = Array.isArray(body.contactIds)
+    ? body.contactIds.map(Number).filter(Number.isInteger)
+    : [];
+  if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
+  if (!message) return res.status(400).json({ error: 'Message de vérification vide' });
+  if (message.length > MAX_MESSAGE_LENGTH) return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
+  if (!book || (req.session.role !== 'admin' && book.group_id !== req.session.groupId)) {
+    return res.status(404).json({ error: 'Carnet introuvable' });
+  }
+  const contactWhere = contactIds.length
+    ? `AND id IN (${contactIds.map(() => '?').join(',')})`
+    : '';
+  const contacts = db.prepare(`SELECT * FROM contacts WHERE address_book_id = ? ${contactWhere} ORDER BY id ASC`)
+    .all(bookId, ...contactIds);
+  if (!contacts.length) return res.status(400).json({ error: 'Aucun contact sélectionné' });
+  const createdAt = isoNow();
+  let checkId;
+  db.exec('BEGIN');
+  try {
+    const check = db.prepare(`
+      INSERT INTO fleet_checks (group_id, address_book_id, message, created_by, created_by_label, response_hours, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(book.group_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt);
+    checkId = check.lastInsertRowid;
+    const insertMessage = db.prepare(`
+      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id)
+      VALUES (?, ?, 'pending', 'console', 'Console', ?, ?, ?, ?, ?)
+    `);
+    const insertItem = db.prepare(`
+      INSERT INTO fleet_check_items
+        (fleet_check_id, message_id, contact_id, first_name, last_name, entity, phone, state)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+    `);
+    for (const contact of contacts) {
+      const msg = insertMessage.run(
+        contact.phone, message, req.session.accountId, req.session.login, checkId, createdAt, book.group_id
+      );
+      insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity, contact.phone);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.status(201).json({ id: checkId, bookName: book.name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt });
+});
+
+function fleetCheckVisible(req, id) {
+  const check = db.prepare('SELECT * FROM fleet_checks WHERE id = ?').get(Number(id));
+  if (!check) return null;
+  if (req.session.role !== 'admin' && check.group_id !== req.session.groupId) return null;
+  return check;
+}
+
+webApp.get('/admin/api/fleet-checks', (req, res) => {
+  refreshFleetTimeouts();
+  const checks = db.prepare(`
+    SELECT f.*, ab.name AS book_name,
+      COUNT(i.id) AS total,
+      SUM(CASE WHEN i.state = 'replied' THEN 1 ELSE 0 END) AS replied,
+      SUM(CASE WHEN i.state = 'no_response' THEN 1 ELSE 0 END) AS no_response,
+      SUM(CASE WHEN i.state = 'failed' THEN 1 ELSE 0 END) AS failed
+    FROM fleet_checks f
+    LEFT JOIN address_books ab ON ab.id = f.address_book_id
+    LEFT JOIN fleet_check_items i ON i.fleet_check_id = f.id
+    ${req.session.role === 'admin' ? '' : 'WHERE f.group_id = ?'}
+    GROUP BY f.id ORDER BY f.id DESC
+  `).all(...(req.session.role === 'admin' ? [] : [req.session.groupId]));
+  res.json(checks);
+});
+
+webApp.get('/admin/api/fleet-checks/:id', (req, res) => {
+  const check = fleetCheckVisible(req, req.params.id);
+  if (!check) return res.status(404).json({ error: 'Vérification introuvable' });
+  refreshFleetTimeouts();
+  const items = db.prepare(`
+    SELECT i.*, m.status AS message_status, m.created_at AS message_created_at
+    FROM fleet_check_items i JOIN messages m ON m.id = i.message_id
+    WHERE i.fleet_check_id = ? ORDER BY i.id ASC
+  `).all(check.id);
+  res.json({ check, items });
+});
+
+webApp.get('/admin/api/fleet-checks/:id/export', (req, res) => {
+  const check = fleetCheckVisible(req, req.params.id);
+  if (!check) return res.status(404).json({ error: 'Vérification introuvable' });
+  refreshFleetTimeouts();
+  const rows = db.prepare(`
+    SELECT i.*, m.created_at AS message_created_at, m.sent_at AS message_sent_at,
+      m.delivered_at AS message_delivered_at
+    FROM fleet_check_items i JOIN messages m ON m.id = i.message_id
+    WHERE i.fleet_check_id = ? ORDER BY i.id ASC
+  `).all(check.id);
+  const escCsv = (value) => {
+    const text = value == null ? '' : String(value);
+    return /[";\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const header = ['Vérification', 'Carnet', 'Prénom', 'Nom', 'Entité', 'Téléphone', 'Message créé le', 'Envoyé le', 'Remis le', 'État', 'Réponse le', 'Délai réponse (s)', 'Réponse', 'Erreur'];
+  const lines = rows.map((row) => {
+    const responseDelay = row.response_at && row.delivered_at
+      ? Math.max(0, Math.round((Date.parse(row.response_at) - Date.parse(row.delivered_at)) / 1000))
+      : '';
+    return [check.id, check.address_book_id, row.first_name, row.last_name, row.entity, row.phone,
+      row.message_created_at, row.message_sent_at, row.message_delivered_at, row.state,
+      row.response_at, responseDelay, row.response_body, row.error].map(escCsv).join(';');
+  });
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="verification_flotte_${check.id}.csv"`);
+  res.send('\uFEFF' + header.join(';') + '\r\n' + lines.join('\r\n'));
 });
 
 webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
