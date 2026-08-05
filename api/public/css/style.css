@@ -1441,3 +1441,16 @@ body.center .brand-mark svg { width: 21px; height: 21px; }
 .help-doors td:first-child,
 .help-doors th:first-child { width: 22%; color: var(--label); }
 .help-doors td { font-size: 12.5px; vertical-align: top; }
+
+/* --- Mentions colorees en ligne (tableau de la liste noire) --- */
+
+.tone-ok,
+.tone-warn,
+.tone-danger {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tone-ok     { color: var(--tone-ok-fg); }
+.tone-warn   { color: var(--tone-warn-fg); }
+.tone-danger { color: var(--tone-danger-fg); }

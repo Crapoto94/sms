@@ -10,7 +10,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.39';
+const APP_VERSION = process.env.APP_VERSION || '1.40';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -779,9 +779,13 @@ webApp.post('/admin/logout', (req, res) => {
 const sendFile = (name) => (_req, res) => res.sendFile(path.join(PUBLIC_DIR, name));
 
 // Injecte la version dans le HTML (fichiers et URLs d'assets suffixés
-// par "?v=…" pour casser le cache navigateur/proxy à chaque release).
+// par "?v=…" pour casser le cache navigateur/proxy à chaque release), et
+// le contenu de l'aide, partagé entre l'onglet de la console et la page
+// publique /aide (même fragment, une seule source).
+const helpFragment = () => fs.readFileSync(path.join(PUBLIC_DIR, 'help-content.html'), 'utf8');
 const renderHtml = (name) => (_req, res) => {
   const html = fs.readFileSync(path.join(PUBLIC_DIR, name), 'utf8')
+    .replace('<!-- __HELP_CONTENT__ -->', () => helpFragment())
     .replace(/__APP_VERSION__/g, APP_VERSION);
   res.setHeader('Cache-Control', 'no-store');
   res.type('html').send(html);
@@ -791,6 +795,9 @@ apiApp.get('/docs', sendFile('docs.html'));
 apiApp.get('/openapi.json', sendFile('openapi.json'));
 webApp.get('/docs', sendFile('docs.html'));
 webApp.get('/openapi.json', sendFile('openapi.json'));
+
+// Page d'aide publique : consultable sans authentification.
+webApp.get('/aide', renderHtml('help.html'));
 
 webApp.get('/login.html', renderHtml('login.html'));
 webApp.use('/css', express.static(path.join(PUBLIC_DIR, 'css')));

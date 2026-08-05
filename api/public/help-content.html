@@ -1,0 +1,865 @@
+      <div class="row">
+        <h2>Aide — architecture &amp; fonctionnement</h2>
+        <span class="muted">Comment la passerelle est construite, et qui peut faire quoi</span>
+      </div>
+
+      <nav class="help-toc">
+        <a href="#help-principe">1 · Le principe</a>
+        <a href="#help-telephone">2 · Mettre un téléphone en service</a>
+        <a href="#help-multi-tel">3 · Plusieurs téléphones</a>
+        <a href="#help-multi-pass">4 · Plusieurs passerelles</a>
+        <a href="#help-synchro">5 · Synchro des carnets</a>
+        <a href="#help-cycle">6 · Vie d'un message</a>
+        <a href="#help-blacklist">7 · La liste noire</a>
+        <a href="#help-flotte">8 · Vérification de flotte</a>
+        <a href="#help-roles">9 · Les rôles</a>
+        <a href="#help-user">10 · L'utilisateur</a>
+        <a href="#help-admin">11 · L'administrateur</a>
+        <a href="#help-matrice">12 · Matrice des droits</a>
+        <a href="#help-glossaire">13 · Glossaire</a>
+        <a href="#help-depannage">14 · Dépannage</a>
+      </nav>
+
+      <article class="help-block" id="help-principe">
+        <h3>1 · Le principe : une passerelle, un téléphone</h3>
+        <p>
+          La <strong>passerelle</strong> est un serveur. Elle ne possède ni carte SIM ni antenne : elle ne sait pas
+          émettre un SMS. Son rôle est de <em>collecter</em> les demandes d'envoi, de les mettre dans une file
+          d'attente, puis de les confier à un <strong>téléphone Android</strong> équipé de l'application
+          <span class="code">SmsGateway</span>. C'est ce téléphone, avec sa carte SIM et son forfait, qui envoie
+          réellement les SMS.
+        </p>
+        <p>
+          Point important : <strong>le serveur n'appelle jamais le téléphone</strong>. C'est toujours le téléphone qui
+          appelle le serveur, à intervalle régulier (60&nbsp;secondes par défaut). Le téléphone peut donc rester
+          derrière une box, un pare-feu ou un réseau mobile, sans aucune ouverture de port.
+        </p>
+        <p>
+          Deuxième point important : la passerelle expose <strong>deux portes d'entrée distinctes</strong>, sur deux
+          ports différents. Les <strong>agents</strong> se connectent avec un identifiant et un mot de passe sur la
+          <em>console web</em> ; les <strong>applications tierces</strong> se connectent avec une clé API sur
+          l'<em>API publique</em>. Ce sont deux serveurs séparés dans le même conteneur, qui ne partagent que la base.
+        </p>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 380" role="img" aria-label="Schéma d'une passerelle avec un seul téléphone et ses deux portes d'entrée">
+            <!-- Utilisateurs (console web) -->
+            <rect class="d-panel" x="16" y="84" width="180" height="84" rx="12"/>
+            <text class="d-t" x="106" y="112" text-anchor="middle">Utilisateurs</text>
+            <text class="d-m" x="106" y="132" text-anchor="middle">agents et administrateurs</text>
+            <text class="d-m" x="106" y="150" text-anchor="middle">identifiant + mot de passe</text>
+
+            <!-- Applications tierces (API) -->
+            <rect class="d-panel" x="16" y="212" width="180" height="84" rx="12"/>
+            <text class="d-t" x="106" y="240" text-anchor="middle">Applications tierces</text>
+            <text class="d-m" x="106" y="260" text-anchor="middle">logiciel métier, site web…</text>
+            <text class="d-m" x="106" y="278" text-anchor="middle">clé API « web »</text>
+
+            <!-- Serveur -->
+            <rect class="d-panel-accent" x="272" y="60" width="216" height="248" rx="14"/>
+            <text class="d-t" x="380" y="88" text-anchor="middle">Passerelle SMS</text>
+            <text class="d-m" x="380" y="106" text-anchor="middle">serveur · conteneur Docker</text>
+            <rect class="d-panel-soft" x="290" y="120" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="144" text-anchor="middle">Console web · port 3251</text>
+            <rect class="d-panel-soft" x="290" y="170" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="194" text-anchor="middle">API publique · port 3250</text>
+            <line class="d-line" x1="380" y1="214" x2="380" y2="240"/>
+            <path class="d-head" d="M380 250 l-5 -10 h10 z"/>
+            <rect class="d-panel-soft" x="290" y="252" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="276" text-anchor="middle">Base SQLite · file d'attente</text>
+
+            <!-- Téléphone -->
+            <text class="d-t" x="640" y="86" text-anchor="middle">Téléphone Android</text>
+            <rect class="d-panel" x="576" y="102" width="128" height="164" rx="18"/>
+            <rect class="d-panel-soft" x="588" y="120" width="104" height="128" rx="8"/>
+            <rect class="d-chrome" x="622" y="109" width="36" height="4" rx="2"/>
+            <rect class="d-chrome" x="624" y="254" width="32" height="4" rx="2"/>
+            <g class="d-icon" transform="translate(623,139) scale(1.4)">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+            </g>
+            <text class="d-m" x="640" y="200" text-anchor="middle">appli SmsGateway</text>
+            <text class="d-m" x="640" y="218" text-anchor="middle">clé « passerelle »</text>
+
+            <!-- Destinataires -->
+            <rect class="d-panel" x="772" y="128" width="132" height="112" rx="12"/>
+            <path class="d-icon" d="M831 167 A10 10 0 0 1 845 167"/>
+            <path class="d-icon" d="M826 162 A17 17 0 0 1 850 162"/>
+            <path class="d-icon" d="M821 157 A24 24 0 0 1 855 157"/>
+            <circle class="d-dot" cx="838" cy="174" r="3"/>
+            <text class="d-t" x="838" y="206" text-anchor="middle">Destinataires</text>
+            <text class="d-m" x="838" y="224" text-anchor="middle">téléphones mobiles</text>
+
+            <!-- Flux 1a : un agent dépose depuis la console web -->
+            <path class="d-line-accent" d="M196 126 C 232 126, 232 138, 262 138"/>
+            <path class="d-head-accent" d="M272 138 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="215" y="95" width="32" height="22" rx="11"/>
+            <text class="d-badge-t" x="231" y="110" text-anchor="middle">1a</text>
+
+            <!-- Flux 1b : une application tierce dépose via l'API -->
+            <path class="d-line-accent" d="M196 254 C 232 254, 232 188, 262 188"/>
+            <path class="d-head-accent" d="M272 188 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="215" y="240" width="32" height="22" rx="11"/>
+            <text class="d-badge-t" x="231" y="255" text-anchor="middle">1b</text>
+
+            <!-- Flux 2 : le téléphone interroge l'API -->
+            <line class="d-line-accent" x1="568" y1="170" x2="500" y2="170"/>
+            <path class="d-head-accent" d="M490 170 l10 -5 v10 z"/>
+            <rect class="d-badge" x="517" y="135" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="530" y="150" text-anchor="middle">2</text>
+            <text class="d-m" x="530" y="192" text-anchor="middle">toutes les 60 s</text>
+
+            <!-- Flux 3 : l'API répond -->
+            <line class="d-line-accent" x1="490" y1="208" x2="566" y2="208"/>
+            <path class="d-head-accent" d="M576 208 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="517" y="221" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="530" y="236" text-anchor="middle">3</text>
+
+            <!-- Flux 4 : SMS -->
+            <line class="d-line-accent" x1="710" y1="184" x2="760" y2="184"/>
+            <path class="d-head-accent" d="M770 184 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="725" y="149" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="738" y="164" text-anchor="middle">4</text>
+
+            <!-- Flux 5 : retour -->
+            <path class="d-line d-dash" d="M838 244 V 340 H 380 V 320"/>
+            <path class="d-head" d="M380 310 l-5 10 h10 z"/>
+            <rect class="d-badge" x="487" y="329" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="500" y="344" text-anchor="middle">5</text>
+            <text class="d-m" x="656" y="332" text-anchor="middle">accusés de remise, échecs et SMS reçus</text>
+          </svg>
+          <figcaption>Deux portes d'entrée pour déposer un message — les agents sur le port web, les applications sur le port API — puis un seul chemin de sortie par le téléphone.</figcaption>
+        </figure>
+
+        <ol class="help-steps">
+          <li data-step="1a"><b>Dépôt par un agent.</b> Un agent se connecte à la console web (port&nbsp;3251) avec son identifiant et son mot de passe, puis écrit son message. Il est enregistré au statut <em>en attente</em>.</li>
+          <li data-step="1b"><b>Dépôt par une application.</b> Une application tierce appelle l'API publique (port&nbsp;3250) en présentant une clé « web ». Le message arrive dans la même file, avec son origine notée dans l'historique.</li>
+          <li data-step="2"><b>Sondage.</b> Le téléphone appelle l'API toutes les 60&nbsp;secondes en présentant sa clé « passerelle ». Il en profite pour remonter ce qu'il a fait depuis le dernier appel.</li>
+          <li data-step="3"><b>Attribution.</b> Le serveur lui remet un lot de messages (25 au maximum par appel) et les passe au statut <em>en cours d'envoi</em> pour qu'aucun autre téléphone ne les reprenne.</li>
+          <li data-step="4"><b>Émission.</b> Le téléphone envoie les SMS par sa carte SIM, comme n'importe quel SMS classique. Les messages longs sont découpés puis réassemblés par l'opérateur.</li>
+          <li data-step="5"><b>Compte rendu.</b> Au sondage suivant, le téléphone renvoie les statuts (envoyé, remis, échec) ainsi que les SMS reçus sur sa ligne, qui apparaissent dans l'onglet <em>Messages → Reçus</em>.</li>
+        </ol>
+
+        <h4 class="help-sub">Les deux portes, en pratique</h4>
+        <p>
+          Comme les deux services écoutent sur des ports différents, il vous faut soit <strong>deux URL</strong>
+          (typiquement derrière un reverse proxy), soit <strong>une seule URL avec deux ports</strong>. Les deux
+          fonctionnent ; le choix dépend de ce que vous voulez exposer à l'extérieur.
+        </p>
+        <div class="table-wrap"><table class="help-doors">
+          <thead>
+            <tr><th></th><th>Console web</th><th>API publique</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Qui s'y connecte</td><td>Agents et administrateurs, depuis un navigateur</td><td>Applications tierces, et les téléphones de la flotte</td></tr>
+            <tr><td>Authentification</td><td>Identifiant + mot de passe, session de 24&nbsp;h</td><td>Clé API en en-tête, sans session</td></tr>
+            <tr><td>Port par défaut</td><td><span class="code">3251</span> (<span class="code">PORT_WEB</span>)</td><td><span class="code">3250</span> (<span class="code">PORT_API</span>)</td></tr>
+            <tr><td>Même URL, deux ports</td><td><span class="code">https://sms.ville.fr:3251</span></td><td><span class="code">https://sms.ville.fr:3250</span></td></tr>
+            <tr><td>Deux URL (reverse proxy)</td><td><span class="code">https://sms.ville.fr</span></td><td><span class="code">https://api-sms.ville.fr</span></td></tr>
+            <tr><td>Exposition conseillée</td><td>Réseau interne ou VPN</td><td>Ouverte aux applications et aux téléphones qui en ont besoin</td></tr>
+          </tbody>
+        </table></div>
+        <p>
+          Deux conséquences pratiques : l'URL à saisir dans l'application Android est celle de l'<strong>API</strong>
+          (port&nbsp;3250), pas celle de la console ; et l'URL déclarée dans <em>Synchro carnets</em> pour une passerelle
+          distante est également celle de son API. Si vous placez la passerelle derrière un reverse proxy, renseignez
+          <span class="code">PUBLIC_BASE_URL</span> avec l'adresse publique de l'API, faute de quoi les liens de pièces
+          jointes envoyés dans les SMS pointeront vers une adresse injoignable.
+        </p>
+      </article>
+
+      <article class="help-block" id="help-telephone">
+        <h3>2 · Mettre un téléphone en service</h3>
+        <p>
+          L'application n'est pas publiée sur le Play Store : elle s'installe à partir de son fichier
+          <span class="code">.apk</span>. Android multiplie donc les avertissements, qu'il faut franchir un par un. Le
+          téléphone doit ensuite devenir l'<strong>application SMS par défaut</strong> — c'est la condition posée par
+          Android pour qu'une application puisse envoyer des SMS sans demander une confirmation à chaque message.
+        </p>
+        <p class="help-warn">
+          Choisissez un téléphone dédié, avec une ligne dédiée. Une fois l'application définie comme application SMS
+          par défaut, <strong>tous les SMS reçus sur cette ligne remontent dans la console</strong> et l'application de
+          messagerie habituelle ne reçoit plus rien.
+        </p>
+
+        <h4 class="help-sub">Quel téléphone choisir ?</h4>
+        <ul class="help-list">
+          <li><b>Le Wi-Fi suffit, la 4G est inutile.</b> Le téléphone n'a besoin d'Internet que pour joindre la passerelle : un simple Wi-Fi fait parfaitement l'affaire. Le forfait de la carte SIM doit couvrir les SMS, pas nécessairement les données mobiles.</li>
+          <li><b>Un vieux téléphone convient très bien.</b> Modèle ancien, écran fissuré, batterie fatiguée, appareil mis au rebut : sans importance. Il ne fait que sonder la passerelle et émettre des SMS. Android&nbsp;8 ou plus récent suffit.</li>
+          <li><b>La charge permanente, elle, n'est pas négociable.</b> C'est la seule vraie contrainte matérielle. Une batterie usée se vide en quelques heures, et un téléphone éteint ne sonde plus : plus aucun SMS ne part. Laissez-le branché en permanence, sur une prise qui ne se coupe pas.</li>
+          <li><b>Au total.</b> Une prise de courant, un accès Wi-Fi, une carte SIM active avec un forfait SMS, et Android&nbsp;8 ou plus récent. Rien d'autre.</li>
+        </ul>
+
+        <ol class="help-steps">
+          <li data-step="1"><b>Autoriser les sources inconnues.</b> <em>Paramètres → Applications → Accès spécial → Installer des applications inconnues</em>, puis autoriser l'application avec laquelle vous ouvrirez le fichier (le navigateur, ou le gestionnaire de fichiers). Sans cela, l'installation est bloquée sans explication.</li>
+          <li data-step="2"><b>Télécharger l'APK.</b> Le navigateur affiche « ce type de fichier peut endommager votre appareil » : choisissez <em>Télécharger quand même</em>. L'avertissement est générique, il s'applique à tout APK.</li>
+          <li data-step="3"><b>Installer malgré Play Protect.</b> À l'ouverture du fichier, Google Play Protect signale une « application non reconnue ». Choisissez <em>Installer quand même</em> (ou <em>Plus de détails → Installer quand même</em>). Si l'analyse est proposée, vous pouvez l'accepter puis installer.</li>
+          <li data-step="4"><b>Accorder les autorisations.</b> Au premier démarrage du service, l'application demande l'envoi de SMS, la réception de SMS et MMS, et les notifications. Toutes sont nécessaires : un refus empêche l'envoi automatique ou la remontée des SMS reçus.</li>
+          <li data-step="5"><b>Définir l'application SMS par défaut.</b> Bouton <em>Définir comme app SMS par défaut</em>, qui ouvre <em>Paramètres → Applications par défaut → Application SMS</em>. Choisissez <span class="code">Passerelle SMS</span>. L'écran doit ensuite afficher « Statut : app SMS par défaut ✓ ».</li>
+          <li data-step="6"><b>Saisir la première passerelle.</b> Dans les paramètres de l'application : un nom libre, l'<em>URL de l'API</em> sous la forme <span class="code">http://192.168.1.10:3250</span> (le port de l'API, pas celui de la console), et la <em>clé API</em> créée dans l'onglet <em>Clés API</em> avec le type « Passerelle ». Puis <em>Enregistrer</em>.</li>
+          <li data-step="7"><b>Ajouter d'autres passerelles.</b> Le bouton <em>+</em> ajoute un profil. Répétez l'opération pour chaque passerelle à servir, avec à chaque fois l'URL de cette passerelle et une clé créée sur cette passerelle. Un même téléphone peut ainsi desservir plusieurs collectivités.</li>
+          <li data-step="8"><b>Démarrer le service.</b> Basculez l'interrupteur <em>Service</em>. Une notification permanente apparaît, et la ligne « Dernière connexion API » doit se mettre à jour dans la minute.</li>
+          <li data-step="9"><b>Vérifier côté console.</b> Dans l'onglet <em>Passerelles</em>, le téléphone apparaît avec son dernier contact et sa version d'APK, et la pastille en haut de page passe au vert.</li>
+          <li data-step="10"><b>Envoyer un SMS de test.</b> Le champ de test de l'application envoie un SMS réel à un numéro de votre choix : c'est la vérification de bout en bout la plus rapide.</li>
+        </ol>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 420" role="img" aria-label="Écran de paramétrage de l'application Android, annoté">
+            <!-- Téléphone -->
+            <rect class="d-panel" x="80" y="20" width="240" height="380" rx="26"/>
+            <rect class="d-panel-soft" x="92" y="44" width="216" height="330" rx="10"/>
+            <rect class="d-chrome" x="176" y="30" width="48" height="4" rx="2"/>
+            <rect class="d-chrome" x="176" y="384" width="48" height="4" rx="2"/>
+
+            <text class="d-s" x="200" y="68" text-anchor="middle">Passerelle SMS · Paramètres</text>
+            <text class="d-txt-ok" x="200" y="92" text-anchor="middle">Statut : app SMS par défaut ✓</text>
+
+            <text class="d-m" x="104" y="114" text-anchor="start">API 1</text>
+            <rect class="d-panel" x="104" y="120" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="137" text-anchor="start">Mairie</text>
+            <rect class="d-panel" x="104" y="152" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="169" text-anchor="start">http://192.168.1.10:3250</text>
+            <rect class="d-panel" x="104" y="184" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="201" text-anchor="start">clé passerelle ••••••••</text>
+
+            <rect class="d-panel" x="104" y="220" width="192" height="28" rx="6"/>
+            <text class="d-m" x="200" y="238" text-anchor="middle">+ Ajouter une API</text>
+            <rect class="d-badge" x="104" y="256" width="192" height="28" rx="6"/>
+            <text class="d-badge-t" x="200" y="274" text-anchor="middle">Enregistrer</text>
+
+            <text class="d-s" x="114" y="318" text-anchor="start">Service : actif</text>
+            <rect class="d-badge" x="252" y="303" width="36" height="18" rx="9"/>
+            <circle class="d-knob" cx="279" cy="312" r="6"/>
+            <text class="d-m" x="114" y="346" text-anchor="start">Dernière connexion : 14:32:05</text>
+
+            <!-- Annotations -->
+            <path class="d-lead" d="M320 92 H 356 V 62 H 388"/>
+            <circle class="d-dot" cx="320" cy="92" r="2.5"/>
+            <text class="d-m" x="398" y="66" text-anchor="start">Sans ce rôle, chaque envoi demande une confirmation manuelle.</text>
+
+            <path class="d-lead" d="M320 165 H 356 V 136 H 388"/>
+            <circle class="d-dot" cx="320" cy="165" r="2.5"/>
+            <text class="d-m" x="398" y="140" text-anchor="start">L'adresse de la passerelle sur son port API (3250), pas la console.</text>
+
+            <path class="d-lead" d="M320 197 H 356 V 192 H 388"/>
+            <circle class="d-dot" cx="320" cy="197" r="2.5"/>
+            <text class="d-m" x="398" y="196" text-anchor="start">Clé créée dans l'onglet Clés API, de type « Passerelle ».</text>
+
+            <path class="d-lead" d="M320 234 H 356 V 244 H 388"/>
+            <circle class="d-dot" cx="320" cy="234" r="2.5"/>
+            <text class="d-m" x="398" y="248" text-anchor="start">Un profil par passerelle servie : ajoutez-en autant que nécessaire.</text>
+
+            <path class="d-lead" d="M320 312 H 356 V 300 H 388"/>
+            <circle class="d-dot" cx="320" cy="312" r="2.5"/>
+            <text class="d-m" x="398" y="304" text-anchor="start">L'interrupteur lance le sondage et la notification permanente.</text>
+
+            <path class="d-lead" d="M320 342 H 356 V 350 H 388"/>
+            <circle class="d-dot" cx="320" cy="342" r="2.5"/>
+            <text class="d-m" x="398" y="354" text-anchor="start">Se met à jour à chaque sondage réussi : c'est le témoin de vie.</text>
+          </svg>
+          <figcaption>L'écran de paramétrage de l'application : un profil par passerelle, puis l'interrupteur de service.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Neutraliser les mises en veille.</b> Désactivez l'optimisation de batterie pour l'application et, si la marque en propose un, son gestionnaire d'applications en arrière-plan : sinon Android finit par suspendre le service au bout de quelques heures.</li>
+          <li><b>Après un redémarrage.</b> Le service repart tout seul au démarrage du téléphone et après une mise à jour de l'application ; il n'y a rien à relancer à la main.</li>
+          <li><b>Mettre à jour l'APK.</b> Réinstallez simplement la nouvelle version par-dessus : les profils API, la clé et l'identifiant d'appareil sont conservés. La version installée remonte dans l'onglet <em>Passerelles</em>.</li>
+          <li><b>En HTTP ou en HTTPS.</b> L'application accepte les deux. En dehors d'un réseau interne maîtrisé, utilisez HTTPS : la clé de passerelle circule à chaque sondage.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-multi-tel">
+        <h3>3 · Plusieurs téléphones pour une même passerelle</h3>
+        <p>
+          Un téléphone envoie un SMS toutes les quelques secondes : au-delà de quelques centaines de messages, il
+          devient le goulot d'étranglement. Il suffit alors de déclarer <strong>une clé « passerelle » par
+          téléphone</strong> et de les faire pointer vers le même serveur. Aucune configuration supplémentaire n'est
+          nécessaire côté serveur : la répartition est automatique.
+        </p>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 360" role="img" aria-label="Schéma d'une passerelle desservie par trois téléphones">
+            <rect class="d-panel-accent" x="32" y="118" width="252" height="150" rx="14"/>
+            <text class="d-t" x="158" y="150" text-anchor="middle">Passerelle SMS</text>
+            <text class="d-m" x="158" y="170" text-anchor="middle">file d'attente partagée</text>
+            <rect class="d-queue" x="48" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="70" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="92" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="114" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="136" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="158" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="180" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="202" y="188" width="18" height="18" rx="4"/>
+            <rect class="d-queue" x="224" y="188" width="18" height="18" rx="4"/>
+            <text class="d-m" x="158" y="230" text-anchor="middle">chaque téléphone actif réclame</text>
+            <text class="d-m" x="158" y="248" text-anchor="middle">environ 1/N de la file</text>
+
+            <!-- Liaisons -->
+            <path class="d-line-accent" d="M292 158 C 460 158, 520 64, 692 64"/>
+            <path class="d-head-accent" d="M702 64 l-10 -5 v10 z"/>
+            <path class="d-line-accent" d="M292 180 H 692"/>
+            <path class="d-head-accent" d="M702 180 l-10 -5 v10 z"/>
+            <path class="d-line-accent" d="M292 202 C 460 202, 520 296, 692 296"/>
+            <path class="d-head-accent" d="M702 296 l-10 -5 v10 z"/>
+
+            <!-- Téléphone 1 -->
+            <rect class="d-panel" x="708" y="12" width="84" height="104" rx="14"/>
+            <rect class="d-panel-soft" x="718" y="26" width="64" height="72" rx="6"/>
+            <rect class="d-chrome" x="740" y="104" width="20" height="3" rx="1.5"/>
+            <text class="d-big" x="750" y="60" text-anchor="middle">⅓</text>
+            <text class="d-m" x="750" y="80" text-anchor="middle">de la file</text>
+            <text class="d-s" x="804" y="58" text-anchor="start">Téléphone 1</text>
+            <text class="d-m" x="804" y="76" text-anchor="start">clé passerelle A</text>
+
+            <!-- Téléphone 2 -->
+            <rect class="d-panel" x="708" y="128" width="84" height="104" rx="14"/>
+            <rect class="d-panel-soft" x="718" y="142" width="64" height="72" rx="6"/>
+            <rect class="d-chrome" x="740" y="220" width="20" height="3" rx="1.5"/>
+            <text class="d-big" x="750" y="176" text-anchor="middle">⅓</text>
+            <text class="d-m" x="750" y="196" text-anchor="middle">de la file</text>
+            <text class="d-s" x="804" y="174" text-anchor="start">Téléphone 2</text>
+            <text class="d-m" x="804" y="192" text-anchor="start">clé passerelle B</text>
+
+            <!-- Téléphone 3 -->
+            <rect class="d-panel" x="708" y="244" width="84" height="104" rx="14"/>
+            <rect class="d-panel-soft" x="718" y="258" width="64" height="72" rx="6"/>
+            <rect class="d-chrome" x="740" y="336" width="20" height="3" rx="1.5"/>
+            <text class="d-big" x="750" y="292" text-anchor="middle">⅓</text>
+            <text class="d-m" x="750" y="312" text-anchor="middle">de la file</text>
+            <text class="d-s" x="804" y="290" text-anchor="start">Téléphone 3</text>
+            <text class="d-m" x="804" y="308" text-anchor="start">clé passerelle C</text>
+          </svg>
+          <figcaption>Trois téléphones actifs se partagent la file : chacun ne prend qu'un tiers des messages en attente.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Répartition automatique.</b> À chaque tour de 60&nbsp;secondes, le serveur compte les téléphones actifs et n'accorde à chacun qu'environ 1/N des messages en attente. Le débit est donc multiplié par le nombre de téléphones.</li>
+          <li><b>Rattrapage.</b> Si un message attend depuis plus d'un intervalle, il devient prenable par n'importe quel téléphone : une panne de terminal ne bloque jamais la file.</li>
+          <li><b>Reprise des blocages.</b> Un message resté « en cours d'envoi » plus de 10&nbsp;minutes (téléphone éteint, hors réseau) est automatiquement remis à disposition d'un autre téléphone.</li>
+          <li><b>Supervision.</b> L'onglet <em>Passerelles</em> indique pour chaque téléphone son dernier contact, sa version d'APK et son compteur d'envois ; la pastille verte en haut de page compte les téléphones actifs.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-multi-pass">
+        <h3>4 · Plusieurs passerelles, plusieurs téléphones</h3>
+        <p>
+          Chaque entité (mairie, CCAS, police municipale…) peut disposer de <strong>sa propre passerelle</strong>, avec
+          sa base, ses comptes et ses carnets. Mais les téléphones, eux, n'ont pas à être dédiés : l'application
+          Android accepte <strong>plusieurs profils API</strong>. Un même téléphone interroge alors tour à tour chaque
+          passerelle configurée et envoie les SMS des unes et des autres.
+        </p>
+        <p>
+          La relation est donc <strong>de plusieurs à plusieurs</strong> : une passerelle peut être servie par
+          plusieurs téléphones, et un téléphone peut servir plusieurs passerelles.
+        </p>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 410" role="img" aria-label="Schéma de trois passerelles desservies par trois téléphones partagés">
+            <!-- Passerelles -->
+            <rect class="d-panel-accent" x="24" y="20" width="232" height="100" rx="14"/>
+            <text class="d-t" x="140" y="58" text-anchor="middle">Passerelle A</text>
+            <text class="d-m" x="140" y="80" text-anchor="middle">Mairie</text>
+            <rect class="d-panel-accent" x="344" y="20" width="232" height="100" rx="14"/>
+            <text class="d-t" x="460" y="58" text-anchor="middle">Passerelle B</text>
+            <text class="d-m" x="460" y="80" text-anchor="middle">CCAS</text>
+            <rect class="d-panel-accent" x="664" y="20" width="232" height="100" rx="14"/>
+            <text class="d-t" x="780" y="58" text-anchor="middle">Passerelle C</text>
+            <text class="d-m" x="780" y="80" text-anchor="middle">Police municipale</text>
+
+            <!-- Liaisons du téléphone 1 et 3 (secondaires) -->
+            <line class="d-line" x1="140" y1="248" x2="140" y2="124"/>
+            <line class="d-line" x1="780" y1="248" x2="780" y2="124"/>
+            <line class="d-line" x1="780" y1="248" x2="460" y2="124"/>
+            <!-- Liaisons du téléphone 2 (mis en avant) -->
+            <line class="d-line-accent" x1="460" y1="248" x2="140" y2="124"/>
+            <line class="d-line-accent" x1="460" y1="248" x2="460" y2="124"/>
+            <line class="d-line-accent" x1="460" y1="248" x2="780" y2="124"/>
+            <circle class="d-dot-accent" cx="460" cy="248" r="5"/>
+            <circle class="d-dot-accent" cx="140" cy="124" r="4"/>
+            <circle class="d-dot-accent" cx="460" cy="124" r="4"/>
+            <circle class="d-dot-accent" cx="780" cy="124" r="4"/>
+
+            <!-- Téléphones -->
+            <rect class="d-panel" x="92" y="248" width="96" height="132" rx="16"/>
+            <rect class="d-panel-soft" x="104" y="266" width="72" height="96" rx="6"/>
+            <text class="d-big" x="140" y="312" text-anchor="middle">1</text>
+            <text class="d-m" x="140" y="332" text-anchor="middle">profil API</text>
+            <text class="d-s" x="140" y="400" text-anchor="middle">Téléphone 1</text>
+
+            <rect class="d-panel-accent" x="412" y="248" width="96" height="132" rx="16"/>
+            <rect class="d-panel-soft" x="424" y="266" width="72" height="96" rx="6"/>
+            <text class="d-big-accent" x="460" y="312" text-anchor="middle">3</text>
+            <text class="d-m" x="460" y="332" text-anchor="middle">profils API</text>
+            <text class="d-s" x="460" y="400" text-anchor="middle">Téléphone 2</text>
+
+            <rect class="d-panel" x="732" y="248" width="96" height="132" rx="16"/>
+            <rect class="d-panel-soft" x="744" y="266" width="72" height="96" rx="6"/>
+            <text class="d-big" x="780" y="312" text-anchor="middle">2</text>
+            <text class="d-m" x="780" y="332" text-anchor="middle">profils API</text>
+            <text class="d-s" x="780" y="400" text-anchor="middle">Téléphone 3</text>
+          </svg>
+          <figcaption>Le téléphone&nbsp;2 est déclaré sur les trois passerelles : il sert la mairie, le CCAS et la police municipale avec une seule carte SIM.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Un profil = une passerelle.</b> Dans l'application Android, chaque profil porte un libellé, l'URL de la passerelle (port API) et la clé « passerelle » créée sur cette passerelle. Les profils s'ajoutent et se retirent sans réinstaller l'APK.</li>
+          <li><b>Des clés distinctes.</b> Le même téléphone reçoit une clé différente sur chaque passerelle. Révoquer la clé sur une passerelle ne coupe pas les autres.</li>
+          <li><b>Les passerelles s'ignorent.</b> Elles ne communiquent pas entre elles pour les envois : chacune tient sa propre file, ses propres statuts, son propre journal. Seuls les carnets d'adresses peuvent être partagés (voir ci-dessous).</li>
+          <li><b>Une SIM, un forfait.</b> Les SMS des différentes passerelles partagent la même ligne : c'est le point à surveiller lors du dimensionnement, pas la puissance du serveur.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-synchro">
+        <h3>5 · Synchronisation des carnets entre passerelles</h3>
+        <p>
+          Les carnets d'adresses sont souvent tenus à jour à un seul endroit (les élus, les agents d'astreinte, une
+          liste de diffusion). L'onglet <em>Synchro carnets</em> permet à une passerelle d'aller <strong>recopier
+          automatiquement</strong> des carnets hébergés sur une autre passerelle.
+        </p>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 300" role="img" aria-label="Schéma de la synchronisation des carnets entre deux passerelles">
+            <!-- Source -->
+            <rect class="d-panel" x="40" y="48" width="304" height="204" rx="14"/>
+            <text class="d-t" x="192" y="80" text-anchor="middle">Passerelle A — source</text>
+            <rect class="d-panel-soft" x="64" y="100" width="256" height="40" rx="8"/>
+            <text class="d-s" x="84" y="125" text-anchor="start">Carnet « Élus »</text>
+            <path class="d-check" d="M292 119 l5 6 l10 -13"/>
+            <rect class="d-panel-soft" x="64" y="148" width="256" height="40" rx="8"/>
+            <text class="d-s" x="84" y="173" text-anchor="start">Carnet « Astreinte »</text>
+            <path class="d-check" d="M292 167 l5 6 l10 -13"/>
+            <rect class="d-panel-soft" x="64" y="196" width="256" height="40" rx="8"/>
+            <text class="d-s" x="84" y="221" text-anchor="start">Carnet « Écoles »</text>
+            <text class="d-m" x="292" y="221" text-anchor="middle">non coché</text>
+
+            <!-- Flux -->
+            <line class="d-line-accent" x1="356" y1="150" x2="556" y2="150"/>
+            <path class="d-head-accent" d="M566 150 l-10 -5 v10 z"/>
+            <text class="d-a" x="460" y="132" text-anchor="middle">toutes les heures</text>
+            <text class="d-m" x="460" y="176" text-anchor="middle">lecture seule · clé « web » de A</text>
+            <text class="d-m" x="460" y="194" text-anchor="middle">visible des seuls administrateurs</text>
+
+            <!-- Destination -->
+            <rect class="d-panel-accent" x="576" y="48" width="304" height="204" rx="14"/>
+            <text class="d-t" x="728" y="80" text-anchor="middle">Passerelle B — locale</text>
+            <rect class="d-panel-soft" x="600" y="100" width="256" height="40" rx="8"/>
+            <text class="d-s" x="620" y="125" text-anchor="start">Élus</text>
+            <rect class="d-pill" x="756" y="110" width="84" height="20" rx="10"/>
+            <text class="d-pill-t" x="798" y="124" text-anchor="middle">synchronisé</text>
+            <rect class="d-panel-soft" x="600" y="148" width="256" height="40" rx="8"/>
+            <text class="d-s" x="620" y="173" text-anchor="start">Astreinte</text>
+            <rect class="d-pill" x="756" y="158" width="84" height="20" rx="10"/>
+            <text class="d-pill-t" x="798" y="172" text-anchor="middle">synchronisé</text>
+            <rect class="d-panel-soft" x="600" y="196" width="256" height="40" rx="8"/>
+            <text class="d-s" x="620" y="221" text-anchor="start">Carnet « CCAS »</text>
+            <text class="d-m" x="798" y="221" text-anchor="middle">carnet local</text>
+          </svg>
+          <figcaption>La passerelle B va chercher chez A les carnets cochés et les rafraîchit chaque heure, sans toucher à ses propres carnets.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Sens unique.</b> La passerelle qui synchronise <em>tire</em> les contacts depuis la source. La source n'est jamais modifiée et n'a rien à configurer, hormis fournir une clé « web ».</li>
+          <li><b>Mise en place.</b> Onglet <em>Synchro carnets</em> → déclarer la source (libellé, URL sur le port API, clé « web » de l'autre instance) → parcourir ses carnets → cocher ceux à reprendre.</li>
+          <li><b>Rafraîchissement.</b> Automatique toutes les heures, ou à la demande via le bouton de relance. Le contenu local du carnet synchronisé est remplacé à chaque passage : il ne se modifie pas à la main.</li>
+          <li><b>Visibilité.</b> Les carnets synchronisés sont réservés aux administrateurs ; ils n'apparaissent pas dans l'interface d'envoi des groupes.</li>
+          <li><b>Réciprocité.</b> Rien n'empêche A de synchroniser un carnet de B en parallèle : chaque passerelle choisit ce qu'elle importe.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-cycle">
+        <h3>6 · La vie d'un message</h3>
+        <p>
+          Chaque message porte un statut, visible dans l'onglet <em>Messages</em> et filtrable. Comprendre cet
+          enchaînement suffit à diagnostiquer la quasi-totalité des situations.
+        </p>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 210" role="img" aria-label="Schéma du cycle de vie d'un message">
+            <rect class="d-fill-info" x="16" y="40" width="136" height="52" rx="10"/>
+            <text class="d-txt-info" x="84" y="64" text-anchor="middle">Programmé</text>
+            <text class="d-m" x="84" y="82" text-anchor="middle">date future choisie</text>
+
+            <line class="d-line" x1="152" y1="66" x2="182" y2="66"/>
+            <path class="d-head" d="M192 66 l-10 -5 v10 z"/>
+
+            <rect class="d-fill-info" x="196" y="40" width="136" height="52" rx="10"/>
+            <text class="d-txt-info" x="264" y="64" text-anchor="middle">En attente</text>
+            <text class="d-m" x="264" y="82" text-anchor="middle">dans la file</text>
+
+            <line class="d-line" x1="332" y1="66" x2="362" y2="66"/>
+            <path class="d-head" d="M372 66 l-10 -5 v10 z"/>
+
+            <rect class="d-fill-violet" x="376" y="40" width="136" height="52" rx="10"/>
+            <text class="d-txt-violet" x="444" y="64" text-anchor="middle">En cours d'envoi</text>
+            <text class="d-m" x="444" y="82" text-anchor="middle">pris par un téléphone</text>
+
+            <line class="d-line" x1="512" y1="66" x2="542" y2="66"/>
+            <path class="d-head" d="M552 66 l-10 -5 v10 z"/>
+
+            <rect class="d-fill-ok" x="556" y="40" width="136" height="52" rx="10"/>
+            <text class="d-txt-ok" x="624" y="64" text-anchor="middle">Envoyé</text>
+            <text class="d-m" x="624" y="82" text-anchor="middle">remis à l'opérateur</text>
+
+            <line class="d-line" x1="692" y1="66" x2="722" y2="66"/>
+            <path class="d-head" d="M732 66 l-10 -5 v10 z"/>
+
+            <rect class="d-fill-ok" x="736" y="40" width="136" height="52" rx="10"/>
+            <text class="d-txt-ok" x="804" y="64" text-anchor="middle">Remis</text>
+            <text class="d-m" x="804" y="82" text-anchor="middle">accusé du destinataire</text>
+
+            <!-- Annulé -->
+            <line class="d-line d-dash" x1="264" y1="92" x2="264" y2="128"/>
+            <path class="d-head" d="M264 138 l-5 -10 h10 z"/>
+            <rect class="d-fill-neutral" x="196" y="142" width="136" height="44" rx="10"/>
+            <text class="d-txt-neutral" x="264" y="169" text-anchor="middle">Annulé</text>
+
+            <!-- Échec -->
+            <line class="d-line d-dash" x1="444" y1="92" x2="444" y2="128"/>
+            <path class="d-head" d="M444 138 l-5 -10 h10 z"/>
+            <rect class="d-fill-danger" x="376" y="142" width="136" height="44" rx="10"/>
+            <text class="d-txt-danger" x="444" y="169" text-anchor="middle">Échec</text>
+          </svg>
+          <figcaption>Un message programmé attend sa date ; un message en attente peut encore être annulé ; un échec est toujours accompagné du motif remonté par le téléphone.</figcaption>
+        </figure>
+      </article>
+
+
+      <article class="help-block" id="help-blacklist">
+        <h3>7 · La liste noire</h3>
+        <p>
+          La liste noire recense les numéros que la passerelle doit refuser : une personne qui a demandé à ne plus
+          être contactée, une ligne résiliée qui a été réattribuée à quelqu'un d'autre, le numéro d'un agent parti.
+          Elle évite d'avoir à purger les carnets à la main à chaque envoi.
+        </p>
+        <ul class="help-list">
+          <li><b>Elle vaut pour toute l'instance.</b> Un numéro blacklisté l'est pour tous les groupes, sans cloisonnement : c'est une décision qui engage la collectivité entière, pas un service.</li>
+          <li><b>Tout le monde peut l'alimenter.</b> Un utilisateur comme un administrateur peut ajouter ou retirer un numéro, depuis le bouton <em>Numéros blacklistés</em> de l'écran des carnets d'adresses. La console note qui a fait l'ajout.</li>
+          <li><b>Les contacts concernés sont signalés.</b> Dans un carnet, un contact dont le numéro figure sur la liste apparaît marqué : inutile de comparer les deux listes à la main.</li>
+          <li><b>Le contact n'est pas supprimé.</b> Il reste dans le carnet, avec sa fiche complète ; seul l'envoi est bloqué. Retirer le numéro de la liste noire le rend de nouveau joignable immédiatement.</li>
+        </ul>
+
+        <h4 class="help-sub">Où la liste noire s'applique</h4>
+        <div class="table-wrap"><table class="help-doors">
+          <thead><tr><th>Type d'envoi</th><th>Effet</th></tr></thead>
+          <tbody>
+            <tr><td>Envoi à un carnet (campagne)</td><td><span class="tone-ok">Bloqué</span> — la campagne entière est refusée avant tout départ, et le message d'erreur nomme les numéros fautifs.</td></tr>
+            <tr><td>Vérification de flotte</td><td><span class="tone-ok">Bloqué</span> — même comportement : la vérification ne démarre pas.</td></tr>
+            <tr><td>Import de contacts en CSV</td><td><span class="tone-warn">Signalé</span> — l'import réussit, mais le compte rendu indique combien de contacts importés sont blacklistés.</td></tr>
+            <tr><td>Message unitaire depuis la console</td><td><span class="tone-danger">Non filtré</span> — le message part.</td></tr>
+            <tr><td>Envoi via l'API avec une clé « web »</td><td><span class="tone-danger">Non filtré</span> — le message part.</td></tr>
+          </tbody>
+        </table></div>
+        <p class="help-warn">
+          À retenir : la liste noire protège les <strong>envois en masse</strong>, qui sont le vrai risque, mais elle
+          n'intercepte pas un message unitaire ni un appel à l'API. Ne la considérez pas comme une garantie absolue
+          de non-sollicitation.
+        </p>
+      </article>
+
+      <article class="help-block" id="help-flotte">
+        <h3>8 · La vérification de flotte</h3>
+        <p>
+          Vérifier une flotte, c'est répondre à une question que l'inventaire ne sait pas trancher : <strong>ces
+          téléphones sont-ils réellement en service, et leurs porteurs répondent-ils&nbsp;?</strong> La passerelle
+          envoie un SMS de test à tout un carnet, puis attend une réponse pendant 72&nbsp;heures et dresse le bilan,
+          contact par contact.
+        </p>
+        <p>
+          C'est l'outil des astreintes et des téléphones de service : il détecte les lignes coupées, les appareils
+          éteints depuis des mois, les numéros erronés dans le carnet, et les porteurs qui ne consultent pas leurs
+          messages.
+        </p>
+
+        <ol class="help-steps">
+          <li data-step="1"><b>Choisir le carnet à contrôler.</b> Tous ses contacts sont proposés ; vous pouvez n'en cocher qu'une partie.</li>
+          <li data-step="2"><b>Exclure un second carnet si besoin.</b> Pratique pour ne pas retester les contacts déjà vérifiés le mois précédent, ou pour épargner une liste de responsables.</li>
+          <li data-step="3"><b>Rédiger le message de test.</b> Les mêmes variables que les campagnes sont disponibles (<span class="code">{prénom}</span>, <span class="code">{service}</span>, <span class="code">{imei}</span>…), ce qui permet de demander une confirmation personnalisée.</li>
+          <li data-step="4"><b>Lancer la vérification.</b> Les messages partent par la file normale, comme n'importe quelle campagne — ils consomment donc des SMS du forfait.</li>
+          <li data-step="5"><b>Laisser courir 72 heures.</b> Chaque réponse reçue sur la ligne de la passerelle est rattachée automatiquement au contact qui l'a envoyée.</li>
+          <li data-step="6"><b>Lire le bilan.</b> Le tableau donne, par contact, l'état, la date de remise, la date de réponse, le délai écoulé et le texte de la réponse. L'export CSV reprend le tout avec l'identité, l'entité, le service, la direction, l'IMEI et le PUK.</li>
+        </ol>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 260" role="img" aria-label="Schéma des états d'un contact pendant une vérification de flotte">
+            <rect class="d-fill-info" x="16" y="90" width="170" height="56" rx="10"/>
+            <text class="d-txt-info" x="101" y="114" text-anchor="middle">Envoyé</text>
+            <text class="d-m" x="101" y="132" text-anchor="middle">message de test</text>
+
+            <line class="d-line" x1="186" y1="118" x2="208" y2="118"/>
+            <path class="d-head" d="M218 118 l-10 -5 v10 z"/>
+
+            <rect class="d-fill-ok" x="226" y="90" width="170" height="56" rx="10"/>
+            <text class="d-txt-ok" x="311" y="114" text-anchor="middle">Remis</text>
+            <text class="d-m" x="311" y="132" text-anchor="middle">accusé de l'opérateur</text>
+            <text class="d-a" x="311" y="166" text-anchor="middle">départ du compte à rebours</text>
+
+            <path class="d-line-accent" d="M400 112 C 520 112, 570 68, 680 68"/>
+            <path class="d-head-accent" d="M690 68 l-10 -5 v10 z"/>
+            <text class="d-m" x="540" y="84" text-anchor="middle">un SMS revient dans les 72 h</text>
+
+            <path class="d-line d-dash" d="M400 124 C 520 124, 570 168, 680 168"/>
+            <path class="d-head" d="M690 168 l-10 -5 v10 z"/>
+            <text class="d-m" x="540" y="166" text-anchor="middle">silence pendant 72 h</text>
+
+            <rect class="d-fill-ok" x="690" y="40" width="214" height="56" rx="10"/>
+            <text class="d-txt-ok" x="797" y="64" text-anchor="middle">Répondu</text>
+            <text class="d-m" x="797" y="82" text-anchor="middle">le porteur a renvoyé un SMS</text>
+
+            <rect class="d-fill-neutral" x="690" y="140" width="214" height="56" rx="10"/>
+            <text class="d-txt-neutral" x="797" y="164" text-anchor="middle">Sans réponse</text>
+            <text class="d-m" x="797" y="182" text-anchor="middle">ligne ou porteur à vérifier</text>
+
+            <line class="d-line d-dash" x1="101" y1="146" x2="101" y2="186"/>
+            <path class="d-head" d="M101 196 l-5 -10 h10 z"/>
+            <rect class="d-fill-danger" x="16" y="196" width="170" height="48" rx="10"/>
+            <text class="d-txt-danger" x="101" y="220" text-anchor="middle">Échec</text>
+            <text class="d-m" x="101" y="236" text-anchor="middle">le SMS n'est jamais parti</text>
+          </svg>
+          <figcaption>Les quatre issues possibles pour un contact. Le compte à rebours de 72 heures démarre à la remise, pas à l'envoi.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Le délai part de la remise.</b> Un contact ne bascule en « sans réponse » que 72&nbsp;heures après l'accusé de remise. Un porteur qui rallume son téléphone deux jours plus tard reste donc dans les temps.</li>
+          <li><b>Sans accusé de remise, pas de verdict.</b> Si l'opérateur ne renvoie jamais d'accusé, le contact reste au stade précédent : il ne sera pas compté « sans réponse » à tort, mais il ne pourra pas non plus être compté « répondu ». C'est la limite de l'exercice, et elle dépend de l'opérateur, pas de la passerelle.</li>
+          <li><b>N'importe quelle réponse compte.</b> L'appariement se fait sur le numéro de l'expéditeur, quel que soit le texte renvoyé. Les formats <span class="code">+33</span>, <span class="code">0033</span> et <span class="code">06…</span> sont ramenés à une forme unique avant comparaison.</li>
+          <li><b>Une réponse pour une vérification.</b> Si le même numéro est engagé dans plusieurs vérifications en attente, la réponse est rattachée à la plus ancienne. Évitez de lancer deux contrôles simultanés sur le même carnet.</li>
+          <li><b>Les états se recalculent à l'ouverture.</b> Le passage en « sans réponse » est évalué au moment où vous consultez l'écran : un bilan affiché juste après l'échéance est à jour.</li>
+          <li><b>Le porteur reçoit un vrai SMS.</b> Prévenez les agents avant un contrôle de grande ampleur, faute de quoi vous récolterez surtout des appels au standard.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-roles">
+        <h3>9 · Qui fait quoi — les rôles</h3>
+        <p>
+          Deux mondes cohabitent : les <strong>comptes humains</strong>, qui se connectent avec un identifiant et un
+          mot de passe sur la console (port web), et les <strong>clés API</strong>, qui authentifient des machines sur
+          le port API. Les deux sont gérés depuis cette console.
+        </p>
+
+        <div class="help-cards">
+          <div class="help-card">
+            <span class="help-card-tag tag-admin">Compte humain</span>
+            <h4>Administrateur</h4>
+            <p>Voit et gère l'intégralité de l'instance, tous groupes confondus. Seul rôle à accéder aux clés API, aux passerelles, aux journaux, aux comptes, aux groupes et à la synchronisation.</p>
+          </div>
+          <div class="help-card">
+            <span class="help-card-tag tag-user">Compte humain</span>
+            <h4>Utilisateur</h4>
+            <p>Rattaché à un groupe. Il est redirigé vers l'interface d'envoi et ne voit que les carnets et les messages de son groupe. Il ne peut ni créer de compte, ni voir la configuration technique.</p>
+          </div>
+          <div class="help-card">
+            <span class="help-card-tag tag-user">Attribut</span>
+            <h4>Référent de groupe</h4>
+            <p>Une case à cocher sur un compte utilisateur, qui désigne l'interlocuteur du groupe et le fait apparaître dans l'onglet <em>Groupes</em>. C'est une information d'annuaire : elle n'ouvre aucun droit supplémentaire.</p>
+          </div>
+          <div class="help-card">
+            <span class="help-card-tag tag-key">Clé API</span>
+            <h4>Clé « web »</h4>
+            <p>Donne à une application tierce le droit de déposer des messages, de téléverser une pièce jointe et de lire les carnets, via l'API publique. C'est aussi la clé que présente une autre passerelle pour synchroniser des carnets.</p>
+          </div>
+          <div class="help-card">
+            <span class="help-card-tag tag-key">Clé API</span>
+            <h4>Clé « passerelle »</h4>
+            <p>Réservée à un téléphone Android. Elle autorise uniquement le sondage de la file, la remontée des statuts et celle des SMS reçus. Elle ne permet pas de déposer un message.</p>
+          </div>
+          <div class="help-card">
+            <span class="help-card-tag tag-admin">Compte de secours</span>
+            <h4>Compte admin intégré</h4>
+            <p>Accessible en laissant l'identifiant vide sur l'écran de connexion. Son mot de passe est défini par la variable <span class="code">ADMIN_PASSWORD</span> du <span class="code">docker-compose</span>, et non depuis la console.</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="help-block" id="help-user">
+        <h3>10 · Ce que peut faire un utilisateur</h3>
+        <p>
+          Un utilisateur travaille dans l'interface d'envoi, cloisonnée à son groupe. Il ne voit jamais les messages
+          des autres groupes, ni la configuration technique de la passerelle.
+        </p>
+
+        <div class="help-features">
+          <div class="help-feature">
+            <h4>Envoyer un message unitaire</h4>
+            <ul>
+              <li>Saisir un ou plusieurs numéros à la main, ou les piocher dans un carnet du groupe grâce à la recherche (nom, entité, numéro).</li>
+              <li>Rédiger jusqu'à 1000 caractères, avec palette d'émojis et compteur de segments SMS.</li>
+              <li>Joindre un fichier (10&nbsp;Mo max) : la passerelle le transforme en lien de téléchargement ajouté au message, avec date d'expiration au choix.</li>
+              <li>Programmer l'envoi à une date et une heure futures, par pas de 5&nbsp;minutes.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Envoyer à un carnet (campagne)</h4>
+            <ul>
+              <li>Choisir un carnet, cocher tout ou partie des contacts, et exclure au besoin les numéros présents dans un second carnet.</li>
+              <li>Personnaliser le texte avec les variables <span class="code">{prénom}</span>, <span class="code">{nom}</span>, <span class="code">{entité}</span>, <span class="code">{service}</span>, <span class="code">{direction}</span>, <span class="code">{imei}</span>, <span class="code">{puk}</span>, <span class="code">{téléphone}</span>.</li>
+              <li>Suivre la campagne comme un bloc : compteurs d'envoyés, remis, en vol et échecs, et annulation en masse tant que les messages n'ont pas été pris.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Tenir les carnets d'adresses du groupe</h4>
+            <ul>
+              <li>Créer, renommer et supprimer des carnets ; ajouter, modifier et supprimer des contacts.</li>
+              <li>Importer un fichier CSV avec correspondance des colonnes à l'écran et aperçu avant validation.</li>
+              <li>Renseigner les champs métier : entité, service, direction, IMEI, code PUK.</li>
+              <li>Blacklister un numéro : il est alors refusé à l'envoi, pour tout le monde et sur toute l'instance.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Vérifier une flotte de téléphones</h4>
+            <ul>
+              <li>Envoyer un message de test à un carnet et attendre la réponse des porteurs pendant 72&nbsp;heures.</li>
+              <li>Suivre par contact l'état, la date de remise, la date de réponse, le délai et le texte de la réponse.</li>
+              <li>Exporter le résultat en CSV pour le rapprocher de l'inventaire (IMEI, PUK, service, direction).</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Suivre ses envois</h4>
+            <ul>
+              <li>Consulter les messages du groupe, filtrer par statut, voir le motif d'échec et la passerelle utilisée.</li>
+              <li>Annuler un message encore en attente ou programmé.</li>
+              <li>Voir combien de fois un lien de pièce jointe a été ouvert, et depuis quel type d'appareil.</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+
+      <article class="help-block" id="help-admin">
+        <h3>11 · Ce que peut faire un administrateur</h3>
+        <p>
+          L'administrateur dispose de tout ce qui précède, sans cloisonnement par groupe, plus la totalité de la
+          configuration et de la supervision.
+        </p>
+
+        <div class="help-features">
+          <div class="help-feature">
+            <h4>Piloter les accès</h4>
+            <ul>
+              <li>Créer des groupes, y rattacher les comptes, désigner les référents.</li>
+              <li>Créer des comptes, changer un mot de passe, désactiver ou supprimer un compte, et voir sa dernière connexion.</li>
+              <li>Émettre des clés API « web » ou « passerelle », avec durée de validité, puis les révoquer ou les supprimer. La valeur d'une clé n'est affichée qu'une seule fois, à sa création.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Superviser la flotte de passerelles</h4>
+            <ul>
+              <li>Voir chaque téléphone : dernier contact, identifiant d'appareil, version d'APK, messages en cours, envoyés, remis, en échec.</li>
+              <li>Consulter le journal des appels des passerelles (rapports remontés et messages récupérés à chaque tour).</li>
+              <li>Repérer les tentatives d'authentification échouées, avec IP et motif.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Voir l'ensemble du trafic</h4>
+            <ul>
+              <li>Tous les messages, tous groupes confondus, avec l'auteur et l'origine (console, interface d'envoi, API).</li>
+              <li>Tous les SMS reçus par les téléphones de la flotte.</li>
+              <li>Importer un lot d'envois en CSV, et exporter l'historique en CSV.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Gérer les données partagées</h4>
+            <ul>
+              <li>Accéder aux carnets de tous les groupes et en créer pour le compte d'un groupe.</li>
+              <li>Déclarer des passerelles distantes et choisir les carnets à synchroniser.</li>
+              <li>Tenir la liste noire des numéros, valable pour toute l'instance.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Tracer l'usage</h4>
+            <ul>
+              <li>Journal de la console : connexions, envois et campagnes, avec l'utilisateur, la quantité et l'adresse IP.</li>
+              <li>Documentation de l'API et description OpenAPI accessibles depuis le bouton <em>Docs API</em>.</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+
+      <article class="help-block" id="help-matrice">
+        <h3>12 · Matrice des droits</h3>
+        <div class="table-wrap"><table class="help-matrix">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Utilisateur</th>
+              <th>Administrateur</th>
+              <th>Clé « web »</th>
+              <th>Clé « passerelle »</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Envoyer un SMS</td><td class="y">Son groupe</td><td class="y">Oui</td><td class="y">Oui</td><td class="n">Non</td></tr>
+            <tr><td>Envoyer à un carnet (campagne)</td><td class="y">Son groupe</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Programmer un envoi</td><td class="y">Oui</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Joindre un fichier</td><td class="y">Oui</td><td class="y">Oui</td><td class="y">Oui</td><td class="n">Non</td></tr>
+            <tr><td>Consulter les messages</td><td class="y">Son groupe</td><td class="y">Tous</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Lire les SMS reçus</td><td class="n">Non</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Gérer les carnets et contacts</td><td class="y">Son groupe</td><td class="y">Tous</td><td class="p">Lecture</td><td class="n">Non</td></tr>
+            <tr><td>Gérer la liste noire</td><td class="y">Oui</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Lancer une vérification de flotte</td><td class="y">Son groupe</td><td class="y">Tous</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Récupérer la file et remonter les statuts</td><td class="n">Non</td><td class="n">Non</td><td class="n">Non</td><td class="y">Oui</td></tr>
+            <tr><td>Gérer les clés API</td><td class="n">Non</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Gérer les comptes et les groupes</td><td class="n">Non</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Superviser les passerelles et les journaux</td><td class="n">Non</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+            <tr><td>Synchroniser des carnets distants</td><td class="n">Non</td><td class="y">Oui</td><td class="p">Sert de source</td><td class="n">Non</td></tr>
+            <tr><td>Importer / exporter en CSV</td><td class="p">Contacts</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
+          </tbody>
+        </table></div>
+      </article>
+
+      <article class="help-block" id="help-glossaire">
+        <h3>13 · Glossaire</h3>
+        <dl class="help-gloss">
+          <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
+          <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
+          <dt>Carnet d'adresses</dt><dd>Liste de contacts appartenant à un groupe, avec les champs métier entité, service, direction, IMEI et PUK.</dd>
+          <dt>Campagne</dt><dd>Envoi groupé issu d'un carnet. Les messages restent regroupés dans l'historique, avec leurs compteurs et une annulation d'ensemble.</dd>
+          <dt>Variable</dt><dd>Marqueur du type <span class="code">{prénom}</span> remplacé, pour chaque destinataire, par la valeur de sa fiche contact.</dd>
+          <dt>Liste noire</dt><dd>Numéros interdits d'envoi sur toute l'instance. Une campagne qui en contient est refusée avant tout départ.</dd>
+          <dt>Vérification de flotte</dt><dd>Campagne de test attendant une réponse des porteurs, pour contrôler qu'un parc de téléphones est bien en service.</dd>
+          <dt>Pièce jointe</dt><dd>Fichier téléversé sur la passerelle et diffusé sous forme de lien ajouté au SMS, avec date d'expiration et suivi des ouvertures.</dd>
+          <dt>Profil API</dt><dd>Couple URL + clé enregistré dans l'application Android. Un profil par passerelle servie.</dd>
+          <dt>Sondage</dt><dd>Appel périodique du téléphone vers le serveur. Il n'existe aucune connexion entrante vers le téléphone.</dd>
+        </dl>
+      </article>
+
+      <article class="help-block" id="help-depannage">
+        <h3>14 · Dépannage courant</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Symptôme</th><th>Cause la plus fréquente</th><th>Vérification</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>La pastille est rouge, aucun message ne part</td>
+              <td>Plus aucun téléphone ne sonde le serveur</td>
+              <td>Onglet <em>Passerelles</em> : colonne « dernier contact ». Puis, sur le téléphone, vérifier le profil API, la clé et l'accès au réseau.</td>
+            </tr>
+            <tr>
+              <td>Les messages restent « en attente »</td>
+              <td>Clé de passerelle révoquée ou expirée</td>
+              <td>Onglet <em>Clés API</em> : état de la clé. Onglet <em>Logs</em> : tentatives d'authentification refusées.</td>
+            </tr>
+            <tr>
+              <td>Un message reste « en cours d'envoi »</td>
+              <td>Téléphone éteint ou hors couverture après avoir pris le message</td>
+              <td>Aucune action : le message est automatiquement remis en file au bout de 10&nbsp;minutes.</td>
+            </tr>
+            <tr>
+              <td>« Envoyé » mais jamais « remis »</td>
+              <td>L'opérateur ou le mobile destinataire ne renvoie pas d'accusé</td>
+              <td>Comportement normal chez certains opérateurs : l'absence d'accusé ne signifie pas un échec.</td>
+            </tr>
+            <tr>
+              <td>Une campagne est refusée d'emblée</td>
+              <td>Un destinataire figure sur la liste noire, ou le texte dépasse 1000 caractères une fois les variables remplacées</td>
+              <td>Le message d'erreur nomme le numéro ou le destinataire fautif.</td>
+            </tr>
+            <tr>
+              <td>Un carnet synchronisé n'est plus à jour</td>
+              <td>Source injoignable ou clé « web » révoquée chez la source</td>
+              <td>Onglet <em>Synchro carnets</em> : colonne « état » de la source et bouton de test.</td>
+            </tr>
+            <tr>
+              <td>Un utilisateur ne voit pas un carnet</td>
+              <td>Le carnet appartient à un autre groupe, ou il est synchronisé (réservé aux administrateurs)</td>
+              <td>Onglet <em>Comptes</em> : groupe du compte. Onglet <em>Carnets</em> : groupe du carnet.</td>
+            </tr>
+          </tbody>
+        </table></div>
+      </article>
