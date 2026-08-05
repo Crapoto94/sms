@@ -10,7 +10,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.36';
+const APP_VERSION = process.env.APP_VERSION || '1.37';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -484,6 +484,36 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
     attachment: withAttachment.attachment
       ? { id: withAttachment.attachment.id, name: withAttachment.attachment.original_name, url: publicAttachmentUrl(req, withAttachment.attachment.token) }
       : null
+  });
+});
+
+// Lecture des carnets d'adresses (clé type "web") — utilisée pour la
+// synchronisation de carnets entre instances de la passerelle.
+apiApp.get('/api/v1/books', requireApiKey('web'), (_req, res) => {
+  const books = db.prepare(`
+    SELECT ab.id, ab.name, ab.group_id, ab.created_at, g.name AS group_name,
+      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
+    FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+    ORDER BY ab.id ASC
+  `).all();
+  res.json(books);
+});
+
+apiApp.get('/api/v1/books/:id/contacts', requireApiKey('web'), (req, res) => {
+  const id = Number(req.params.id);
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(id);
+  if (!book) return res.status(404).json({ error: 'Carnet introuvable' });
+  const group = book.group_id ? db.prepare('SELECT name FROM groups WHERE id = ?').get(book.group_id) : null;
+  const contacts = db.prepare(`
+    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone
+    FROM contacts c WHERE c.address_book_id = ? ORDER BY c.id ASC
+  `).all(id);
+  res.json({
+    id: book.id,
+    name: book.name,
+    group_id: book.group_id,
+    group_name: group ? group.name : null,
+    contacts
   });
 });
 
@@ -1162,6 +1192,267 @@ webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
     ORDER BY id DESC LIMIT ?
   `).all(limit);
   res.json(rows);
+});
+
+// ---------- Synchronisation de carnets (admin) ----------
+const REMOTE_TIMEOUT_MS = 15000;
+const syncRunning = { active: false };
+
+function normalizeSourceUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+async function fetchRemote(url, apiKey) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), REMOTE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: ctl.signal
+    });
+    if (!res.ok) throw new Error(`Réponse HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Synchronise un carnet distant : remplace entièrement le contenu du carnet
+// local miroir. Crée le carnet local au besoin (groupe NULL = admin uniquement).
+async function syncOneBook(syncBook) {
+  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(syncBook.source_id);
+  if (!source) throw new Error('Source introuvable');
+  const base = normalizeSourceUrl(source.url);
+  const data = await fetchRemote(`${base}/api/v1/books/${syncBook.remote_book_id}/contacts`, source.api_key);
+  if (!data || !Array.isArray(data.contacts)) throw new Error('Réponse distante invalide');
+  let inserted = 0;
+  db.exec('BEGIN');
+  try {
+    let localBookId = syncBook.local_book_id;
+    if (!localBookId) {
+      const info = db.prepare(
+        'INSERT INTO address_books (group_id, name, created_at) VALUES (NULL, ?, ?)'
+      ).run(data.name || syncBook.remote_book_name, isoNow());
+      localBookId = info.lastInsertRowid;
+      db.prepare('UPDATE sync_books SET local_book_id = ? WHERE id = ?').run(localBookId, syncBook.id);
+    }
+    db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(localBookId);
+    const insert = db.prepare(
+      'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    const now = isoNow();
+    for (const c of data.contacts) {
+      const phone = normalizePhone(c && c.phone);
+      if (!/^\+?[0-9]{4,15}$/.test(phone)) continue;
+      insert.run(
+        localBookId,
+        c.first_name || '', c.last_name || '', c.entity || '',
+        c.service || '', c.direction || '', c.imei || '', c.puk || '',
+        phone, now
+      );
+      inserted++;
+    }
+    const nowIso = isoNow();
+    db.prepare(`
+      UPDATE sync_books SET
+        remote_book_name = ?, last_synced_at = ?, last_status = 'ok', last_error = NULL
+      WHERE id = ?
+    `).run(data.name || syncBook.remote_book_name, nowIso, syncBook.id);
+    db.prepare('UPDATE sync_sources SET last_synced_at = ?, last_status = ?, last_error = NULL WHERE id = ?')
+      .run(nowIso, 'ok', source.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return { ok: true, inserted };
+}
+
+// Tâche horaire : synchronise tous les carnets distants activés.
+async function runScheduledSync() {
+  if (syncRunning.active) return;
+  syncRunning.active = true;
+  try {
+    const rows = db.prepare('SELECT * FROM sync_books').all();
+    for (const row of rows) {
+      try {
+        await syncOneBook(row);
+      } catch (err) {
+        const msg = String(err && err.message ? err.message : err).slice(0, 300);
+        db.prepare("UPDATE sync_books SET last_status = 'error', last_error = ? WHERE id = ?").run(msg, row.id);
+        db.prepare("UPDATE sync_sources SET last_status = 'error', last_error = ? WHERE id = ?").run(msg, row.source_id);
+      }
+    }
+  } finally {
+    syncRunning.active = false;
+  }
+}
+setInterval(() => { runScheduledSync().catch(() => {}); }, 60 * 60 * 1000);
+setTimeout(() => { runScheduledSync().catch(() => {}); }, 30 * 1000);
+
+webApp.get('/admin/api/sync-sources', requireAdmin, (_req, res) => {
+  const sources = db.prepare(`
+    SELECT s.*, (SELECT COUNT(*) FROM sync_books sb WHERE sb.source_id = s.id) AS book_count
+    FROM sync_sources s ORDER BY s.id ASC
+  `).all();
+  const books = db.prepare(`
+    SELECT sb.*, ab.name AS local_book_name,
+      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = sb.local_book_id) AS contact_count
+    FROM sync_books sb LEFT JOIN address_books ab ON ab.id = sb.local_book_id
+    ORDER BY sb.id ASC
+  `).all();
+  res.json({ sources, books });
+});
+
+webApp.post('/admin/api/sync-sources', requireAdmin, (req, res) => {
+  const label = String((req.body || {}).label || '').trim();
+  const url = normalizeSourceUrl((req.body || {}).url);
+  const apiKey = String((req.body || {}).apiKey || '').trim();
+  if (!label) return res.status(400).json({ error: 'Libellé requis' });
+  if (!/^https?:\/\/.+/.test(url)) return res.status(400).json({ error: 'URL invalide (http:// ou https:// attendu)' });
+  if (!apiKey) return res.status(400).json({ error: 'Clé d’authentification requise' });
+  const info = db.prepare('INSERT INTO sync_sources (label, url, api_key, created_at) VALUES (?, ?, ?, ?)')
+    .run(label, url, apiKey, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, label, url, created_at: isoNow(), book_count: 0 });
+});
+
+webApp.delete('/admin/api/sync-sources/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  db.exec('BEGIN');
+  try {
+    const syncBooks = db.prepare('SELECT * FROM sync_books WHERE source_id = ?').all(id);
+    for (const sb of syncBooks) {
+      if (sb.local_book_id) {
+        db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(sb.local_book_id);
+        db.prepare('DELETE FROM address_books WHERE id = ?').run(sb.local_book_id);
+      }
+    }
+    db.prepare('DELETE FROM sync_books WHERE source_id = ?').run(id);
+    db.prepare('DELETE FROM sync_sources WHERE id = ?').run(id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/sync-sources/:id/browse', requireAdmin, async (req, res) => {
+  try {
+    const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+    if (!source) return res.status(404).json({ error: 'Source introuvable' });
+    const books = await fetchRemote(`${normalizeSourceUrl(source.url)}/api/v1/books`, source.api_key);
+    if (!Array.isArray(books)) return res.status(502).json({ error: 'Réponse distante invalide' });
+    const synced = new Set(
+      db.prepare('SELECT remote_book_id FROM sync_books WHERE source_id = ?').all(source.id).map((r) => r.remote_book_id)
+    );
+    res.json({
+      sourceLabel: source.label,
+      books: books.map((b) => ({
+        id: b.id,
+        name: b.name,
+        group_name: b.group_name || (b.group_id != null ? `Groupe #${b.group_id}` : 'Sans groupe'),
+        contact_count: b.contact_count || 0,
+        synced: synced.has(b.id)
+      }))
+    });
+  } catch (err) {
+    res.status(502).json({ error: `Impossible de joindre l'instance distante : ${err.message}` });
+  }
+});
+
+webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) => {
+  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+  if (!source) return res.status(404).json({ error: 'Source introuvable' });
+  const bookIds = Array.isArray(req.body.bookIds)
+    ? req.body.bookIds.map(Number).filter(Number.isInteger)
+    : [];
+  if (!bookIds.length) return res.status(400).json({ error: 'Sélectionnez au moins un carnet' });
+  const base = normalizeSourceUrl(source.url);
+  const results = [];
+  for (const remoteId of bookIds) {
+    const existing = db.prepare(
+      'SELECT * FROM sync_books WHERE source_id = ? AND remote_book_id = ?'
+    ).get(source.id, remoteId);
+    if (existing) {
+      results.push({ remoteId, created: false, localBookId: existing.local_book_id });
+      continue;
+    }
+    let data;
+    try {
+      data = await fetchRemote(`${base}/api/v1/books/${remoteId}/contacts`, source.api_key);
+    } catch (err) {
+      return res.status(502).json({ error: `Carnet ${remoteId} injoignable : ${err.message}` });
+    }
+    if (!data || !Array.isArray(data.contacts)) {
+      return res.status(502).json({ error: `Réponse invalide pour le carnet ${remoteId}` });
+    }
+    let localBookId;
+    db.exec('BEGIN');
+    try {
+      const name = data.name || `Carnet distant ${remoteId}`;
+      const info = db.prepare('INSERT INTO address_books (group_id, name, created_at) VALUES (NULL, ?, ?)')
+        .run(name, isoNow());
+      localBookId = info.lastInsertRowid;
+      const insert = db.prepare(
+        'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      );
+      const now = isoNow();
+      let inserted = 0;
+      for (const c of data.contacts) {
+        const phone = normalizePhone(c && c.phone);
+        if (!/^\+?[0-9]{4,15}$/.test(phone)) continue;
+        insert.run(
+          localBookId, c.first_name || '', c.last_name || '', c.entity || '',
+          c.service || '', c.direction || '', c.imei || '', c.puk || '', phone, now
+        );
+        inserted++;
+      }
+      db.prepare(`
+        INSERT INTO sync_books (source_id, remote_book_id, remote_book_name, remote_group_id, remote_group_name, local_book_id, last_synced_at, last_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ok')
+      `).run(source.id, remoteId, name, data.group_id || null, data.group_name || null, localBookId, isoNow());
+      db.exec('COMMIT');
+      results.push({ remoteId, created: true, localBookId, contacts: inserted });
+    } catch (err) {
+      db.exec('ROLLBACK');
+      return res.status(500).json({ error: err.message });
+    }
+  }
+  db.prepare('UPDATE sync_sources SET last_status = ?, last_error = NULL, last_synced_at = ? WHERE id = ?')
+    .run('ok', isoNow(), source.id);
+  res.status(201).json({ results });
+});
+
+webApp.post('/admin/api/sync-books/:id/run', requireAdmin, async (req, res) => {
+  const syncBook = db.prepare('SELECT * FROM sync_books WHERE id = ?').get(Number(req.params.id));
+  if (!syncBook) return res.status(404).json({ error: 'Synchronisation introuvable' });
+  try {
+    const result = await syncOneBook(syncBook);
+    res.json({ ok: true, contacts: result.inserted });
+  } catch (err) {
+    const msg = String(err && err.message ? err.message : err).slice(0, 300);
+    db.prepare("UPDATE sync_books SET last_status = 'error', last_error = ? WHERE id = ?").run(msg, syncBook.id);
+    res.status(502).json({ error: msg });
+  }
+});
+
+webApp.delete('/admin/api/sync-books/:id', requireAdmin, (req, res) => {
+  const syncBook = db.prepare('SELECT * FROM sync_books WHERE id = ?').get(Number(req.params.id));
+  if (!syncBook) return res.status(404).json({ error: 'Synchronisation introuvable' });
+  db.exec('BEGIN');
+  try {
+    if (syncBook.local_book_id) {
+      db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(syncBook.local_book_id);
+      db.prepare('DELETE FROM address_books WHERE id = ?').run(syncBook.local_book_id);
+    }
+    db.prepare('DELETE FROM sync_books WHERE id = ?').run(syncBook.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.json({ ok: true });
 });
 
 // Annulation d'un message pas encore envoyé (programmé, en attente, en cours

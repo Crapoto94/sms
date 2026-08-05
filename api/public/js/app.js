@@ -97,6 +97,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
     $('books').classList.toggle('hidden', currentTab !== 'books');
     $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
+    $('sync').classList.toggle('hidden', currentTab !== 'sync');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
@@ -109,6 +110,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     }
     if (currentTab === 'books') loadBooks();
     if (currentTab === 'fleet') loadFleet();
+    if (currentTab === 'sync') loadSync();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'journal') loadJournal();
     if (currentTab === 'accounts') loadAccounts();
@@ -789,6 +791,140 @@ async function loadJournal() {
     : '<tr><td colspan="6" class="muted">Aucune activité enregistrée pour le moment.</td></tr>';
 }
 $('journalLimit').addEventListener('change', loadJournal);
+
+// ---------- Synchronisation de carnets ----------
+let syncCache = null;
+let browseSourceId = null;
+
+function syncStateBadge(s) {
+  if (!s || !s.last_status) return '<span class="muted">jamais</span>';
+  return s.last_status === 'ok' ? badge('OK', 'ok') : badge('Erreur', 'failed');
+}
+
+function renderSyncSources(sources) {
+  $('syncSourcesBody').innerHTML = sources.length
+    ? sources.map((s) => `<tr>
+        <td>${esc(s.label)}</td>
+        <td class="code">${esc(s.url)}</td>
+        <td>${s.book_count}</td>
+        <td>${s.last_synced_at ? fmtDate(s.last_synced_at) : '<span class="muted">jamais</span>'}</td>
+        <td>${syncStateBadge(s)}${s.last_error ? `<div class="muted" title="${esc(s.last_error)}">${esc(s.last_error)}</div>` : ''}</td>
+        <td>
+          <button data-syncbrowse="${s.id}" class="ghost">Parcourir</button>
+          <button data-syncsource-del="${s.id}" class="danger">Supprimer</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">Aucune source distante. Ajoutez-en une ci-contre.</td></tr>';
+}
+
+function renderSyncBooks(books) {
+  $('syncBooksBody').innerHTML = books.length
+    ? books.map((b) => `<tr>
+        <td>${esc(syncCache && syncCache.sources.find((s) => s.id === b.source_id)?.label || `source #${b.source_id}`)}</td>
+        <td>${b.local_book_id ? `${esc(b.local_book_name)} <span class="badge ok">admin</span>` : '<span class="muted">non créé</span>'}</td>
+        <td>${esc(b.remote_book_name)}</td>
+        <td>${b.contact_count}</td>
+        <td>${b.last_synced_at ? fmtDate(b.last_synced_at) : '<span class="muted">jamais</span>'}</td>
+        <td>${syncStateBadge(b)}${b.last_error ? `<div class="muted" title="${esc(b.last_error)}">${esc(b.last_error)}</div>` : ''}</td>
+        <td>
+          <button data-syncrun="${b.id}" class="ghost">Synchroniser maintenant</button>
+          <button data-syncbook-del="${b.id}" class="danger">Retirer</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Aucun carnet synchronisé.</td></tr>';
+}
+
+async function loadSync() {
+  syncCache = await api('/admin/api/sync-sources');
+  renderSyncSources(syncCache.sources || []);
+  renderSyncBooks(syncCache.books || []);
+}
+
+$('btnAddSyncSource').addEventListener('click', async () => {
+  $('syncSourceError').textContent = '';
+  try {
+    await api('/admin/api/sync-sources', {
+      method: 'POST',
+      body: JSON.stringify({
+        label: $('syncLabel').value.trim(),
+        url: $('syncUrl').value.trim(),
+        apiKey: $('syncKey').value.trim()
+      })
+    });
+    $('syncLabel').value = '';
+    $('syncUrl').value = '';
+    $('syncKey').value = '';
+    loadSync();
+  } catch (e) { $('syncSourceError').textContent = e.message; }
+});
+
+$('syncSourcesBody').addEventListener('click', async (e) => {
+  const browse = e.target.closest('[data-syncbrowse]');
+  const del = e.target.closest('[data-syncsource-del]');
+  if (browse) {
+    $('syncBrowseError').textContent = '';
+    browseSourceId = Number(browse.dataset.syncbrowse);
+    try {
+      const data = await api(`/admin/api/sync-sources/${browseSourceId}/browse`, { method: 'POST' });
+      $('syncBrowseTitle').textContent = `Carnets disponibles sur « ${data.sourceLabel} » — cochez ceux à synchroniser.`;
+      $('syncBrowseBody').innerHTML = (data.books || []).length
+        ? data.books.map((b) => `<tr>
+            <td><input type="checkbox" value="${b.id}" ${b.synced ? 'checked disabled' : ''}></td>
+            <td>${esc(b.name)}${b.synced ? ' <span class="badge ok">déjà synchronisé</span>' : ''}</td>
+            <td>${esc(b.group_name)}</td>
+            <td>${b.contact_count}</td>
+            <td class="muted">—</td>
+          </tr>`).join('')
+        : '<tr><td colspan="5" class="muted">Aucun carnet sur cette instance.</td></tr>';
+      $('syncBrowseWrap').classList.remove('hidden');
+    } catch (err) { $('syncBrowseError').textContent = err.message; }
+  } else if (del) {
+    if (!confirm('Supprimer cette source et tous les carnets synchronisés associés ?')) return;
+    try {
+      await api(`/admin/api/sync-sources/${del.dataset.syncsourceDel}`, { method: 'DELETE' });
+      loadSync();
+    } catch (err) { alert(err.message); }
+  }
+});
+
+$('btnSyncSelected').addEventListener('click', async () => {
+  $('syncBrowseError').textContent = '';
+  const checked = Array.from(document.querySelectorAll('#syncBrowseBody input:checked:not(:disabled)'))
+    .map((i) => Number(i.value));
+  if (!checked.length) { $('syncBrowseError').textContent = 'Cochez au moins un carnet.'; return; }
+  try {
+    const res = await api(`/admin/api/sync-sources/${browseSourceId}/books`, {
+      method: 'POST',
+      body: JSON.stringify({ bookIds: checked })
+    });
+    $('syncBrowseWrap').classList.add('hidden');
+    alert(`Synchronisation activée : ${res.results.length} carnet(s) créé(s) localement.`);
+    loadSync();
+  } catch (err) { $('syncBrowseError').textContent = err.message; }
+});
+
+$('btnCancelBrowse').addEventListener('click', () => {
+  $('syncBrowseWrap').classList.add('hidden');
+  browseSourceId = null;
+});
+
+$('syncBooksBody').addEventListener('click', async (e) => {
+  const run = e.target.closest('[data-syncrun]');
+  const del = e.target.closest('[data-syncbook-del]');
+  if (run) {
+    try {
+      const res = await api(`/admin/api/sync-books/${run.dataset.syncrun}/run`, { method: 'POST' });
+      alert(`${res.contacts} contact(s) synchronisé(s).`);
+      loadSync();
+    } catch (err) { alert(err.message); loadSync(); }
+  } else if (del) {
+    if (!confirm('Retirer cette synchronisation ? Le carnet local et ses contacts seront supprimés.')) return;
+    try {
+      await api(`/admin/api/sync-books/${del.dataset.syncbookDel}`, { method: 'DELETE' });
+      loadSync();
+    } catch (err) { alert(err.message); }
+  }
+});
 
 // ---------- Comptes ----------
 let pendingAccountId = null;

@@ -19,6 +19,7 @@
       <button class="tab active" data-tab="messages">Messages</button>
       <button class="tab" data-tab="books">Carnets</button>
       <button class="tab" data-tab="fleet">Vérification flotte</button>
+      <button class="tab" data-tab="sync">Synchro carnets</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="journal">Journal</button>
       <button class="tab" data-tab="accounts">Comptes</button>
@@ -168,6 +169,55 @@
           </table>
         </div>
       </div>
+    </section>
+
+    <section id="sync" class="panel hidden">
+      <div class="row">
+        <h2>Synchronisation de carnets</h2>
+      </div>
+      <p class="muted">Synchronisez des carnets d'adresses depuis une autre instance de la passerelle SMS. Entrez l'URL (port API) et une clé « web » de l'autre instance, parcourez ses carnets puis cochez ceux à synchroniser. Les carnets synchronisés ne sont visibles que par les administrateurs et sont mis à jour automatiquement toutes les heures.</p>
+      <div class="composer">
+        <div>
+          <h3>Nouvelle source distante</h3>
+          <label for="syncLabel">Libellé</label>
+          <input id="syncLabel" placeholder="ex : Passerelle mairie annexe">
+          <label for="syncUrl">URL de l'instance (port API)</label>
+          <input id="syncUrl" placeholder="ex : http://192.168.1.20:3250">
+          <label for="syncKey">Clé d'authentification (clé « web »)</label>
+          <input id="syncKey" type="password" placeholder="clé API de l'autre instance">
+          <p class="muted">La clé est stockée en clair dans la base locale.</p>
+          <div class="row" style="margin-top:12px">
+            <button id="btnAddSyncSource">Ajouter la source</button>
+          </div>
+          <p id="syncSourceError" class="error"></p>
+        </div>
+        <div>
+          <h3>Sources distantes</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Libellé</th><th>URL</th><th>Carnets</th><th>Dernière synchro</th><th>État</th><th>Actions</th></tr></thead>
+            <tbody id="syncSourcesBody"></tbody>
+          </table></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:24px">
+        <h3>Carnets synchronisés</h3>
+      </div>
+      <div id="syncBrowseWrap" class="hidden" style="margin-top:12px">
+        <p id="syncBrowseTitle"></p>
+        <div class="table-wrap"><table>
+          <thead><tr><th></th><th>Carnet</th><th>Groupe</th><th>Contacts</th><th>État</th></tr></thead>
+          <tbody id="syncBrowseBody"></tbody>
+        </table></div>
+        <div class="row" style="margin-top:12px">
+          <button id="btnSyncSelected">Synchroniser la sélection</button>
+          <button id="btnCancelBrowse" class="ghost">Annuler</button>
+        </div>
+        <p id="syncBrowseError" class="error"></p>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Source</th><th>Carnet local</th><th>Carnet distant</th><th>Contacts</th><th>Dernière synchro</th><th>État</th><th>Actions</th></tr></thead>
+        <tbody id="syncBooksBody"></tbody>
+      </table></div>
     </section>
 
     <section id="logs" class="panel hidden">

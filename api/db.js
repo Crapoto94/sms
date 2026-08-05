@@ -149,6 +149,33 @@ CREATE TABLE IF NOT EXISTS console_logs (
 
 CREATE INDEX IF NOT EXISTS idx_console_logs_created ON console_logs(created_at);
 
+CREATE TABLE IF NOT EXISTS sync_sources (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  label         TEXT    NOT NULL,
+  url           TEXT    NOT NULL,
+  api_key       TEXT    NOT NULL,
+  created_at    TEXT    NOT NULL,
+  last_status   TEXT,
+  last_error    TEXT,
+  last_synced_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sync_books (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id        INTEGER NOT NULL,
+  remote_book_id   INTEGER NOT NULL,
+  remote_book_name TEXT    NOT NULL,
+  remote_group_id  INTEGER,
+  remote_group_name TEXT,
+  local_book_id    INTEGER,
+  last_synced_at   TEXT,
+  last_status      TEXT,
+  last_error       TEXT,
+  UNIQUE (source_id, remote_book_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_books_source ON sync_books(source_id);
+
 CREATE TABLE IF NOT EXISTS accounts (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   login         TEXT    NOT NULL UNIQUE,
