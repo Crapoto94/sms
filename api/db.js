@@ -336,6 +336,13 @@ if (!attachmentCols.includes('expires_at')) {
   db.exec("UPDATE attachments SET expires_at = datetime(created_at, '+90 days') WHERE expires_at IS NULL");
 }
 
+// Journal console : mémorise le navigateur/appareil du client pour distinguer
+// les connexions qui partagent la même IP publique (NAT de la box).
+const logCols = db.prepare('PRAGMA table_info(console_logs)').all().map((c) => c.name);
+if (!logCols.includes('user_agent')) {
+  db.exec('ALTER TABLE console_logs ADD COLUMN user_agent TEXT');
+}
+
 // Carnets synchronisés : créés sans groupe (groupe NULL = visibles par les
 // administrateurs uniquement, comme pour les comptes). La colonne était
 // NOT NULL à l'origine : on reconstruit la table pour l'assouplir.

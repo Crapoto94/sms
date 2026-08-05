@@ -256,7 +256,7 @@
       </div>
       <div class="table-wrap"><table>
         <thead>
-          <tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Détail</th><th>Quantité</th><th>IP</th></tr>
+          <tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Détail</th><th>Quantité</th><th>IP</th><th>Navigateur</th></tr>
         </thead>
         <tbody id="journalBody"></tbody>
       </table></div>
@@ -295,16 +295,17 @@
 
       <nav class="help-toc">
         <a href="#help-principe">1 · Le principe</a>
-        <a href="#help-multi-tel">2 · Plusieurs téléphones</a>
-        <a href="#help-multi-pass">3 · Plusieurs passerelles</a>
-        <a href="#help-synchro">4 · Synchro des carnets</a>
-        <a href="#help-cycle">5 · Vie d'un message</a>
-        <a href="#help-roles">6 · Les rôles</a>
-        <a href="#help-user">7 · L'utilisateur</a>
-        <a href="#help-admin">8 · L'administrateur</a>
-        <a href="#help-matrice">9 · Matrice des droits</a>
-        <a href="#help-glossaire">10 · Glossaire</a>
-        <a href="#help-depannage">11 · Dépannage</a>
+        <a href="#help-telephone">2 · Mettre un téléphone en service</a>
+        <a href="#help-multi-tel">3 · Plusieurs téléphones</a>
+        <a href="#help-multi-pass">4 · Plusieurs passerelles</a>
+        <a href="#help-synchro">5 · Synchro des carnets</a>
+        <a href="#help-cycle">6 · Vie d'un message</a>
+        <a href="#help-roles">7 · Les rôles</a>
+        <a href="#help-user">8 · L'utilisateur</a>
+        <a href="#help-admin">9 · L'administrateur</a>
+        <a href="#help-matrice">10 · Matrice des droits</a>
+        <a href="#help-glossaire">11 · Glossaire</a>
+        <a href="#help-depannage">12 · Dépannage</a>
       </nav>
 
       <article class="help-block" id="help-principe">
@@ -321,94 +322,233 @@
           appelle le serveur, à intervalle régulier (60&nbsp;secondes par défaut). Le téléphone peut donc rester
           derrière une box, un pare-feu ou un réseau mobile, sans aucune ouverture de port.
         </p>
+        <p>
+          Deuxième point important : la passerelle expose <strong>deux portes d'entrée distinctes</strong>, sur deux
+          ports différents. Les <strong>agents</strong> se connectent avec un identifiant et un mot de passe sur la
+          <em>console web</em> ; les <strong>applications tierces</strong> se connectent avec une clé API sur
+          l'<em>API publique</em>. Ce sont deux serveurs séparés dans le même conteneur, qui ne partagent que la base.
+        </p>
 
         <figure class="figure">
-          <svg viewBox="0 0 920 350" role="img" aria-label="Schéma d'une passerelle avec un seul téléphone">
-            <!-- Utilisateurs -->
-            <rect class="d-panel" x="16" y="112" width="176" height="112" rx="12"/>
-            <text class="d-t" x="104" y="142" text-anchor="middle">Utilisateurs</text>
-            <text class="d-s" x="104" y="168" text-anchor="middle">Console d'administration</text>
-            <text class="d-s" x="104" y="188" text-anchor="middle">Interface d'envoi</text>
-            <text class="d-s" x="104" y="208" text-anchor="middle">Applications tierces</text>
+          <svg viewBox="0 0 920 380" role="img" aria-label="Schéma d'une passerelle avec un seul téléphone et ses deux portes d'entrée">
+            <!-- Utilisateurs (console web) -->
+            <rect class="d-panel" x="16" y="84" width="180" height="84" rx="12"/>
+            <text class="d-t" x="106" y="112" text-anchor="middle">Utilisateurs</text>
+            <text class="d-m" x="106" y="132" text-anchor="middle">agents et administrateurs</text>
+            <text class="d-m" x="106" y="150" text-anchor="middle">identifiant + mot de passe</text>
+
+            <!-- Applications tierces (API) -->
+            <rect class="d-panel" x="16" y="212" width="180" height="84" rx="12"/>
+            <text class="d-t" x="106" y="240" text-anchor="middle">Applications tierces</text>
+            <text class="d-m" x="106" y="260" text-anchor="middle">logiciel métier, site web…</text>
+            <text class="d-m" x="106" y="278" text-anchor="middle">clé API « web »</text>
 
             <!-- Serveur -->
-            <rect class="d-panel-accent" x="268" y="72" width="216" height="192" rx="14"/>
-            <text class="d-t" x="376" y="100" text-anchor="middle">Passerelle SMS</text>
-            <text class="d-m" x="376" y="118" text-anchor="middle">serveur · conteneur Docker</text>
-            <rect class="d-panel-soft" x="286" y="132" width="180" height="36" rx="8"/>
-            <text class="d-s" x="376" y="154" text-anchor="middle">API publique · port 3250</text>
-            <rect class="d-panel-soft" x="286" y="176" width="180" height="36" rx="8"/>
-            <text class="d-s" x="376" y="198" text-anchor="middle">Console web · port 3251</text>
-            <rect class="d-panel-soft" x="286" y="220" width="180" height="36" rx="8"/>
-            <text class="d-s" x="376" y="242" text-anchor="middle">Base SQLite · file d'attente</text>
+            <rect class="d-panel-accent" x="272" y="60" width="216" height="248" rx="14"/>
+            <text class="d-t" x="380" y="88" text-anchor="middle">Passerelle SMS</text>
+            <text class="d-m" x="380" y="106" text-anchor="middle">serveur · conteneur Docker</text>
+            <rect class="d-panel-soft" x="290" y="120" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="144" text-anchor="middle">Console web · port 3251</text>
+            <rect class="d-panel-soft" x="290" y="170" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="194" text-anchor="middle">API publique · port 3250</text>
+            <line class="d-line" x1="380" y1="214" x2="380" y2="240"/>
+            <path class="d-head" d="M380 250 l-5 -10 h10 z"/>
+            <rect class="d-panel-soft" x="290" y="252" width="180" height="38" rx="8"/>
+            <text class="d-s" x="380" y="276" text-anchor="middle">Base SQLite · file d'attente</text>
 
             <!-- Téléphone -->
-            <text class="d-t" x="640" y="74" text-anchor="middle">Téléphone Android</text>
-            <rect class="d-panel" x="576" y="86" width="128" height="164" rx="18"/>
-            <rect class="d-panel-soft" x="588" y="104" width="104" height="128" rx="8"/>
-            <rect class="d-chrome" x="622" y="93" width="36" height="4" rx="2"/>
-            <rect class="d-chrome" x="624" y="238" width="32" height="4" rx="2"/>
-            <g class="d-icon" transform="translate(623,123) scale(1.4)">
+            <text class="d-t" x="640" y="86" text-anchor="middle">Téléphone Android</text>
+            <rect class="d-panel" x="576" y="102" width="128" height="164" rx="18"/>
+            <rect class="d-panel-soft" x="588" y="120" width="104" height="128" rx="8"/>
+            <rect class="d-chrome" x="622" y="109" width="36" height="4" rx="2"/>
+            <rect class="d-chrome" x="624" y="254" width="32" height="4" rx="2"/>
+            <g class="d-icon" transform="translate(623,139) scale(1.4)">
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
             </g>
-            <text class="d-m" x="640" y="184" text-anchor="middle">appli SmsGateway</text>
-            <text class="d-m" x="640" y="202" text-anchor="middle">carte SIM active</text>
+            <text class="d-m" x="640" y="200" text-anchor="middle">appli SmsGateway</text>
+            <text class="d-m" x="640" y="218" text-anchor="middle">clé « passerelle »</text>
 
             <!-- Destinataires -->
-            <rect class="d-panel" x="772" y="112" width="132" height="112" rx="12"/>
-            <path class="d-icon" d="M831 151 A10 10 0 0 1 845 151"/>
-            <path class="d-icon" d="M826 146 A17 17 0 0 1 850 146"/>
-            <path class="d-icon" d="M821 141 A24 24 0 0 1 855 141"/>
-            <circle class="d-dot" cx="838" cy="158" r="3"/>
-            <text class="d-t" x="838" y="190" text-anchor="middle">Destinataires</text>
-            <text class="d-m" x="838" y="208" text-anchor="middle">téléphones mobiles</text>
+            <rect class="d-panel" x="772" y="128" width="132" height="112" rx="12"/>
+            <path class="d-icon" d="M831 167 A10 10 0 0 1 845 167"/>
+            <path class="d-icon" d="M826 162 A17 17 0 0 1 850 162"/>
+            <path class="d-icon" d="M821 157 A24 24 0 0 1 855 157"/>
+            <circle class="d-dot" cx="838" cy="174" r="3"/>
+            <text class="d-t" x="838" y="206" text-anchor="middle">Destinataires</text>
+            <text class="d-m" x="838" y="224" text-anchor="middle">téléphones mobiles</text>
 
-            <!-- Flux 1 : dépôt -->
-            <line class="d-line-accent" x1="196" y1="168" x2="252" y2="168"/>
-            <path class="d-head-accent" d="M262 168 l-10 -5 v10 z"/>
-            <circle class="d-badge" cx="224" cy="144" r="12"/>
-            <text class="d-badge-t" x="224" y="148" text-anchor="middle">1</text>
+            <!-- Flux 1a : un agent dépose depuis la console web -->
+            <path class="d-line-accent" d="M196 126 C 232 126, 232 138, 262 138"/>
+            <path class="d-head-accent" d="M272 138 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="215" y="95" width="32" height="22" rx="11"/>
+            <text class="d-badge-t" x="231" y="110" text-anchor="middle">1a</text>
 
-            <!-- Flux 2 : le téléphone interroge -->
-            <line class="d-line-accent" x1="568" y1="140" x2="500" y2="140"/>
-            <path class="d-head-accent" d="M490 140 l10 -5 v10 z"/>
-            <circle class="d-badge" cx="530" cy="116" r="12"/>
-            <text class="d-badge-t" x="530" y="120" text-anchor="middle">2</text>
-            <text class="d-m" x="530" y="172" text-anchor="middle">toutes les 60 s</text>
+            <!-- Flux 1b : une application tierce dépose via l'API -->
+            <path class="d-line-accent" d="M196 254 C 232 254, 232 188, 262 188"/>
+            <path class="d-head-accent" d="M272 188 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="215" y="240" width="32" height="22" rx="11"/>
+            <text class="d-badge-t" x="231" y="255" text-anchor="middle">1b</text>
 
-            <!-- Flux 3 : le serveur répond -->
-            <line class="d-line-accent" x1="490" y1="196" x2="566" y2="196"/>
-            <path class="d-head-accent" d="M576 196 l-10 -5 v10 z"/>
-            <circle class="d-badge" cx="530" cy="222" r="12"/>
-            <text class="d-badge-t" x="530" y="226" text-anchor="middle">3</text>
+            <!-- Flux 2 : le téléphone interroge l'API -->
+            <line class="d-line-accent" x1="568" y1="170" x2="500" y2="170"/>
+            <path class="d-head-accent" d="M490 170 l10 -5 v10 z"/>
+            <rect class="d-badge" x="517" y="135" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="530" y="150" text-anchor="middle">2</text>
+            <text class="d-m" x="530" y="192" text-anchor="middle">toutes les 60 s</text>
+
+            <!-- Flux 3 : l'API répond -->
+            <line class="d-line-accent" x1="490" y1="208" x2="566" y2="208"/>
+            <path class="d-head-accent" d="M576 208 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="517" y="221" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="530" y="236" text-anchor="middle">3</text>
 
             <!-- Flux 4 : SMS -->
-            <line class="d-line-accent" x1="710" y1="168" x2="760" y2="168"/>
-            <path class="d-head-accent" d="M770 168 l-10 -5 v10 z"/>
-            <circle class="d-badge" cx="738" cy="144" r="12"/>
-            <text class="d-badge-t" x="738" y="148" text-anchor="middle">4</text>
+            <line class="d-line-accent" x1="710" y1="184" x2="760" y2="184"/>
+            <path class="d-head-accent" d="M770 184 l-10 -5 v10 z"/>
+            <rect class="d-badge" x="725" y="149" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="738" y="164" text-anchor="middle">4</text>
 
             <!-- Flux 5 : retour -->
-            <path class="d-line d-dash" d="M838 232 V 302 H 376 V 278"/>
-            <path class="d-head" d="M376 268 l-5 10 h10 z"/>
-            <circle class="d-badge" cx="500" cy="302" r="12"/>
-            <text class="d-badge-t" x="500" y="306" text-anchor="middle">5</text>
-            <text class="d-m" x="656" y="294" text-anchor="middle">accusés de remise, échecs et SMS reçus</text>
+            <path class="d-line d-dash" d="M838 244 V 340 H 380 V 320"/>
+            <path class="d-head" d="M380 310 l-5 10 h10 z"/>
+            <rect class="d-badge" x="487" y="329" width="26" height="22" rx="11"/>
+            <text class="d-badge-t" x="500" y="344" text-anchor="middle">5</text>
+            <text class="d-m" x="656" y="332" text-anchor="middle">accusés de remise, échecs et SMS reçus</text>
           </svg>
-          <figcaption>Le chemin complet d'un SMS, de la console jusqu'au destinataire — et le retour des accusés.</figcaption>
+          <figcaption>Deux portes d'entrée pour déposer un message — les agents sur le port web, les applications sur le port API — puis un seul chemin de sortie par le téléphone.</figcaption>
         </figure>
 
         <ol class="help-steps">
-          <li><b>Dépôt.</b> Un agent écrit un message dans la console (ou une application tierce appelle l'API avec une clé « web »). Le message est enregistré au statut <em>en attente</em>.</li>
-          <li><b>Sondage.</b> Le téléphone appelle le serveur toutes les 60&nbsp;secondes en présentant sa clé « passerelle ». Il en profite pour remonter ce qu'il a fait depuis le dernier appel.</li>
-          <li><b>Attribution.</b> Le serveur lui remet un lot de messages (25 au maximum par appel) et les passe au statut <em>en cours d'envoi</em> pour qu'aucun autre téléphone ne les reprenne.</li>
-          <li><b>Émission.</b> Le téléphone envoie les SMS par sa carte SIM, comme n'importe quel SMS classique. Les messages longs sont découpés puis réassemblés par l'opérateur.</li>
-          <li><b>Compte rendu.</b> Au sondage suivant, le téléphone renvoie les statuts (envoyé, remis, échec) ainsi que les SMS reçus sur sa ligne, qui apparaissent dans l'onglet <em>Messages → Reçus</em>.</li>
+          <li data-step="1a"><b>Dépôt par un agent.</b> Un agent se connecte à la console web (port&nbsp;3251) avec son identifiant et son mot de passe, puis écrit son message. Il est enregistré au statut <em>en attente</em>.</li>
+          <li data-step="1b"><b>Dépôt par une application.</b> Une application tierce appelle l'API publique (port&nbsp;3250) en présentant une clé « web ». Le message arrive dans la même file, avec son origine notée dans l'historique.</li>
+          <li data-step="2"><b>Sondage.</b> Le téléphone appelle l'API toutes les 60&nbsp;secondes en présentant sa clé « passerelle ». Il en profite pour remonter ce qu'il a fait depuis le dernier appel.</li>
+          <li data-step="3"><b>Attribution.</b> Le serveur lui remet un lot de messages (25 au maximum par appel) et les passe au statut <em>en cours d'envoi</em> pour qu'aucun autre téléphone ne les reprenne.</li>
+          <li data-step="4"><b>Émission.</b> Le téléphone envoie les SMS par sa carte SIM, comme n'importe quel SMS classique. Les messages longs sont découpés puis réassemblés par l'opérateur.</li>
+          <li data-step="5"><b>Compte rendu.</b> Au sondage suivant, le téléphone renvoie les statuts (envoyé, remis, échec) ainsi que les SMS reçus sur sa ligne, qui apparaissent dans l'onglet <em>Messages → Reçus</em>.</li>
         </ol>
+
+        <h4 class="help-sub">Les deux portes, en pratique</h4>
+        <p>
+          Comme les deux services écoutent sur des ports différents, il vous faut soit <strong>deux URL</strong>
+          (typiquement derrière un reverse proxy), soit <strong>une seule URL avec deux ports</strong>. Les deux
+          fonctionnent ; le choix dépend de ce que vous voulez exposer à l'extérieur.
+        </p>
+        <div class="table-wrap"><table class="help-doors">
+          <thead>
+            <tr><th></th><th>Console web</th><th>API publique</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Qui s'y connecte</td><td>Agents et administrateurs, depuis un navigateur</td><td>Applications tierces, et les téléphones de la flotte</td></tr>
+            <tr><td>Authentification</td><td>Identifiant + mot de passe, session de 24&nbsp;h</td><td>Clé API en en-tête, sans session</td></tr>
+            <tr><td>Port par défaut</td><td><span class="code">3251</span> (<span class="code">PORT_WEB</span>)</td><td><span class="code">3250</span> (<span class="code">PORT_API</span>)</td></tr>
+            <tr><td>Même URL, deux ports</td><td><span class="code">https://sms.ville.fr:3251</span></td><td><span class="code">https://sms.ville.fr:3250</span></td></tr>
+            <tr><td>Deux URL (reverse proxy)</td><td><span class="code">https://sms.ville.fr</span></td><td><span class="code">https://api-sms.ville.fr</span></td></tr>
+            <tr><td>Exposition conseillée</td><td>Réseau interne ou VPN</td><td>Ouverte aux applications et aux téléphones qui en ont besoin</td></tr>
+          </tbody>
+        </table></div>
+        <p>
+          Deux conséquences pratiques : l'URL à saisir dans l'application Android est celle de l'<strong>API</strong>
+          (port&nbsp;3250), pas celle de la console ; et l'URL déclarée dans <em>Synchro carnets</em> pour une passerelle
+          distante est également celle de son API. Si vous placez la passerelle derrière un reverse proxy, renseignez
+          <span class="code">PUBLIC_BASE_URL</span> avec l'adresse publique de l'API, faute de quoi les liens de pièces
+          jointes envoyés dans les SMS pointeront vers une adresse injoignable.
+        </p>
+      </article>
+
+      <article class="help-block" id="help-telephone">
+        <h3>2 · Mettre un téléphone en service</h3>
+        <p>
+          L'application n'est pas publiée sur le Play Store : elle s'installe à partir de son fichier
+          <span class="code">.apk</span>. Android multiplie donc les avertissements, qu'il faut franchir un par un. Le
+          téléphone doit ensuite devenir l'<strong>application SMS par défaut</strong> — c'est la condition posée par
+          Android pour qu'une application puisse envoyer des SMS sans demander une confirmation à chaque message.
+        </p>
+        <p class="help-warn">
+          Choisissez un téléphone dédié, avec une ligne dédiée. Une fois l'application définie comme application SMS
+          par défaut, <strong>tous les SMS reçus sur cette ligne remontent dans la console</strong> et l'application de
+          messagerie habituelle ne reçoit plus rien.
+        </p>
+
+        <ol class="help-steps">
+          <li data-step="1"><b>Autoriser les sources inconnues.</b> <em>Paramètres → Applications → Accès spécial → Installer des applications inconnues</em>, puis autoriser l'application avec laquelle vous ouvrirez le fichier (le navigateur, ou le gestionnaire de fichiers). Sans cela, l'installation est bloquée sans explication.</li>
+          <li data-step="2"><b>Télécharger l'APK.</b> Le navigateur affiche « ce type de fichier peut endommager votre appareil » : choisissez <em>Télécharger quand même</em>. L'avertissement est générique, il s'applique à tout APK.</li>
+          <li data-step="3"><b>Installer malgré Play Protect.</b> À l'ouverture du fichier, Google Play Protect signale une « application non reconnue ». Choisissez <em>Installer quand même</em> (ou <em>Plus de détails → Installer quand même</em>). Si l'analyse est proposée, vous pouvez l'accepter puis installer.</li>
+          <li data-step="4"><b>Accorder les autorisations.</b> Au premier démarrage du service, l'application demande l'envoi de SMS, la réception de SMS et MMS, et les notifications. Toutes sont nécessaires : un refus empêche l'envoi automatique ou la remontée des SMS reçus.</li>
+          <li data-step="5"><b>Définir l'application SMS par défaut.</b> Bouton <em>Définir comme app SMS par défaut</em>, qui ouvre <em>Paramètres → Applications par défaut → Application SMS</em>. Choisissez <span class="code">Passerelle SMS</span>. L'écran doit ensuite afficher « Statut : app SMS par défaut ✓ ».</li>
+          <li data-step="6"><b>Saisir la première passerelle.</b> Dans les paramètres de l'application : un nom libre, l'<em>URL de l'API</em> sous la forme <span class="code">http://192.168.1.10:3250</span> (le port de l'API, pas celui de la console), et la <em>clé API</em> créée dans l'onglet <em>Clés API</em> avec le type « Passerelle ». Puis <em>Enregistrer</em>.</li>
+          <li data-step="7"><b>Ajouter d'autres passerelles.</b> Le bouton <em>+</em> ajoute un profil. Répétez l'opération pour chaque passerelle à servir, avec à chaque fois l'URL de cette passerelle et une clé créée sur cette passerelle. Un même téléphone peut ainsi desservir plusieurs collectivités.</li>
+          <li data-step="8"><b>Démarrer le service.</b> Basculez l'interrupteur <em>Service</em>. Une notification permanente apparaît, et la ligne « Dernière connexion API » doit se mettre à jour dans la minute.</li>
+          <li data-step="9"><b>Vérifier côté console.</b> Dans l'onglet <em>Passerelles</em>, le téléphone apparaît avec son dernier contact et sa version d'APK, et la pastille en haut de page passe au vert.</li>
+          <li data-step="10"><b>Envoyer un SMS de test.</b> Le champ de test de l'application envoie un SMS réel à un numéro de votre choix : c'est la vérification de bout en bout la plus rapide.</li>
+        </ol>
+
+        <figure class="figure">
+          <svg viewBox="0 0 920 420" role="img" aria-label="Écran de paramétrage de l'application Android, annoté">
+            <!-- Téléphone -->
+            <rect class="d-panel" x="80" y="20" width="240" height="380" rx="26"/>
+            <rect class="d-panel-soft" x="92" y="44" width="216" height="330" rx="10"/>
+            <rect class="d-chrome" x="176" y="30" width="48" height="4" rx="2"/>
+            <rect class="d-chrome" x="176" y="384" width="48" height="4" rx="2"/>
+
+            <text class="d-s" x="200" y="68" text-anchor="middle">Passerelle SMS · Paramètres</text>
+            <text class="d-txt-ok" x="200" y="92" text-anchor="middle">Statut : app SMS par défaut ✓</text>
+
+            <text class="d-m" x="104" y="114" text-anchor="start">API 1</text>
+            <rect class="d-panel" x="104" y="120" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="137" text-anchor="start">Mairie</text>
+            <rect class="d-panel" x="104" y="152" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="169" text-anchor="start">http://192.168.1.10:3250</text>
+            <rect class="d-panel" x="104" y="184" width="192" height="26" rx="5"/>
+            <text class="d-m" x="114" y="201" text-anchor="start">clé passerelle ••••••••</text>
+
+            <rect class="d-panel" x="104" y="220" width="192" height="28" rx="6"/>
+            <text class="d-m" x="200" y="238" text-anchor="middle">+ Ajouter une API</text>
+            <rect class="d-badge" x="104" y="256" width="192" height="28" rx="6"/>
+            <text class="d-badge-t" x="200" y="274" text-anchor="middle">Enregistrer</text>
+
+            <text class="d-s" x="114" y="318" text-anchor="start">Service : actif</text>
+            <rect class="d-badge" x="252" y="303" width="36" height="18" rx="9"/>
+            <circle class="d-knob" cx="279" cy="312" r="6"/>
+            <text class="d-m" x="114" y="346" text-anchor="start">Dernière connexion : 14:32:05</text>
+
+            <!-- Annotations -->
+            <path class="d-lead" d="M320 92 H 356 V 62 H 388"/>
+            <circle class="d-dot" cx="320" cy="92" r="2.5"/>
+            <text class="d-m" x="398" y="66" text-anchor="start">Sans ce rôle, chaque envoi demande une confirmation manuelle.</text>
+
+            <path class="d-lead" d="M320 165 H 356 V 136 H 388"/>
+            <circle class="d-dot" cx="320" cy="165" r="2.5"/>
+            <text class="d-m" x="398" y="140" text-anchor="start">L'adresse de la passerelle sur son port API (3250), pas la console.</text>
+
+            <path class="d-lead" d="M320 197 H 356 V 192 H 388"/>
+            <circle class="d-dot" cx="320" cy="197" r="2.5"/>
+            <text class="d-m" x="398" y="196" text-anchor="start">Clé créée dans l'onglet Clés API, de type « Passerelle ».</text>
+
+            <path class="d-lead" d="M320 234 H 356 V 244 H 388"/>
+            <circle class="d-dot" cx="320" cy="234" r="2.5"/>
+            <text class="d-m" x="398" y="248" text-anchor="start">Un profil par passerelle servie : ajoutez-en autant que nécessaire.</text>
+
+            <path class="d-lead" d="M320 312 H 356 V 300 H 388"/>
+            <circle class="d-dot" cx="320" cy="312" r="2.5"/>
+            <text class="d-m" x="398" y="304" text-anchor="start">L'interrupteur lance le sondage et la notification permanente.</text>
+
+            <path class="d-lead" d="M320 342 H 356 V 350 H 388"/>
+            <circle class="d-dot" cx="320" cy="342" r="2.5"/>
+            <text class="d-m" x="398" y="354" text-anchor="start">Se met à jour à chaque sondage réussi : c'est le témoin de vie.</text>
+          </svg>
+          <figcaption>L'écran de paramétrage de l'application : un profil par passerelle, puis l'interrupteur de service.</figcaption>
+        </figure>
+
+        <ul class="help-list">
+          <li><b>Laisser le téléphone en état de servir.</b> Branché en permanence, écran verrouillé mais appareil allumé, et l'optimisation de batterie désactivée pour l'application — sinon Android finit par suspendre le service.</li>
+          <li><b>Après un redémarrage.</b> Le service repart tout seul au démarrage du téléphone et après une mise à jour de l'application ; il n'y a rien à relancer à la main.</li>
+          <li><b>Mettre à jour l'APK.</b> Réinstallez simplement la nouvelle version par-dessus : les profils API, la clé et l'identifiant d'appareil sont conservés. La version installée remonte dans l'onglet <em>Passerelles</em>.</li>
+          <li><b>En HTTP ou en HTTPS.</b> L'application accepte les deux. En dehors d'un réseau interne maîtrisé, utilisez HTTPS : la clé de passerelle circule à chaque sondage.</li>
+        </ul>
       </article>
 
       <article class="help-block" id="help-multi-tel">
-        <h3>2 · Plusieurs téléphones pour une même passerelle</h3>
+        <h3>3 · Plusieurs téléphones pour une même passerelle</h3>
         <p>
           Un téléphone envoie un SMS toutes les quelques secondes : au-delà de quelques centaines de messages, il
           devient le goulot d'étranglement. Il suffit alors de déclarer <strong>une clé « passerelle » par
@@ -480,7 +620,7 @@
       </article>
 
       <article class="help-block" id="help-multi-pass">
-        <h3>3 · Plusieurs passerelles, plusieurs téléphones</h3>
+        <h3>4 · Plusieurs passerelles, plusieurs téléphones</h3>
         <p>
           Chaque entité (mairie, CCAS, police municipale…) peut disposer de <strong>sa propre passerelle</strong>, avec
           sa base, ses comptes et ses carnets. Mais les téléphones, eux, n'ont pas à être dédiés : l'application
@@ -549,7 +689,7 @@
       </article>
 
       <article class="help-block" id="help-synchro">
-        <h3>4 · Synchronisation des carnets entre passerelles</h3>
+        <h3>5 · Synchronisation des carnets entre passerelles</h3>
         <p>
           Les carnets d'adresses sont souvent tenus à jour à un seul endroit (les élus, les agents d'astreinte, une
           liste de diffusion). L'onglet <em>Synchro carnets</em> permet à une passerelle d'aller <strong>recopier
@@ -606,7 +746,7 @@
       </article>
 
       <article class="help-block" id="help-cycle">
-        <h3>5 · La vie d'un message</h3>
+        <h3>6 · La vie d'un message</h3>
         <p>
           Chaque message porte un statut, visible dans l'onglet <em>Messages</em> et filtrable. Comprendre cet
           enchaînement suffit à diagnostiquer la quasi-totalité des situations.
@@ -663,7 +803,7 @@
       </article>
 
       <article class="help-block" id="help-roles">
-        <h3>6 · Qui fait quoi — les rôles</h3>
+        <h3>7 · Qui fait quoi — les rôles</h3>
         <p>
           Deux mondes cohabitent : les <strong>comptes humains</strong>, qui se connectent avec un identifiant et un
           mot de passe sur la console (port web), et les <strong>clés API</strong>, qui authentifient des machines sur
@@ -705,7 +845,7 @@
       </article>
 
       <article class="help-block" id="help-user">
-        <h3>7 · Ce que peut faire un utilisateur</h3>
+        <h3>8 · Ce que peut faire un utilisateur</h3>
         <p>
           Un utilisateur travaille dans l'interface d'envoi, cloisonnée à son groupe. Il ne voit jamais les messages
           des autres groupes, ni la configuration technique de la passerelle.
@@ -758,7 +898,7 @@
       </article>
 
       <article class="help-block" id="help-admin">
-        <h3>8 · Ce que peut faire un administrateur</h3>
+        <h3>9 · Ce que peut faire un administrateur</h3>
         <p>
           L'administrateur dispose de tout ce qui précède, sans cloisonnement par groupe, plus la totalité de la
           configuration et de la supervision.
@@ -808,7 +948,7 @@
       </article>
 
       <article class="help-block" id="help-matrice">
-        <h3>9 · Matrice des droits</h3>
+        <h3>10 · Matrice des droits</h3>
         <div class="table-wrap"><table class="help-matrix">
           <thead>
             <tr>
@@ -840,7 +980,7 @@
       </article>
 
       <article class="help-block" id="help-glossaire">
-        <h3>10 · Glossaire</h3>
+        <h3>11 · Glossaire</h3>
         <dl class="help-gloss">
           <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
           <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
@@ -856,7 +996,7 @@
       </article>
 
       <article class="help-block" id="help-depannage">
-        <h3>11 · Dépannage courant</h3>
+        <h3>12 · Dépannage courant</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>Symptôme</th><th>Cause la plus fréquente</th><th>Vérification</th></tr></thead>
           <tbody>

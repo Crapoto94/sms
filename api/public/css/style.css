@@ -1196,6 +1196,8 @@ body.center .brand-mark svg { width: 21px; height: 21px; }
 .d-head-accent { fill: var(--accent); }
 
 .d-icon { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.d-lead { stroke: var(--border-strong); stroke-width: 1.2; fill: none; }
+.d-knob { fill: var(--accent-fg); }
 .d-dot  { fill: var(--accent); }
 .d-dot-accent { fill: var(--accent); }
 .d-check { fill: none; stroke: var(--tone-ok-fg); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
@@ -1244,13 +1246,13 @@ body.center .brand-mark svg { width: 21px; height: 21px; }
 .help-list li b { color: var(--text); font-weight: 600; }
 
 .help-steps li::before {
-  counter-increment: help-step;
-  content: counter(help-step);
+  content: attr(data-step);
   position: absolute;
   left: 12px;
   top: 11px;
-  width: 21px;
+  min-width: 21px;
   height: 21px;
+  padding: 0 6px;
   border-radius: var(--r-full);
   background: var(--accent);
   color: var(--accent-fg);

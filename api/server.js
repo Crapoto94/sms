@@ -10,7 +10,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.38';
+const APP_VERSION = process.env.APP_VERSION || '1.39';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -299,7 +299,7 @@ function logConsole(req, action, detail, count) {
   try {
     const s = req.session;
     db.prepare(
-      'INSERT INTO console_logs (login, role, action, detail, count, ip, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO console_logs (login, role, action, detail, count, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     ).run(
       s ? s.login : 'admin',
       s ? s.role : 'admin',
@@ -307,6 +307,7 @@ function logConsole(req, action, detail, count) {
       detail || null,
       count || 1,
       clientIp(req),
+      String(req.headers['user-agent'] || '').slice(0, 255) || null,
       isoNow()
     );
   } catch (_) { /* ne bloque jamais la réponse */ }
@@ -1181,7 +1182,7 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
 webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
   const rows = db.prepare(`
-    SELECT id, login, role, action, detail, count, ip, created_at
+    SELECT id, login, role, action, detail, count, ip, user_agent, created_at
     FROM console_logs
     ORDER BY id DESC LIMIT ?
   `).all(limit);

@@ -777,6 +777,24 @@ const JOURNAL_LABELS = {
   'verif flotte': 'Vérification flotte'
 };
 
+function shortUA(ua) {
+  if (!ua) return '—';
+  const browser = /Edg\/([\d.]+)/.exec(ua) ? `Edge ${/Edg\/([\d.]+)/.exec(ua)[1]}`
+    : /OPR\/([\d.]+)/.exec(ua) ? `Opera ${/OPR\/([\d.]+)/.exec(ua)[1]}`
+    : /Chrome\/([\d.]+)/.exec(ua) ? `Chrome ${/Chrome\/([\d.]+)/.exec(ua)[1]}`
+    : /Firefox\/([\d.]+)/.exec(ua) ? `Firefox ${/Firefox\/([\d.]+)/.exec(ua)[1]}`
+    : /Safari\//.test(ua) ? 'Safari'
+    : /curl\//.test(ua) ? 'curl'
+    : 'Autre';
+  const os = /Windows/.test(ua) ? 'Windows'
+    : /Android/.test(ua) ? 'Android'
+    : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+    : /Mac OS X|Macintosh/.test(ua) ? 'macOS'
+    : /Linux/.test(ua) ? 'Linux'
+    : '';
+  return os ? `${browser} · ${os}` : browser;
+}
+
 async function loadJournal() {
   const limit = $('journalLimit').value;
   const logs = await api(`/admin/api/console-logs?limit=${limit}`);
@@ -788,8 +806,9 @@ async function loadJournal() {
         <td class="muted">${esc(l.detail || '—')}</td>
         <td>${l.count}</td>
         <td class="code">${esc(l.ip || '—')}</td>
+        <td class="muted" title="${esc(l.user_agent || '')}">${esc(shortUA(l.user_agent))}</td>
       </tr>`).join('')
-    : '<tr><td colspan="6" class="muted">Aucune activité enregistrée pour le moment.</td></tr>';
+    : '<tr><td colspan="7" class="muted">Aucune activité enregistrée pour le moment.</td></tr>';
 }
 $('journalLimit').addEventListener('change', loadJournal);
 
