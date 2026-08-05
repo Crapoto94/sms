@@ -164,6 +164,7 @@ function updateComposerMode() {
   $('btnSendSingle').classList.toggle('hidden', book);
   $('btnSendToSelected').classList.toggle('hidden', !book);
   $('contactVariables').classList.toggle('hidden', !book);
+  $('messagePreview').classList.toggle('hidden', !book || !contacts.length);
   updateComposerCount();
 }
 
@@ -261,6 +262,7 @@ async function loadRecipients() {
   }
   if (!contacts.length) {
     list.innerHTML = '<div class="contact-list-empty muted">' + (id ? 'Ce carnet ne contient aucun contact.' : 'Choisissez un carnet pour afficher les contacts.') + '</div>';
+    $('messagePreview').classList.add('hidden');
     updateComposerCount();
     return;
   }
@@ -275,8 +277,38 @@ async function loadRecipients() {
       </span>
     </label>`;
   }).join('');
+  const preview = $('previewContact');
+  const previousPreview = preview.value;
+  preview.innerHTML = contacts.map((c) => {
+    const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.entity || c.phone;
+    return `<option value="${c.id}">${esc(name)} — ${esc(c.phone)}${c.blacklisted ? ' — blacklisté' : ''}</option>`;
+  }).join('');
+  preview.value = contacts.some((c) => String(c.id) === previousPreview) ? previousPreview : String(contacts[0].id);
+  $('messagePreview').classList.remove('hidden');
+  updateMessagePreview();
   updateComposerCount();
 }
+
+function renderPreviewMessage(template, contact) {
+  const values = {
+    '{prénom}': contact.first_name,
+    '{nom}': contact.last_name,
+    '{entité}': contact.entity,
+    '{téléphone}': contact.phone,
+    '{service}': contact.service,
+    '{direction}': contact.direction,
+    '{imei}': contact.imei,
+    '{puk}': contact.puk
+  };
+  return Object.entries(values).reduce((message, [variable, value]) => message.replaceAll(variable, value || ''), template);
+}
+
+function updateMessagePreview() {
+  const contact = contacts.find((c) => String(c.id) === $('previewContact').value);
+  $('previewBody').textContent = contact ? renderPreviewMessage($('smsBody').value, contact) : '';
+}
+
+$('previewContact').addEventListener('change', updateMessagePreview);
 
 $('bookSelect').addEventListener('change', loadRecipients);
 
@@ -320,6 +352,7 @@ $('smsBody').addEventListener('input', () => {
   const s = $('smsBody').value;
   $('smsCounter').textContent = s.length;
   $('smsSegments').textContent = smsSegments(s.length, s) > 1 ? `${smsSegments(s.length, s)} segments` : '1 segment';
+  updateMessagePreview();
 });
 
 function smsSegments(len, s) {

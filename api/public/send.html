@@ -51,6 +51,14 @@
               <div class="contact-list-empty muted">Choisissez un carnet pour afficher les contacts.</div>
             </div>
           </div>
+          <div id="messagePreview" class="hidden" style="margin-top:18px">
+            <label for="previewContact">Prévisualisation pour</label>
+            <select id="previewContact"></select>
+            <div class="card" style="margin-top:8px;padding:12px">
+              <div class="muted" style="font-size:12px;margin-bottom:5px">Message rendu</div>
+              <div id="previewBody" style="white-space:pre-wrap;overflow-wrap:anywhere"></div>
+            </div>
+          </div>
         </div>
         <div>
           <label for="smsBody">Message <span class="muted">(<span id="smsCounter">0</span>/1000 · <span id="smsSegments">1 segment</span>)</span></label>
