@@ -3,6 +3,8 @@ package com.example.smsgateway
 import android.content.Context
 import android.content.SharedPreferences
 import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 
 object Config {
 
@@ -16,6 +18,7 @@ object Config {
     const val SMS_DELIVERED_ACTION = "com.example.smsgateway.SMS_DELIVERED"
 
     const val EXTRA_MESSAGE_ID = "message_id"
+    const val EXTRA_PROFILE_ID = "profile_id"
     const val EXTRA_RECIPIENT = "recipient"
     const val EXTRA_PART_INDEX = "part_index"
     const val EXTRA_PART_TOTAL = "part_total"
@@ -28,8 +31,7 @@ object Config {
         return id
     }
 
-    fun getBaseUrl(context: Context): String =
-        prefs(context).getString(KEY_BASE_URL, DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
+    fun getBaseUrl(context: Context): String = getApiProfiles(context).firstOrNull()?.url ?: DEFAULT_BASE_URL
 
     fun setBaseUrl(context: Context, url: String) {
         prefs(context).edit().putString(KEY_BASE_URL, url.trimEnd('/')).apply()
@@ -40,6 +42,44 @@ object Config {
 
     fun setGatewayApiKey(context: Context, key: String) {
         prefs(context).edit().putString(KEY_API_KEY, key.trim()).apply()
+    }
+
+    fun getApiProfiles(context: Context): List<ApiProfile> {
+        val raw = prefs(context).getString(KEY_API_PROFILES, null)
+        if (!raw.isNullOrBlank()) {
+            return try {
+                val array = JSONArray(raw)
+                (0 until array.length()).mapNotNull { i ->
+                    val item = array.optJSONObject(i) ?: return@mapNotNull null
+                    ApiProfile(
+                        item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        item.optString("label").ifBlank { "API ${i + 1}" },
+                        item.optString("url").trimEnd('/'),
+                        item.optString("key").trim()
+                    )
+                }.filter { it.url.isNotBlank() && it.key.isNotBlank() }
+            } catch (_: Exception) { emptyList() }
+        }
+        val url = prefs(context).getString(KEY_BASE_URL, DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
+        val key = prefs(context).getString(KEY_API_KEY, "") ?: ""
+        return if (url.isNotBlank() && key.isNotBlank()) listOf(ApiProfile("default", "API principale", url, key)) else emptyList()
+    }
+
+    fun setApiProfiles(context: Context, profiles: List<ApiProfile>) {
+        val array = JSONArray()
+        profiles.forEach { profile ->
+            array.put(JSONObject().apply {
+                put("id", profile.id)
+                put("label", profile.label)
+                put("url", profile.url.trimEnd('/'))
+                put("key", profile.key.trim())
+            })
+        }
+        prefs(context).edit()
+            .putString(KEY_API_PROFILES, array.toString())
+            .putString(KEY_BASE_URL, profiles.firstOrNull()?.url ?: "")
+            .putString(KEY_API_KEY, profiles.firstOrNull()?.key ?: "")
+            .apply()
     }
 
     fun getPollingIntervalMs(context: Context): Long =
@@ -91,6 +131,7 @@ object Config {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_API_KEY = "api_key"
+    private const val KEY_API_PROFILES = "api_profiles"
     private const val KEY_POLLING_INTERVAL_MS = "polling_interval_ms"
     private const val KEY_LAST_SYNC_AT = "last_sync_at"
     private const val KEY_LAST_INCOMING_SMS_ID = "last_incoming_sms_id"
@@ -98,6 +139,13 @@ object Config {
     private const val KEY_LAST_INCOMING_SENDER = "last_incoming_sender"
     private const val KEY_LAST_INCOMING_BODY = "last_incoming_body"
 }
+
+data class ApiProfile(
+    val id: String,
+    val label: String,
+    val url: String,
+    val key: String
+)
 
 data class IncomingSmsDisplay(
     val timestamp: Long,

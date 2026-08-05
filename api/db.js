@@ -186,6 +186,10 @@ if (!accountCols.includes('email')) {
 if (!accountCols.includes('is_group_manager')) {
   db.exec('ALTER TABLE accounts ADD COLUMN is_group_manager INTEGER NOT NULL DEFAULT 0');
 }
+const keyCols = db.prepare('PRAGMA table_info(keys)').all().map((c) => c.name);
+if (!keyCols.includes('app_version')) {
+  db.exec('ALTER TABLE keys ADD COLUMN app_version TEXT');
+}
 const messageCols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
 if (!messageCols.includes('group_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN group_id INTEGER');

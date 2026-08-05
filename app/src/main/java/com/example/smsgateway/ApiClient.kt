@@ -32,8 +32,8 @@ class ApiClient(private val context: Context) {
      * 2. récupère les messages à envoyer.
      * @throws ApiException en cas d'échec réseau ou HTTP.
      */
-    fun sync(reports: List<StatusReport>): SyncResult {
-        val url = "${Config.getBaseUrl(context)}/api/v1/gateway/sync"
+    fun sync(profile: ApiProfile, reports: List<StatusReport>): SyncResult {
+        val url = "${profile.url}/api/v1/gateway/sync"
         val reportsJson = JSONArray()
         for (r in reports) {
             reportsJson.put(JSONObject().apply {
@@ -44,12 +44,13 @@ class ApiClient(private val context: Context) {
         }
         val payload = JSONObject().apply {
             put("deviceId", Config.getDeviceId(context))
+            put("appVersion", BuildConfig.VERSION_NAME)
             put("reports", reportsJson)
         }
         val body = payload.toString().toRequestBody(JSON_MEDIA_TYPE)
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${Config.getGatewayApiKey(context)}")
+            .addHeader("Authorization", "Bearer ${profile.key}")
             .post(body)
             .build()
 
@@ -62,7 +63,7 @@ class ApiClient(private val context: Context) {
             val messages = mutableListOf<OutgoingMessage>()
             val array = json.optJSONArray("messages") ?: JSONArray()
             for (i in 0 until array.length()) {
-                messages.add(OutgoingMessage.fromJson(array.getJSONObject(i)))
+                messages.add(OutgoingMessage.fromJson(array.getJSONObject(i)).copy(profileId = profile.id))
             }
             val intervalSec = json.optLong("intervalSec", 60L)
             return SyncResult(
@@ -76,8 +77,8 @@ class ApiClient(private val context: Context) {
      * Remonte les SMS reçus (lus dans la boîte de réception du téléphone).
      * @return true si le serveur a accepté la requête.
      */
-    fun sendIncoming(messages: List<IncomingSms>): Boolean {
-        val url = "${Config.getBaseUrl(context)}/api/v1/gateway/incoming"
+    fun sendIncoming(profile: ApiProfile, messages: List<IncomingSms>): Boolean {
+        val url = "${profile.url}/api/v1/gateway/incoming"
         val arr = JSONArray()
         for (m in messages) {
             arr.put(JSONObject().apply {
@@ -93,7 +94,7 @@ class ApiClient(private val context: Context) {
         }
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${Config.getGatewayApiKey(context)}")
+            .addHeader("Authorization", "Bearer ${profile.key}")
             .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
         client.newCall(request).execute().use { response ->

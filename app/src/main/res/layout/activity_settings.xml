@@ -56,11 +56,41 @@
             android:text="@string/explanation"
             android:textSize="13sp" />
 
+        <TextView
+            android:id="@+id/textApiProfilesTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="APIs à interroger successivement"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:id="@+id/apiProfilesContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnAddApiProfile"
+            style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="+ Ajouter une API" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSaveProfiles"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Enregistrer les APIs" />
+
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/layoutBaseUrl"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:visibility="gone"
             android:hint="@string/api_url_label"
             app:endIconMode="clear_text">
 
@@ -76,6 +106,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
+            android:visibility="gone"
             android:text="@string/api_key_hint"
             android:textSize="12sp" />
 
@@ -83,6 +114,7 @@
             android:id="@+id/layoutApiKey"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:visibility="gone"
             android:hint="@string/api_key_label"
             app:endIconMode="password_toggle">
 
@@ -99,6 +131,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
+            android:visibility="gone"
             android:text="@string/save_settings" />
 
         <TextView

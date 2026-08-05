@@ -235,6 +235,7 @@ async function loadGateways() {
         return `<tr>
           <td>${esc(g.label || '—')}</td>
           <td class="code">${esc(g.device_id || '—')}</td>
+          <td>${esc(g.app_version || '—')}</td>
           <td>${fmtDate(g.last_seen_at)}</td>
           <td>${g.sending}</td>
           <td>${g.sent}</td>
@@ -243,7 +244,7 @@ async function loadGateways() {
           <td>${state}</td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="8" class="muted">Aucune passerelle connectée.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucune passerelle connectée.</td></tr>';
 }
 
 // ---------- Messages ----------

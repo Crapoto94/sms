@@ -7,6 +7,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import android.graphics.Color
+import android.text.InputType
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -20,6 +27,14 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
     private var pendingAction: (() -> Unit)? = null
     private var updatingSwitch = false
+    private val profileRows = mutableListOf<ProfileRow>()
+
+    private data class ProfileRow(
+        val container: LinearLayout,
+        val label: EditText,
+        val url: EditText,
+        val key: EditText
+    )
 
     private val stateHandler = Handler(Looper.getMainLooper())
     private val statePoller = object : Runnable {
@@ -49,6 +64,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.textDeviceId.text = "${getString(R.string.device_id_label)} : ${Config.getDeviceId(this)}"
         binding.editBaseUrl.setText(Config.getBaseUrl(this))
         binding.editApiKey.setText(Config.getGatewayApiKey(this))
+        renderProfiles(Config.getApiProfiles(this))
+        binding.btnAddApiProfile.setOnClickListener { addProfileRow(null) }
+        binding.btnSaveProfiles.setOnClickListener { saveProfiles() }
 
         binding.btnBack.setOnClickListener { finish() }
 
@@ -98,6 +116,75 @@ class SettingsActivity : AppCompatActivity() {
             getString(R.string.status_default_sms_missing)
         }
         updateServiceStateUi()
+    }
+
+    private fun renderProfiles(profiles: List<ApiProfile>) {
+        binding.apiProfilesContainer.removeAllViews()
+        profileRows.clear()
+        if (profiles.isEmpty()) addProfileRow(null) else profiles.forEach { addProfileRow(it) }
+    }
+
+    private fun addProfileRow(profile: ApiProfile?) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        val label = EditText(this).apply {
+            hint = "Nom de l'API"
+            setText(profile?.label ?: "")
+            setSingleLine(true)
+        }
+        val url = EditText(this).apply {
+            hint = getString(R.string.api_url_label)
+            setText(profile?.url ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+        }
+        val key = EditText(this).apply {
+            hint = getString(R.string.api_key_label)
+            setText(profile?.key ?: "")
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+        }
+        val remove = Button(this).apply {
+            text = "Supprimer cette API"
+            setTextColor(Color.RED)
+            setOnClickListener {
+                profileRows.removeAll { it.container === box }
+                binding.apiProfilesContainer.removeView(box)
+            }
+        }
+        box.addView(label)
+        box.addView(url)
+        box.addView(key)
+        box.addView(remove)
+        binding.apiProfilesContainer.addView(box)
+        profileRows.add(ProfileRow(box, label, url, key))
+    }
+
+    private fun saveProfiles() {
+        val profiles = mutableListOf<ApiProfile>()
+        for ((index, row) in profileRows.withIndex()) {
+            val url = row.url.text.toString().trim().trimEnd('/')
+            val key = row.key.text.toString().trim()
+            if (url.isBlank() && key.isBlank()) continue
+            if (url.isBlank() || key.isBlank()) {
+                Toast.makeText(this, "URL et clé requises pour l'API ${index + 1}", Toast.LENGTH_LONG).show()
+                return
+            }
+            profiles.add(ApiProfile(
+                id = "api-${index + 1}-${url.hashCode()}",
+                label = row.label.text.toString().trim().ifBlank { "API ${index + 1}" },
+                url = url,
+                key = key
+            ))
+        }
+        if (profiles.isEmpty()) {
+            Toast.makeText(this, "Configurez au moins une API", Toast.LENGTH_LONG).show()
+            return
+        }
+        Config.setApiProfiles(this, profiles)
+        Toast.makeText(this, "APIs enregistrées (${profiles.size})", Toast.LENGTH_SHORT).show()
     }
 
     /** Reflète l'état réel du service en temps réel (interrogé toutes les 300 ms). */
@@ -178,6 +265,7 @@ class SettingsActivity : AppCompatActivity() {
             return
         }
         val message = OutgoingMessage(
+            profileId = Config.getApiProfiles(this).firstOrNull()?.id ?: "test",
             id = "test-${System.currentTimeMillis()}",
             recipient = number,
             body = "SMS de test depuis la passerelle"

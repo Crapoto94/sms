@@ -10,7 +10,7 @@ const db = require('./db');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.32';
+const APP_VERSION = process.env.APP_VERSION || '1.35';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -401,6 +401,7 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
   const nowIso = now.toISOString();
   const body = req.body || {};
   const deviceId = String(body.deviceId || req.apiKey.device_id || '').trim();
+  const appVersion = String(body.appVersion || '').trim().slice(0, 32);
   const reports = Array.isArray(body.reports) ? body.reports : [];
 
   const reportAccepted = [];
@@ -496,9 +497,10 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       UPDATE keys SET
         last_seen_at = ?,
         last_used_at = ?,
-        device_id = CASE WHEN ? <> '' THEN ? ELSE device_id END
+        device_id = CASE WHEN ? <> '' THEN ? ELSE device_id END,
+        app_version = CASE WHEN ? <> '' THEN ? ELSE app_version END
       WHERE id = ?
-    `).run(nowIso, nowIso, deviceId, deviceId, req.apiKey.id);
+    `).run(nowIso, nowIso, deviceId, deviceId, appVersion, appVersion, req.apiKey.id);
 
     claimed = toClaim;
     db.exec('COMMIT');
@@ -803,7 +805,7 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
   const cutoff = onlineCutoffIso();
   const gateways = db.prepare(`
     SELECT
-      k.id, k.label, k.device_id, k.last_seen_at, k.last_used_at,
+      k.id, k.label, k.device_id, k.app_version, k.last_seen_at, k.last_used_at,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id) AS claimed,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sending')  AS sending,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sent')      AS sent,

@@ -120,7 +120,7 @@ class SmsGatewayService : Service() {
             return
         }
 
-        val messages = syncAndFetchMessages()
+        val messages = syncAllProfiles()
         if (messages == null) {
             updateNotification()
             handler.postDelayed(cycleRunnable, pollIntervalMs)
@@ -147,12 +147,11 @@ class SmsGatewayService : Service() {
         handler.post(cycleRunnable)
     }
 
-    private fun syncAndFetchMessages(): List<OutgoingMessage>? {
+    private fun syncAllProfiles(): List<OutgoingMessage>? {
         sweepTimeouts()
-
-        val apiKey = Config.getGatewayApiKey(this)
-        if (apiKey.isBlank()) {
-            lastError = "Clé API non configurée"
+        val profiles = Config.getApiProfiles(this)
+        if (profiles.isEmpty()) {
+            lastError = "Aucune API configurée"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Clé API non configurée"))
             return null
         }
@@ -165,26 +164,33 @@ class SmsGatewayService : Service() {
             return null
         }
 
-        val reports = ReportQueue.all()
-        val result = try {
-            api.sync(reports)
-        } catch (e: Exception) {
-            lastError = "API injoignable : ${e.message}"
-            SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "API injoignable : ${e.message}"))
+        val messages = mutableListOf<OutgoingMessage>()
+        var successCount = 0
+        var nextInterval = Long.MAX_VALUE
+        for (profile in profiles) {
+            val reports = ReportQueue.all().filter { it.profileId == profile.id }
+            try {
+                val result = api.sync(profile, reports)
+                successCount++
+                nextInterval = minOf(nextInterval, result.intervalMs)
+                if (reports.isNotEmpty()) {
+                    ReportQueue.clearAll(reports)
+                    for (r in reports) noteReported(r.profileId, r.messageId)
+                }
+                messages.addAll(result.messages)
+            } catch (e: Exception) {
+                SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "${profile.label} : API injoignable : ${e.message}"))
+            }
+        }
+        if (successCount == 0) {
+            lastError = "Aucune API joignable"
             return null
         }
-
-        if (reports.isNotEmpty()) {
-            ReportQueue.clearAll(reports)
-            for (r in reports) noteReported(r.messageId)
-        }
-
         lastPollTime = System.currentTimeMillis()
         lastError = null
         Config.setLastSyncAt(this, lastPollTime!!)
-        pollIntervalMs = result.intervalMs
-
-        return result.messages
+        pollIntervalMs = if (nextInterval == Long.MAX_VALUE) Config.DEFAULT_POLLING_INTERVAL_MS else nextInterval
+        return messages
     }
 
     /**
@@ -199,7 +205,16 @@ class SmsGatewayService : Service() {
         }
         if (messages.isEmpty()) return
         try {
-            if (api.sendIncoming(messages)) {
+            val profiles = Config.getApiProfiles(this)
+            var allAccepted = profiles.isNotEmpty()
+            for (profile in profiles) {
+                try {
+                    if (!api.sendIncoming(profile, messages)) allAccepted = false
+                } catch (_: Exception) {
+                    allAccepted = false
+                }
+            }
+            if (allAccepted) {
                 messages.maxByOrNull { it.date }?.let { Config.setLastIncomingSms(this, it) }
                 SmsLog.add(
                     this,
@@ -218,14 +233,14 @@ class SmsGatewayService : Service() {
     private fun sendMessage(message: OutgoingMessage) {
         try {
             SmsSender.send(this, message)
-            noteSent(message.id)
+            noteSent(message.profileId, message.id)
             sentCount++
             SmsLog.add(
                 this,
                 SmsLog.Entry(now(), SmsLog.TYPE_ENVOI, message.id, message.recipient, message.body, null, null)
             )
         } catch (e: Exception) {
-            ReportQueue.add(StatusReport(message.id, "failed", e.message, System.currentTimeMillis()))
+            ReportQueue.add(StatusReport(message.profileId, message.id, "failed", e.message, System.currentTimeMillis()))
             SmsLog.add(
                 this,
                 SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", e.message)
@@ -235,7 +250,7 @@ class SmsGatewayService : Service() {
 
     private fun failAll(messages: List<OutgoingMessage>, reason: String) {
         for (message in messages) {
-            ReportQueue.add(StatusReport(message.id, "failed", reason, System.currentTimeMillis()))
+            ReportQueue.add(StatusReport(message.profileId, message.id, "failed", reason, System.currentTimeMillis()))
             SmsLog.add(
                 this,
                 SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, message.id, message.recipient, message.body, "failed", reason)
@@ -246,9 +261,12 @@ class SmsGatewayService : Service() {
     private fun sweepTimeouts() {
         val now = System.currentTimeMillis()
         val expired = sentAt.filterValues { now - it > Config.RESULT_TIMEOUT_MS }.keys
-        for (messageId in expired) {
-            sentAt.remove(messageId)
-            ReportQueue.add(StatusReport(messageId, "failed", "Aucune confirmation (timeout)", now))
+        for (key in expired) {
+            sentAt.remove(key)
+            val separator = key.indexOf(':')
+            val profileId = if (separator >= 0) key.substring(0, separator) else ""
+            val messageId = if (separator >= 0) key.substring(separator + 1) else key
+            ReportQueue.add(StatusReport(profileId, messageId, "failed", "Aucune confirmation (timeout)", now))
             SmsLog.add(
                 this,
                 SmsLog.Entry(now, SmsLog.TYPE_ERREUR, messageId, "", "", "failed", "Aucune confirmation (timeout)")
@@ -360,12 +378,12 @@ class SmsGatewayService : Service() {
             }
         }
 
-        fun noteSent(messageId: String) {
-            sentAt[messageId] = System.currentTimeMillis()
+        fun noteSent(profileId: String, messageId: String) {
+            sentAt["$profileId:$messageId"] = System.currentTimeMillis()
         }
 
-        fun noteReported(messageId: String) {
-            sentAt.remove(messageId)
+        fun noteReported(profileId: String, messageId: String) {
+            sentAt.remove("$profileId:$messageId")
         }
     }
 }

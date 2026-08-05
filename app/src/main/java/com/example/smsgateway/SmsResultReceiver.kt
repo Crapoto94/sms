@@ -15,6 +15,7 @@ class SmsResultReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val messageId = intent.getStringExtra(Config.EXTRA_MESSAGE_ID) ?: return
+        val profileId = intent.getStringExtra(Config.EXTRA_PROFILE_ID).orEmpty()
         val partIndex = intent.getIntExtra(Config.EXTRA_PART_INDEX, 0)
         val partTotal = intent.getIntExtra(Config.EXTRA_PART_TOTAL, 1)
 
@@ -29,18 +30,18 @@ class SmsResultReceiver : BroadcastReceiver() {
                     SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio éteinte"
                     else -> "Erreur $resultCode"
                 }
-                MultipartTracker.onSent(context, messageId, partIndex, partTotal, ok, error)
+                MultipartTracker.onSent(context, profileId, messageId, partIndex, partTotal, ok, error)
             }
             Config.SMS_DELIVERED_ACTION -> {
                 if (resultCode != Activity.RESULT_OK) return
-                MultipartTracker.onDelivered(context, messageId, partIndex, partTotal)
+                MultipartTracker.onDelivered(context, profileId, messageId, partIndex, partTotal)
             }
             else -> return
         }
 
         if (report == null) return
 
-        SmsGatewayService.noteReported(report.messageId)
+        SmsGatewayService.noteReported(report.profileId, report.messageId)
         SmsLog.add(
             context,
             SmsLog.Entry(

@@ -71,6 +71,7 @@ object SmsSender {
         val intent = Intent(context, SmsResultReceiver::class.java).apply {
             setAction(action)
             putExtra(Config.EXTRA_MESSAGE_ID, message.id)
+            putExtra(Config.EXTRA_PROFILE_ID, message.profileId)
             putExtra(Config.EXTRA_RECIPIENT, message.recipient)
             putExtra(Config.EXTRA_PART_INDEX, partIndex)
             putExtra(Config.EXTRA_PART_TOTAL, partTotal)

@@ -55,8 +55,8 @@ object MultipartTracker {
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun read(context: Context, id: String): State =
-        prefs(context).getString("msg:$id", null)?.let {
+    private fun read(context: Context, profileId: String, id: String): State =
+        prefs(context).getString("msg:$profileId:$id", null)?.let {
             try {
                 State.fromJson(it)
             } catch (_: Exception) {
@@ -64,12 +64,12 @@ object MultipartTracker {
             }
         } ?: State()
 
-    private fun write(context: Context, id: String, s: State) {
+    private fun write(context: Context, profileId: String, id: String, s: State) {
         val editor = prefs(context).edit()
         if (s.sentDone && (s.sentFail > 0 || s.deliveredDone)) {
-            editor.remove("msg:$id")
+            editor.remove("msg:$profileId:$id")
         } else {
-            editor.putString("msg:$id", s.toJson())
+            editor.putString("msg:$profileId:$id", s.toJson())
         }
         editor.apply()
     }
@@ -80,13 +80,14 @@ object MultipartTracker {
      */
     fun onSent(
         context: Context,
+        profileId: String,
         id: String,
         partIndex: Int,
         partTotal: Int,
         ok: Boolean,
         error: String?
     ): StatusReport? {
-        val s = read(context, id)
+        val s = read(context, profileId, id)
         if (s.sentTotal == 0) s.sentTotal = partTotal
         if (ok) {
             s.sentOk++
@@ -95,16 +96,16 @@ object MultipartTracker {
             if (s.firstError == null) s.firstError = error
         }
         if (s.sentOk + s.sentFail < s.sentTotal) {
-            write(context, id, s)
+            write(context, profileId, id, s)
             return null
         }
         s.sentDone = true
         val report = if (s.sentFail > 0) {
-            StatusReport(id, "failed", s.firstError, System.currentTimeMillis())
+            StatusReport(profileId, id, "failed", s.firstError, System.currentTimeMillis())
         } else {
-            StatusReport(id, "sent", null, System.currentTimeMillis())
+            StatusReport(profileId, id, "sent", null, System.currentTimeMillis())
         }
-        write(context, id, s)
+        write(context, profileId, id, s)
         return report
     }
 
@@ -112,18 +113,18 @@ object MultipartTracker {
      * Confirmation de remise d'un segment. Renvoie "delivered" lorsque tous les
      * segments sont remis, sinon null (ou null si l'envoi a déjà échoué).
      */
-    fun onDelivered(context: Context, id: String, partIndex: Int, partTotal: Int): StatusReport? {
-        val s = read(context, id)
+    fun onDelivered(context: Context, profileId: String, id: String, partIndex: Int, partTotal: Int): StatusReport? {
+        val s = read(context, profileId, id)
         if (s.sentTotal == 0 || s.sentFail > 0) return null
         if (s.deliveredTotal == 0) s.deliveredTotal = partTotal
         s.deliveredOk++
         if (s.deliveredOk < s.deliveredTotal) {
-            write(context, id, s)
+            write(context, profileId, id, s)
             return null
         }
         s.deliveredDone = true
-        val report = StatusReport(id, "delivered", null, System.currentTimeMillis())
-        write(context, id, s)
+        val report = StatusReport(profileId, id, "delivered", null, System.currentTimeMillis())
+        write(context, profileId, id, s)
         return report
     }
 }
