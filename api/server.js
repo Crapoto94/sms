@@ -45,6 +45,18 @@ const onlineCutoffIso = () => new Date(Math.max(
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const newToken = () => crypto.randomBytes(32).toString('base64url');
 const isoNow = () => new Date().toISOString();
+
+// Adresse IP réelle du client. Derrière un reverse proxy (nginx, …), le serveur
+// ne voit que l'IP du proxy : on lit d'abord le premier élément de
+// X-Forwarded-For, qui correspond au client d'origine.
+function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) {
+    const first = String(xff).split(',')[0].trim();
+    if (first) return first;
+  }
+  return req.ip || req.socket.remoteAddress || '';
+}
 const isExpired = (row) => !!row.expires_at && Date.parse(row.expires_at) < Date.now();
 
 const attachmentUpload = multer({
@@ -263,7 +275,7 @@ const rateHits = new Map(); // "ip|keyId" -> [timestamps]
 
 function rateLimit(req, res, next) {
   const now = Date.now();
-  const key = `${req.socket.remoteAddress || req.ip || ''}|${req.apiKey ? req.apiKey.id : 'anon'}`;
+  const key = `${clientIp(req)}|${req.apiKey ? req.apiKey.id : 'anon'}`;
   const hits = (rateHits.get(key) || []).filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
   if (hits.length >= RATE_LIMIT_MAX) {
     return res.status(429).json({ error: 'Trop de requêtes, réessayez dans quelques secondes' });
@@ -278,7 +290,7 @@ function logAuthAttempt(req, keyId, reason) {
   try {
     db.prepare(
       'INSERT INTO auth_logs (key_id, ip, reason, created_at) VALUES (?, ?, ?, ?)'
-    ).run(keyId || null, req.socket.remoteAddress || req.ip || '', reason, isoNow());
+    ).run(keyId || null, clientIp(req), reason, isoNow());
   } catch (_) { /* ne bloque jamais la réponse */ }
 }
 
@@ -294,7 +306,7 @@ function logConsole(req, action, detail, count) {
       action,
       detail || null,
       count || 1,
-      req.socket.remoteAddress || req.ip || '',
+      clientIp(req),
       isoNow()
     );
   } catch (_) { /* ne bloque jamais la réponse */ }
@@ -391,7 +403,7 @@ apiApp.get('/api/v1/attachments/:token', (req, res) => {
   `).run(
     attachment.id,
     openedAt,
-    req.headers['x-forwarded-for'] || req.socket.remoteAddress || '',
+    clientIp(req),
     req.headers['user-agent'] || '',
     deviceType(req.headers['user-agent']),
     req.headers.referer || '',
@@ -490,31 +502,13 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
 // Lecture des carnets d'adresses (clé type "web") — utilisée pour la
 // synchronisation de carnets entre instances de la passerelle.
 apiApp.get('/api/v1/books', requireApiKey('web'), (_req, res) => {
-  const books = db.prepare(`
-    SELECT ab.id, ab.name, ab.group_id, ab.created_at, g.name AS group_name,
-      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
-    FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
-    ORDER BY ab.id ASC
-  `).all();
-  res.json(books);
+  res.json(listRemoteBooksLocal());
 });
 
 apiApp.get('/api/v1/books/:id/contacts', requireApiKey('web'), (req, res) => {
-  const id = Number(req.params.id);
-  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(id);
-  if (!book) return res.status(404).json({ error: 'Carnet introuvable' });
-  const group = book.group_id ? db.prepare('SELECT name FROM groups WHERE id = ?').get(book.group_id) : null;
-  const contacts = db.prepare(`
-    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone
-    FROM contacts c WHERE c.address_book_id = ? ORDER BY c.id ASC
-  `).all(id);
-  res.json({
-    id: book.id,
-    name: book.name,
-    group_id: book.group_id,
-    group_name: group ? group.name : null,
-    contacts
-  });
+  const data = getRemoteBookContactsLocal(Number(req.params.id));
+  if (!data) return res.status(404).json({ error: 'Carnet introuvable' });
+  res.json(data);
 });
 
 // Synchronisation passerelle (clé type "gateway")
@@ -1202,6 +1196,50 @@ function normalizeSourceUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+// Lecture directe en base (utilisée quand la source est cette instance) :
+// mêmes données que les routes /api/v1/books.
+function listRemoteBooksLocal() {
+  return db.prepare(`
+    SELECT ab.id, ab.name, ab.group_id, ab.created_at, g.name AS group_name,
+      (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
+    FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+    ORDER BY ab.id ASC
+  `).all();
+}
+
+function getRemoteBookContactsLocal(id) {
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(Number(id));
+  if (!book) return null;
+  const group = book.group_id ? db.prepare('SELECT name FROM groups WHERE id = ?').get(book.group_id) : null;
+  const contacts = db.prepare(`
+    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone
+    FROM contacts c WHERE c.address_book_id = ? ORDER BY c.id ASC
+  `).all(book.id);
+  return {
+    id: book.id,
+    name: book.name,
+    group_id: book.group_id,
+    group_name: group ? group.name : null,
+    contacts
+  };
+}
+
+// Une source pointant sur cette même instance (URL en localhost / boucle
+// locale sur un de nos ports) est servie directement en base, sans aller
+// chercher sur le réseau — indispensable pour tester avec une seule
+// passerelle, et indépendant de l'exposition du port API.
+function isSelfInstance(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const port = Number(parsed.port) || (parsed.protocol === 'https:' ? 443 : 80);
+    const loopback = ['localhost', '127.0.0.1', '::1', '0.0.0.0', '0.0.0.1'];
+    return loopback.includes(host) && (port === PORT_API || port === PORT_WEB);
+  } catch (_) {
+    return false;
+  }
+}
+
 async function fetchRemote(url, apiKey) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), REMOTE_TIMEOUT_MS);
@@ -1217,14 +1255,32 @@ async function fetchRemote(url, apiKey) {
   }
 }
 
+async function readRemoteBooks(source) {
+  if (isSelfInstance(source.url)) return listRemoteBooksLocal();
+  const base = normalizeSourceUrl(source.url);
+  const books = await fetchRemote(`${base}/api/v1/books`, source.api_key);
+  if (!Array.isArray(books)) throw new Error('Réponse distante invalide');
+  return books;
+}
+
+async function readRemoteBook(source, remoteBookId) {
+  if (isSelfInstance(source.url)) {
+    const data = getRemoteBookContactsLocal(remoteBookId);
+    if (!data) throw new Error('Carnet distant introuvable');
+    return data;
+  }
+  const base = normalizeSourceUrl(source.url);
+  const data = await fetchRemote(`${base}/api/v1/books/${remoteBookId}/contacts`, source.api_key);
+  if (!data || !Array.isArray(data.contacts)) throw new Error('Réponse distante invalide');
+  return data;
+}
+
 // Synchronise un carnet distant : remplace entièrement le contenu du carnet
 // local miroir. Crée le carnet local au besoin (groupe NULL = admin uniquement).
 async function syncOneBook(syncBook) {
   const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(syncBook.source_id);
   if (!source) throw new Error('Source introuvable');
-  const base = normalizeSourceUrl(source.url);
-  const data = await fetchRemote(`${base}/api/v1/books/${syncBook.remote_book_id}/contacts`, source.api_key);
-  if (!data || !Array.isArray(data.contacts)) throw new Error('Réponse distante invalide');
+  const data = await readRemoteBook(source, syncBook.remote_book_id);
   let inserted = 0;
   db.exec('BEGIN');
   try {
@@ -1341,13 +1397,13 @@ webApp.post('/admin/api/sync-sources/:id/browse', requireAdmin, async (req, res)
   try {
     const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
     if (!source) return res.status(404).json({ error: 'Source introuvable' });
-    const books = await fetchRemote(`${normalizeSourceUrl(source.url)}/api/v1/books`, source.api_key);
-    if (!Array.isArray(books)) return res.status(502).json({ error: 'Réponse distante invalide' });
+    const books = await readRemoteBooks(source);
     const synced = new Set(
       db.prepare('SELECT remote_book_id FROM sync_books WHERE source_id = ?').all(source.id).map((r) => r.remote_book_id)
     );
     res.json({
       sourceLabel: source.label,
+      self: isSelfInstance(source.url),
       books: books.map((b) => ({
         id: b.id,
         name: b.name,
@@ -1361,6 +1417,33 @@ webApp.post('/admin/api/sync-sources/:id/browse', requireAdmin, async (req, res)
   }
 });
 
+webApp.post('/admin/api/sync-sources/:id/test', requireAdmin, async (req, res) => {
+  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+  if (!source) return res.status(404).json({ error: 'Source introuvable' });
+  if (isSelfInstance(source.url)) {
+    const books = listRemoteBooksLocal();
+    return res.json({
+      ok: true,
+      self: true,
+      message: `Instance locale détectée — connexion OK (${books.length} carnet(s) disponible(s), ${books.reduce((sum, b) => sum + (b.contact_count || 0), 0)} contact(s)).`
+    });
+  }
+  try {
+    const health = await fetchRemote(`${normalizeSourceUrl(source.url)}/health`, source.api_key);
+    if (!health || health.ok !== true) {
+      return res.status(502).json({ error: 'Passerelle joignable mais réponse inattendue' });
+    }
+    const books = await readRemoteBooks(source);
+    res.json({
+      ok: true,
+      self: false,
+      message: `Connexion OK — ${books.length} carnet(s) disponible(s), ${books.reduce((sum, b) => sum + (b.contact_count || 0), 0)} contact(s).`
+    });
+  } catch (err) {
+    res.status(502).json({ error: `Passerelle distante injoignable : ${err.message}` });
+  }
+});
+
 webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) => {
   const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
   if (!source) return res.status(404).json({ error: 'Source introuvable' });
@@ -1368,7 +1451,6 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
     ? req.body.bookIds.map(Number).filter(Number.isInteger)
     : [];
   if (!bookIds.length) return res.status(400).json({ error: 'Sélectionnez au moins un carnet' });
-  const base = normalizeSourceUrl(source.url);
   const results = [];
   for (const remoteId of bookIds) {
     const existing = db.prepare(
@@ -1380,12 +1462,9 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
     }
     let data;
     try {
-      data = await fetchRemote(`${base}/api/v1/books/${remoteId}/contacts`, source.api_key);
+      data = await readRemoteBook(source, remoteId);
     } catch (err) {
       return res.status(502).json({ error: `Carnet ${remoteId} injoignable : ${err.message}` });
-    }
-    if (!data || !Array.isArray(data.contacts)) {
-      return res.status(502).json({ error: `Réponse invalide pour le carnet ${remoteId}` });
     }
     let localBookId;
     db.exec('BEGIN');

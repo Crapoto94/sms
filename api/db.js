@@ -336,4 +336,28 @@ if (!attachmentCols.includes('expires_at')) {
   db.exec("UPDATE attachments SET expires_at = datetime(created_at, '+90 days') WHERE expires_at IS NULL");
 }
 
+// Carnets synchronisés : créés sans groupe (groupe NULL = visibles par les
+// administrateurs uniquement, comme pour les comptes). La colonne était
+// NOT NULL à l'origine : on reconstruit la table pour l'assouplir.
+const bookGroupCol = db.prepare('PRAGMA table_info(address_books)').all()
+  .find((c) => c.name === 'group_id');
+if (bookGroupCol && bookGroupCol.notnull === 1) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE address_books RENAME TO address_books_old;
+    CREATE TABLE address_books (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id   INTEGER,
+      name       TEXT    NOT NULL,
+      created_at TEXT    NOT NULL,
+      UNIQUE (group_id, name)
+    );
+    INSERT INTO address_books (id, group_id, name, created_at)
+      SELECT id, group_id, name, created_at FROM address_books_old;
+    DROP TABLE address_books_old;
+    COMMIT;
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_address_books_group ON address_books(group_id)');
+}
+
 module.exports = db;

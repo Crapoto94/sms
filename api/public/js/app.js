@@ -810,6 +810,7 @@ function renderSyncSources(sources) {
         <td>${s.last_synced_at ? fmtDate(s.last_synced_at) : '<span class="muted">jamais</span>'}</td>
         <td>${syncStateBadge(s)}${s.last_error ? `<div class="muted" title="${esc(s.last_error)}">${esc(s.last_error)}</div>` : ''}</td>
         <td>
+          <button data-synctest="${s.id}" class="ghost">Tester</button>
           <button data-syncbrowse="${s.id}" class="ghost">Parcourir</button>
           <button data-syncsource-del="${s.id}" class="danger">Supprimer</button>
         </td>
@@ -859,14 +860,20 @@ $('btnAddSyncSource').addEventListener('click', async () => {
 });
 
 $('syncSourcesBody').addEventListener('click', async (e) => {
+  const test = e.target.closest('[data-synctest]');
   const browse = e.target.closest('[data-syncbrowse]');
   const del = e.target.closest('[data-syncsource-del]');
-  if (browse) {
+  if (test) {
+    try {
+      const res = await api(`/admin/api/sync-sources/${test.dataset.synctest}/test`, { method: 'POST' });
+      alert(res.message || 'Connexion OK');
+    } catch (err) { alert(err.message); }
+  } else if (browse) {
     $('syncBrowseError').textContent = '';
     browseSourceId = Number(browse.dataset.syncbrowse);
     try {
       const data = await api(`/admin/api/sync-sources/${browseSourceId}/browse`, { method: 'POST' });
-      $('syncBrowseTitle').textContent = `Carnets disponibles sur « ${data.sourceLabel} » — cochez ceux à synchroniser.`;
+      $('syncBrowseTitle').textContent = `Carnets disponibles sur « ${data.sourceLabel} » — cochez ceux à synchroniser.${data.self ? ' (instance locale détectée)' : ''}`;
       $('syncBrowseBody').innerHTML = (data.books || []).length
         ? data.books.map((b) => `<tr>
             <td><input type="checkbox" value="${b.id}" ${b.synced ? 'checked disabled' : ''}></td>
