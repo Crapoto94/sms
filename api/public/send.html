@@ -8,13 +8,19 @@
 </head>
 <body>
   <header>
-    <h1><a class="brand" href="/">Passerelle SMS</a> <span id="appVersion" class="muted"></span> <span id="onlineBadge" class="online-pastille" title="Passerelles actives"></span></h1>
-    <div class="nav">
-      <button id="btnBackHome" class="ghost">Retour</button>
+    <div class="header-brand">
+      <h1><a class="brand" href="/"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>Passerelle SMS</a></h1>
+      <span id="appVersion" class="muted"></span>
+      <span id="onlineBadge" class="online-pastille" title="Passerelles actives"></span>
+    </div>
+    <nav class="nav">
       <button class="tab active" data-tab="composer">Envoyer un message</button>
       <button class="tab" data-tab="messages">Mes messages</button>
       <button class="tab" data-tab="books">Carnets d'adresses</button>
       <button class="tab" data-tab="fleet">Vérification flotte</button>
+    </nav>
+    <div class="header-actions">
+      <button id="btnBackHome" class="ghost">Retour</button>
       <button id="btnTheme" class="ghost">Mode clair</button>
       <button id="logout" class="ghost">Déconnexion</button>
       <span id="currentUser" class="muted"></span>
@@ -47,6 +53,8 @@
               <button id="btnToggleAll" class="ghost">Tout cocher</button>
             </div>
             <select id="bookSelect"><option value="">—</option></select>
+            <label for="excludeBookSelect" style="margin-top:10px">Mais pas dans le carnet</label>
+            <select id="excludeBookSelect"><option value="">— Aucun numéro exclu —</option></select>
             <div id="recipientList" class="recipients" style="margin-top:10px">
               <div class="contact-list-empty muted">Choisissez un carnet pour afficher les contacts.</div>
             </div>
@@ -136,6 +144,8 @@
         <div>
           <label for="fleetBookSelect">Carnet d'adresses</label>
           <select id="fleetBookSelect"><option value="">—</option></select>
+          <label for="fleetExcludeBookSelect" style="margin-top:10px">Mais pas dans le carnet</label>
+          <select id="fleetExcludeBookSelect"><option value="">— Aucun numéro exclu —</option></select>
           <div id="fleetContactList" class="recipients" style="margin-top:10px">
             <div class="contact-list-empty muted">Choisissez un carnet.</div>
           </div>
@@ -152,7 +162,7 @@
         <h3>Vérifications précédentes</h3>
       </div>
       <div class="table-wrap">
-        <div class="table-wrap"><table>
+        <table>
           <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
           <tbody id="fleetChecksBody"></tbody>
         </table>
@@ -209,7 +219,7 @@
             <button id="btnBackBooks" class="ghost">← Retour</button>
           </div>
         </div>
-        <table>
+        <div class="table-wrap"><table>
           <thead>
             <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Téléphone</th><th></th></tr>
           </thead>

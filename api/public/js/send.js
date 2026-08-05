@@ -243,21 +243,42 @@ async function loadComposer() {
   } else {
     bookSelect.value = books.length ? String(books[0].id) : '';
   }
+  fillExcludeBookSelect('excludeBookSelect', bookSelect.value);
   await loadRecipients();
+}
+
+function fillExcludeBookSelect(selectId, primaryId) {
+  const select = $(selectId);
+  const previous = select.value;
+  select.innerHTML = '<option value="">— Aucun numéro exclu —</option>' + books
+    .filter((book) => String(book.id) !== String(primaryId))
+    .map((book) => `<option value="${book.id}">${esc(book.name)}</option>`).join('');
+  if (books.some((book) => String(book.id) === previous && String(book.id) !== String(primaryId))) select.value = previous;
+}
+
+async function excludedPhonesFor(selectId) {
+  const bookId = Number($(selectId).value || 0);
+  if (!bookId) return new Set();
+  const rows = await api(`/admin/api/address-books/${bookId}/contacts`);
+  return new Set(rows.map((contact) => contact.phone));
 }
 
 async function loadRecipients() {
   const id = Number($('bookSelect').value || 0);
   composerBookId = id;
   const list = $('recipientList');
-  contacts = id ? await api(`/admin/api/address-books/${id}/contacts`) : [];
+  const [bookContacts, excludedPhones] = id
+    ? await Promise.all([api(`/admin/api/address-books/${id}/contacts`), excludedPhonesFor('excludeBookSelect')])
+    : [[], new Set()];
+  contacts = bookContacts;
+  const isExcluded = (contact) => excludedPhones.has(contact.phone);
   if (id !== loadedBookId) {
     loadedBookId = id;
-    selectedContacts = new Set(contacts.filter((c) => !c.blacklisted).map((c) => c.id));
+    selectedContacts = new Set(contacts.filter((c) => !c.blacklisted && !isExcluded(c)).map((c) => c.id));
   } else {
     selectedContacts = new Set([...selectedContacts].filter((contactId) => {
       const contact = contacts.find((c) => c.id === contactId);
-      return contact && !contact.blacklisted;
+      return contact && !contact.blacklisted && !isExcluded(contact);
     }));
   }
   if (!contacts.length) {
@@ -270,10 +291,10 @@ async function loadRecipients() {
     const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
     const label = name || c.entity || c.phone;
     return `<label class="contact-row">
-       <input type="checkbox" data-id="${c.id}" ${c.blacklisted ? 'disabled' : ''} ${selectedContacts.has(c.id) ? 'checked' : ''}>
+       <input type="checkbox" data-id="${c.id}" ${c.blacklisted || isExcluded(c) ? 'disabled' : ''} ${selectedContacts.has(c.id) ? 'checked' : ''}>
       <span class="who">
         <b>${esc(label)}</b><br>
-         ${c.entity && name ? `<span class="muted">${esc(c.entity)}</span> · ` : ''}<span class="phone">${esc(c.phone)}</span>${c.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : ''}
+         ${c.entity && name ? `<span class="muted">${esc(c.entity)}</span> · ` : ''}<span class="phone">${esc(c.phone)}</span>${c.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(c) ? ' · <span class="badge off">Exclu</span>' : ''}
       </span>
     </label>`;
   }).join('');
@@ -310,7 +331,14 @@ function updateMessagePreview() {
 
 $('previewContact').addEventListener('change', updateMessagePreview);
 
-$('bookSelect').addEventListener('change', loadRecipients);
+$('bookSelect').addEventListener('change', async () => {
+  fillExcludeBookSelect('excludeBookSelect', $('bookSelect').value);
+  await loadRecipients();
+});
+$('excludeBookSelect').addEventListener('change', async () => {
+  loadedBookId = null;
+  await loadRecipients();
+});
 
 $('recipientList').addEventListener('change', (e) => {
   const cb = e.target.closest('input[type=checkbox]');
@@ -323,7 +351,8 @@ $('recipientList').addEventListener('change', (e) => {
 
 $('btnToggleAll').addEventListener('click', () => {
   if (!contacts.length) return;
-  const allChecked = contacts.every((c) => selectedContacts.has(c.id));
+  const eligible = [...document.querySelectorAll('#recipientList input:not(:disabled)')].map((input) => Number(input.dataset.id));
+  const allChecked = eligible.length > 0 && eligible.every((id) => selectedContacts.has(id));
   if (allChecked) selectedContacts.clear();
   else selectedContacts = new Set(contacts.filter((c) => !c.blacklisted).map((c) => c.id));
   document.querySelectorAll('#recipientList input[type=checkbox]').forEach((cb) => {
@@ -479,7 +508,7 @@ $('btnSendToSelected').addEventListener('click', () => {
     const attachment = attachmentFile ? await uploadAttachment(attachmentFile, attachmentExpiry) : null;
     const res = await api('/admin/api/campaigns', {
       method: 'POST',
-      body: JSON.stringify({ bookId: composerBookId, contactIds, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
+      body: JSON.stringify({ bookId: composerBookId, excludeBookId: Number($('excludeBookSelect').value || 0) || null, contactIds, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
     });
     $('composerSummary').classList.remove('hidden');
     $('composerSummary').textContent = res.status === 'scheduled'
@@ -497,32 +526,53 @@ $('btnSendToSelected').addEventListener('click', () => {
 let fleetContacts = [];
 let fleetSelected = new Set();
 let fleetCheckId = null;
+let fleetBooks = [];
 
 async function loadFleet() {
   const booksList = await api('/admin/api/address-books');
+  fleetBooks = booksList;
   const select = $('fleetBookSelect');
   const previous = select.value;
   select.innerHTML = ['<option value="">—</option>']
     .concat(booksList.map((book) => `<option value="${book.id}">${esc(book.name)}</option>`)).join('');
   select.value = booksList.some((book) => String(book.id) === previous)
     ? previous : (booksList.length ? String(booksList[0].id) : '');
+  fillFleetExcludeBookSelect();
   await loadFleetContacts();
   await loadFleetChecks();
 }
 
+function fillFleetExcludeBookSelect() {
+  const select = $('fleetExcludeBookSelect');
+  const previous = select.value;
+  const primaryId = $('fleetBookSelect').value;
+  select.innerHTML = '<option value="">— Aucun numéro exclu —</option>' + fleetBooks
+    .filter((book) => String(book.id) !== String(primaryId))
+    .map((book) => `<option value="${book.id}">${esc(book.name)}</option>`).join('');
+  if (fleetBooks.some((book) => String(book.id) === previous && String(book.id) !== String(primaryId))) select.value = previous;
+}
+
 async function loadFleetContacts() {
   const bookId = Number($('fleetBookSelect').value || 0);
-  fleetContacts = bookId ? await api(`/admin/api/address-books/${bookId}/contacts`) : [];
-  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted).map((contact) => contact.id));
+  const [bookContacts, excludedPhones] = bookId
+    ? await Promise.all([api(`/admin/api/address-books/${bookId}/contacts`), excludedPhonesFor('fleetExcludeBookSelect')])
+    : [[], new Set()];
+  fleetContacts = bookContacts;
+  const isExcluded = (contact) => excludedPhones.has(contact.phone);
+  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact)).map((contact) => contact.id));
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
-        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${contact.blacklisted ? 'disabled' : 'checked'}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : ''}</span></label>`;
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${contact.blacklisted || isExcluded(contact) ? 'disabled' : 'checked'}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
 }
 
-$('fleetBookSelect').addEventListener('change', loadFleetContacts);
+$('fleetBookSelect').addEventListener('change', async () => {
+  fillFleetExcludeBookSelect();
+  await loadFleetContacts();
+});
+$('fleetExcludeBookSelect').addEventListener('change', loadFleetContacts);
 $('fleetContactList').addEventListener('change', (event) => {
   const checkbox = event.target.closest('[data-fleet-contact]');
   if (!checkbox) return;
@@ -581,7 +631,7 @@ $('btnStartFleet').addEventListener('click', async () => {
   try {
     const result = await api('/admin/api/fleet-checks', {
       method: 'POST',
-      body: JSON.stringify({ bookId, contactIds, message })
+      body: JSON.stringify({ bookId, excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null, contactIds, message })
     });
     alert(`Vérification #${result.id} lancée pour ${result.count} contact(s).`);
     await loadFleetChecks();

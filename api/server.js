@@ -1584,6 +1584,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
 webApp.post('/admin/api/campaigns', (req, res) => {
   const body = req.body || {};
   const bookId = Number(body.bookId);
+  const excludeBookId = Number(body.excludeBookId) || 0;
   const contactIds = Array.isArray(body.contactIds)
     ? body.contactIds.map(Number).filter(Number.isInteger)
     : [];
@@ -1600,6 +1601,14 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   if (req.session.role !== 'admin' && book.group_id !== req.session.groupId) {
     return res.status(404).json({ error: 'Carnet introuvable' });
   }
+  let excludedPhones = new Set();
+  if (excludeBookId) {
+    const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
+    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+      return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
+    }
+    excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
+  }
   if (contactIds.length === 0) return res.status(400).json({ error: 'Sélectionnez au moins un destinataire' });
   if (!message) return res.status(400).json({ error: 'Message vide' });
   if (message.length > MAX_MESSAGE_LENGTH) {
@@ -1611,7 +1620,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   const placeholders = contactIds.map(() => '?').join(',');
   const contacts = db.prepare(
     `SELECT * FROM contacts WHERE address_book_id = ? AND id IN (${placeholders})`
-  ).all(bookId, ...contactIds);
+  ).all(bookId, ...contactIds).filter((contact) => !excludedPhones.has(contact.phone));
   if (contacts.length === 0) {
     return res.status(400).json({ error: 'Aucun destinataire valide dans ce carnet' });
   }
@@ -1646,7 +1655,7 @@ webApp.post('/admin/api/campaigns', (req, res) => {
         const copy = cloneAttachment(withAttachment.attachment);
         clonedAttachmentPaths.push(copy.path);
         attachmentId = copy.id;
-        messageBody = `${message}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
+        messageBody = `${renderedMessage}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
       }
       insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, campaignId, scheduledAt);
     }
@@ -1680,6 +1689,7 @@ webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
 webApp.post('/admin/api/fleet-checks', (req, res) => {
   const body = req.body || {};
   const bookId = Number(body.bookId);
+  const excludeBookId = Number(body.excludeBookId) || 0;
   const message = String(body.message || '').trim();
   const contactIds = Array.isArray(body.contactIds)
     ? body.contactIds.map(Number).filter(Number.isInteger)
@@ -1691,11 +1701,19 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   if (!book || (req.session.role !== 'admin' && book.group_id !== req.session.groupId)) {
     return res.status(404).json({ error: 'Carnet introuvable' });
   }
+  let excludedPhones = new Set();
+  if (excludeBookId) {
+    const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
+    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+      return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
+    }
+    excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
+  }
   const contactWhere = contactIds.length
     ? `AND id IN (${contactIds.map(() => '?').join(',')})`
     : '';
   const contacts = db.prepare(`SELECT * FROM contacts WHERE address_book_id = ? ${contactWhere} ORDER BY id ASC`)
-    .all(bookId, ...contactIds);
+    .all(bookId, ...contactIds).filter((contact) => !excludedPhones.has(contact.phone));
   if (!contacts.length) return res.status(400).json({ error: 'Aucun contact sélectionné' });
   const blocked = contacts.filter((contact) => isBlacklisted(contact.phone));
   if (blocked.length) {
