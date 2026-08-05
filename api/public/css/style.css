@@ -740,6 +740,25 @@ code {
   color: var(--tone-danger-fg);
 }
 
+/* Pastille « carnet distant » */
+.sync-pastille {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 21px;
+  padding: 0 9px;
+  border-radius: var(--r-full);
+  background: var(--tone-violet-bg);
+  border: 1px solid var(--tone-violet-line);
+  color: var(--tone-violet-fg);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
 /* ---------- 10. Fenêtres modales ---------- */
 
 .overlay {

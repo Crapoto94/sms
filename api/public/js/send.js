@@ -285,7 +285,7 @@ async function loadComposer() {
   const prev = bookSelect.value;
   books = await api('/admin/api/address-books');
   bookSelect.innerHTML = ['<option value="">—</option>']
-    .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`))
+    .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}${b.group_id === null ? ' (Distant)' : ''}</option>`))
     .join('');
   if (books.some((b) => String(b.id) === prev)) {
     bookSelect.value = prev;
@@ -301,7 +301,7 @@ function fillSingleBookSelect() {
   const select = $('singleBookSelect');
   const prev = select.value;
   select.innerHTML = ['<option value="">—</option>']
-    .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}</option>`))
+    .concat(books.map((b) => `<option value="${b.id}">${esc(b.name)}${b.group_id === null ? ' (Distant)' : ''}</option>`))
     .join('');
   select.value = books.some((b) => String(b.id) === prev) ? prev : '';
   if (select.value) loadSingleBookContacts();
@@ -910,7 +910,7 @@ async function loadBooks() {
   $('booksList').innerHTML = books.length
     ? books.map((b) => `<div class="book-card">
         <div>
-          <strong>${esc(b.name)}</strong>
+          <strong>${esc(b.name)}${b.group_id === null ? ' <span class="sync-pastille">Distant</span>' : ''}</strong>
           <span class="muted"> · ${b.contact_count} contact(s)${b.group_name ? ` · ${esc(b.group_name)}` : ''}</span>
           <span data-bookhistory="${b.id}" class="sms-pastille${b.message_count ? '' : ' empty'}" title="Voir les SMS envoyés">${b.message_count || 0}</span>
         </div>

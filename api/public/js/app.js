@@ -1178,7 +1178,7 @@ async function loadBooks() {
   $('booksBody').innerHTML = adminBooks.length
     ? adminBooks.map((b) => `<tr>
         <td>${b.id}</td>
-        <td>${esc(b.name)} <span data-bookhistory="${b.id}" class="sms-pastille${b.message_count ? '' : ' empty'}" title="Voir les SMS envoyés">${b.message_count || 0}</span></td>
+        <td>${esc(b.name)}${b.group_id === null ? ' <span class="sync-pastille" title="Carnet synchronisé — visible administrateur uniquement">Distant</span>' : ''} <span data-bookhistory="${b.id}" class="sms-pastille${b.message_count ? '' : ' empty'}" title="Voir les SMS envoyés">${b.message_count || 0}</span></td>
         <td>${esc(b.group_name || '—')}</td>
         <td>${b.contact_count}</td>
         <td>${fmtDate(b.created_at)}</td>
