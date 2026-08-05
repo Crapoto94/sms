@@ -96,6 +96,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('gateways').classList.toggle('hidden', currentTab !== 'gateways');
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
     $('books').classList.toggle('hidden', currentTab !== 'books');
+    $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
@@ -106,6 +107,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
       else loadIncoming();
     }
     if (currentTab === 'books') loadBooks();
+    if (currentTab === 'fleet') loadFleet();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'accounts') loadAccounts();
     if (currentTab === 'groups') loadGroups();
@@ -1345,6 +1347,147 @@ $('btnConfirmBookImport').addEventListener('click', async () => {
 
 $('btnCloseBookImportResult').addEventListener('click', () => $('bookImportResultModal').classList.add('hidden'));
 
+// ---------- Vérification de flotte ----------
+let fleetContacts = [];
+let fleetSelected = new Set();
+let fleetCheckId = null;
+let fleetBooks = [];
+
+function insertVariable(target, variable) {
+  const start = target.selectionStart ?? target.value.length;
+  const end = target.selectionEnd ?? target.value.length;
+  target.value = target.value.slice(0, start) + variable + target.value.slice(end);
+  target.focus();
+  const pos = start + variable.length;
+  target.setSelectionRange(pos, pos);
+  target.dispatchEvent(new Event('input'));
+}
+document.querySelectorAll('[data-variable]').forEach((button) => {
+  button.addEventListener('click', () => {
+    insertVariable($(button.dataset.variableTarget || 'smsBody'), button.dataset.variable);
+  });
+});
+
+async function excludedPhonesFor(selectId) {
+  const bookId = Number($(selectId).value || 0);
+  if (!bookId) return new Set();
+  const rows = await api(`/admin/api/address-books/${bookId}/contacts`);
+  return new Set(rows.map((contact) => contact.phone));
+}
+
+async function loadFleet() {
+  const booksList = await api('/admin/api/address-books');
+  fleetBooks = booksList;
+  const select = $('fleetBookSelect');
+  const previous = select.value;
+  select.innerHTML = ['<option value="">—</option>']
+    .concat(booksList.map((book) => `<option value="${book.id}">${esc(book.name)}${book.group_name ? ` (${esc(book.group_name)})` : ''}</option>`)).join('');
+  select.value = booksList.some((book) => String(book.id) === previous)
+    ? previous : (booksList.length ? String(booksList[0].id) : '');
+  fillFleetExcludeBookSelect();
+  await loadFleetContacts();
+  await loadFleetChecks();
+}
+
+function fillFleetExcludeBookSelect() {
+  const select = $('fleetExcludeBookSelect');
+  const previous = select.value;
+  const primaryId = $('fleetBookSelect').value;
+  select.innerHTML = '<option value="">— Aucun numéro exclu —</option>' + fleetBooks
+    .filter((book) => String(book.id) !== String(primaryId))
+    .map((book) => `<option value="${book.id}">${esc(book.name)}</option>`).join('');
+  if (fleetBooks.some((book) => String(book.id) === previous && String(book.id) !== String(primaryId))) select.value = previous;
+}
+
+async function loadFleetContacts() {
+  const bookId = Number($('fleetBookSelect').value || 0);
+  const [bookContacts, excludedPhones] = bookId
+    ? await Promise.all([api(`/admin/api/address-books/${bookId}/contacts`), excludedPhonesFor('fleetExcludeBookSelect')])
+    : [[], new Set()];
+  fleetContacts = bookContacts;
+  const isExcluded = (contact) => excludedPhones.has(contact.phone);
+  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact)).map((contact) => contact.id));
+  $('fleetContactList').innerHTML = fleetContacts.length
+    ? fleetContacts.map((contact) => {
+        const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${contact.blacklisted || isExcluded(contact) ? 'disabled' : 'checked'}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : ''}</span></label>`;
+      }).join('')
+    : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
+}
+
+$('fleetBookSelect').addEventListener('change', async () => {
+  fillFleetExcludeBookSelect();
+  await loadFleetContacts();
+});
+$('fleetExcludeBookSelect').addEventListener('change', loadFleetContacts);
+$('fleetContactList').addEventListener('change', (event) => {
+  const checkbox = event.target.closest('[data-fleet-contact]');
+  if (!checkbox) return;
+  const id = Number(checkbox.dataset.fleetContact);
+  if (checkbox.checked) fleetSelected.add(id); else fleetSelected.delete(id);
+});
+
+function fleetState(state) {
+  return badge({
+    pending: 'En attente', sent: 'Envoyé', delivered: 'Remis', replied: 'Répondu', no_response: 'Sans réponse', failed: 'Échec'
+  }[state] || state, state === 'replied' ? 'ok' : state === 'failed' ? 'failed' : state === 'no_response' ? 'off' : 'pending');
+}
+
+async function loadFleetChecks() {
+  const checks = await api('/admin/api/fleet-checks');
+  $('fleetChecksBody').innerHTML = checks.length
+    ? checks.map((check) => `<tr>
+        <td>${check.id}</td><td>${fmtDate(check.created_at)}</td><td>${esc(check.book_name || '—')}</td>
+        <td>${check.total || 0}</td><td>${check.replied || 0}</td><td>${check.no_response || 0}</td><td>${check.failed || 0}</td>
+        <td><button class="ghost" data-fleet-open="${check.id}">Détails</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="muted">Aucune vérification lancée.</td></tr>';
+  document.querySelectorAll('[data-fleet-open]').forEach((button) => {
+    button.addEventListener('click', () => openFleetCheck(Number(button.dataset.fleetOpen)));
+  });
+}
+
+async function openFleetCheck(id) {
+  const data = await api(`/admin/api/fleet-checks/${id}`);
+  fleetCheckId = id;
+  $('fleetDetailTitle').textContent = `Vérification #${id}`;
+  $('fleetDetail').classList.remove('hidden');
+  $('fleetItemsBody').innerHTML = data.items.map((item) => {
+    const delay = item.response_at && item.delivered_at
+      ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
+    return `<tr><td>${esc(item.first_name || '')}</td><td>${esc(item.last_name || '')}</td><td>${esc(item.entity || '')}</td>
+      <td>${esc(item.service || '')}</td><td>${esc(item.direction || '')}</td><td>${esc(item.imei || '')}</td><td>${esc(item.puk || '')}</td>
+      <td class="code">${esc(item.phone)}</td><td>${fleetState(item.state)}</td><td>${fmtDate(item.delivered_at)}</td>
+      <td>${fmtDate(item.response_at)}</td><td>${delay}</td><td>${esc(item.response_body || item.error || '—')}</td></tr>`;
+  }).join('');
+}
+
+$('btnExportFleet').addEventListener('click', () => {
+  if (fleetCheckId) location.href = `/admin/api/fleet-checks/${fleetCheckId}/export`;
+});
+
+$('btnStartFleet').addEventListener('click', async () => {
+  $('fleetError').textContent = '';
+  const bookId = Number($('fleetBookSelect').value || 0);
+  const message = $('fleetMessage').value.trim();
+  const contactIds = [...fleetSelected];
+  if (!bookId || !contactIds.length || !message) {
+    $('fleetError').textContent = 'Sélectionnez un carnet, au moins un contact et saisissez un message.';
+    return;
+  }
+  try {
+    const result = await api('/admin/api/fleet-checks', {
+      method: 'POST',
+      body: JSON.stringify({ bookId, excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null, contactIds, message })
+    });
+    alert(`Vérification #${result.id} lancée pour ${result.count} contact(s).`);
+    await loadFleetChecks();
+    await openFleetCheck(result.id);
+  } catch (error) {
+    $('fleetError').textContent = error.message;
+  }
+});
+
 // ---------- Rafraîchissement automatique ----------
 document.querySelector('[data-tab="messages"]').click();
 refreshOnlineBadge();
@@ -1354,4 +1497,8 @@ setInterval(() => {
   if (currentTab === 'messages') loadMessages();
   if (currentTab === 'logs') loadLogs();
   if (currentTab === 'books' && $('bookContacts').classList.contains('hidden')) loadBooks();
+  if (currentTab === 'fleet') {
+    loadFleetChecks();
+    if (fleetCheckId) openFleetCheck(fleetCheckId);
+  }
 }, 10000);
