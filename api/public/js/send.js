@@ -136,6 +136,12 @@ async function loadSession() {
   $('appVersion').textContent = `v${session.version}`;
 }
 
+function homeUrl() {
+  return session && session.role === 'admin' ? '/' : '/send.html';
+}
+
+$('btnBackHome').addEventListener('click', () => { location.href = homeUrl(); });
+
 // ---------- Composer ----------
 let selectedContacts = new Set();
 let loadedBookId = null;
@@ -382,6 +388,7 @@ $('btnSendSingle').addEventListener('click', () => {
     $('smsBody').value = '';
     $('smsAttachment').value = '';
     updateComposerCount();
+    location.href = homeUrl();
   });
 });
 
@@ -425,6 +432,7 @@ $('btnSendToSelected').addEventListener('click', () => {
     selectedContacts = new Set();
     updateComposerCount();
     $('smsAttachment').value = '';
+    location.href = homeUrl();
   });
 });
 
