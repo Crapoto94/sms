@@ -178,6 +178,28 @@ function normalizePhone(input) {
   return s;
 }
 
+const CONTACT_VARIABLES = {
+  '{prénom}': 'first_name',
+  '{nom}': 'last_name',
+  '{entité}': 'entity',
+  '{téléphone}': 'phone',
+  '{service}': 'service',
+  '{direction}': 'direction',
+  '{imei}': 'imei',
+  '{puk}': 'puk'
+};
+
+function renderContactBody(template, contact) {
+  return Object.entries(CONTACT_VARIABLES).reduce(
+    (body, [variable, field]) => body.replaceAll(variable, String(contact[field] || '')),
+    String(template)
+  );
+}
+
+function isBlacklisted(phone) {
+  return Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE phone = ?').get(phone));
+}
+
 const FLEET_RESPONSE_HOURS = 72;
 
 function updateFleetItemForMessage(messageId, status, at, error) {
@@ -1405,8 +1427,10 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   if (checked.error) return res.status(404).json({ error: checked.error });
   const limit = Math.min(Math.max(parseInt(req.query.limit || '500', 10) || 500, 1), 2000);
   const rows = db.prepare(`
-    SELECT id, first_name, last_name, entity, phone, created_at
-    FROM contacts WHERE address_book_id = ? ORDER BY id ASC LIMIT ?
+    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone, c.created_at,
+      CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted
+    FROM contacts c LEFT JOIN blacklist_numbers b ON b.phone = c.phone
+    WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ?
   `).all(checked.book.id, limit);
   res.json(rows);
 });
@@ -1417,6 +1441,10 @@ webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const first = String((req.body || {}).firstName || '').trim();
   const last = String((req.body || {}).lastName || '').trim();
   const entity = String((req.body || {}).entity || '').trim();
+  const service = String((req.body || {}).service || '').trim();
+  const direction = String((req.body || {}).direction || '').trim();
+  const imei = String((req.body || {}).imei || '').trim();
+  const puk = String((req.body || {}).puk || '').trim();
   const phone = normalizePhone((req.body || {}).phone || '');
   if (!/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -1425,9 +1453,9 @@ webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
     return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
   }
   const info = db.prepare(
-    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(checked.book.id, first, last, entity, phone, isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, first_name: first, last_name: last, entity, phone, created_at: isoNow() });
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(checked.book.id, first, last, entity, service, direction, imei, puk, phone, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, first_name: first, last_name: last, entity, service, direction, imei, puk, phone, created_at: isoNow() });
 });
 
 webApp.delete('/admin/api/contacts/:contactId', (req, res) => {
@@ -1448,6 +1476,10 @@ webApp.patch('/admin/api/contacts/:contactId', (req, res) => {
   const first = String(body.firstName !== undefined ? body.firstName : contact.first_name).trim();
   const last = String(body.lastName !== undefined ? body.lastName : contact.last_name).trim();
   const entity = String(body.entity !== undefined ? body.entity : contact.entity).trim();
+  const service = String(body.service !== undefined ? body.service : contact.service || '').trim();
+  const direction = String(body.direction !== undefined ? body.direction : contact.direction || '').trim();
+  const imei = String(body.imei !== undefined ? body.imei : contact.imei || '').trim();
+  const puk = String(body.puk !== undefined ? body.puk : contact.puk || '').trim();
   const phone = normalizePhone(body.phone !== undefined ? body.phone : contact.phone);
   if (!/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -1456,9 +1488,9 @@ webApp.patch('/admin/api/contacts/:contactId', (req, res) => {
     return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
   }
   db.prepare(
-    'UPDATE contacts SET first_name = ?, last_name = ?, entity = ?, phone = ? WHERE id = ?'
-  ).run(first, last, entity, phone, contact.id);
-  res.json({ ok: true, id: contact.id, first_name: first, last_name: last, entity, phone });
+    'UPDATE contacts SET first_name = ?, last_name = ?, entity = ?, service = ?, direction = ?, imei = ?, puk = ?, phone = ? WHERE id = ?'
+  ).run(first, last, entity, service, direction, imei, puk, phone, contact.id);
+  res.json({ ok: true, id: contact.id, first_name: first, last_name: last, entity, service, direction, imei, puk, phone });
 });
 
 webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
@@ -1470,6 +1502,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     firstName: String(mp.firstName !== undefined ? mp.firstName : (body.firstName || '')),
     lastName: String(mp.lastName !== undefined ? mp.lastName : (body.lastName || '')),
     entity: String(mp.entity !== undefined ? mp.entity : (body.entity || '')),
+    service: String(mp.service !== undefined ? mp.service : (body.service || '')),
+    direction: String(mp.direction !== undefined ? mp.direction : (body.direction || '')),
+    imei: String(mp.imei !== undefined ? mp.imei : (body.imei || '')),
+    puk: String(mp.puk !== undefined ? mp.puk : (body.puk || '')),
     phone: String(mp.phone !== undefined ? mp.phone : (body.phone || ''))
   };
   const rows = Array.isArray(body.rows) ? body.rows : [];
@@ -1484,6 +1520,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   const fi = idx(map.firstName);
   const li = idx(map.lastName);
   const ei = idx(map.entity);
+  const si = idx(map.service);
+  const di = idx(map.direction);
+  const ii = idx(map.imei);
+  const pi = idx(map.puk);
 
   const invalid = [];
   const toInsert = [];
@@ -1494,6 +1534,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     const first = fi >= 0 ? String(raw[fi] == null ? '' : raw[fi]).trim() : '';
     const last = li >= 0 ? String(raw[li] == null ? '' : raw[li]).trim() : '';
     const entity = ei >= 0 ? String(raw[ei] == null ? '' : raw[ei]).trim() : '';
+    const service = si >= 0 ? String(raw[si] == null ? '' : raw[si]).trim() : '';
+    const direction = di >= 0 ? String(raw[di] == null ? '' : raw[di]).trim() : '';
+    const imei = ii >= 0 ? String(raw[ii] == null ? '' : raw[ii]).trim() : '';
+    const puk = pi >= 0 ? String(raw[pi] == null ? '' : raw[pi]).trim() : '';
     if (!/^\+?[0-9]{4,15}$/.test(phone)) {
       invalid.push({ row: r + 2, phone, error: 'Numéro invalide' });
       continue;
@@ -1501,22 +1545,23 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     const key = phone;
     if (seen.has(key)) continue;
     seen.add(key);
-    toInsert.push({ first, last, entity, phone });
+    toInsert.push({ first, last, entity, service, direction, imei, puk, phone });
   }
 
   const bookId = checked.book.id;
+  const blacklisted = toInsert.filter((contact) => isBlacklisted(contact.phone)).length;
   const overwrite = body.overwrite === true;
   const replaced = overwrite
     ? db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(bookId).changes
     : 0;
   const insert = db.prepare(
-    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, phone, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const createdAt = isoNow();
   db.exec('BEGIN');
   try {
     for (const c of toInsert) {
-      insert.run(bookId, c.first, c.last, c.entity, c.phone, createdAt);
+      insert.run(bookId, c.first, c.last, c.entity, c.service, c.direction, c.imei, c.puk, c.phone, createdAt);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -1526,6 +1571,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   res.status(201).json({
     rows: rows.length,
     created: toInsert.length,
+    blacklisted,
     duplicates: rows.length - toInsert.length - invalid.length,
     invalid,
     replaced
@@ -1569,6 +1615,10 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   if (contacts.length === 0) {
     return res.status(400).json({ error: 'Aucun destinataire valide dans ce carnet' });
   }
+  const blocked = contacts.filter((contact) => isBlacklisted(contact.phone));
+  if (blocked.length) {
+    return res.status(400).json({ error: `Envoi impossible : ${blocked.map((contact) => contact.phone).join(', ')} est/sont blacklisté(s)` });
+  }
   const status = sched ? 'scheduled' : 'pending';
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
@@ -1585,7 +1635,12 @@ webApp.post('/admin/api/campaigns', (req, res) => {
       'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     for (const c of contacts) {
-      let messageBody = message;
+      const renderedMessage = renderContactBody(message, c);
+      if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
+        db.exec('ROLLBACK');
+        return res.status(400).json({ error: `Message trop long pour ${c.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
+      }
+      let messageBody = renderedMessage;
       let attachmentId = null;
       if (withAttachment.attachment) {
         const copy = cloneAttachment(withAttachment.attachment);
@@ -1602,6 +1657,24 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     throw err;
   }
   res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
+});
+
+webApp.get('/admin/api/blacklist', (req, res) => {
+  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM blacklist_numbers ORDER BY phone ASC').all());
+});
+
+webApp.post('/admin/api/blacklist', (req, res) => {
+  const phone = normalizePhone((req.body || {}).phone || '');
+  if (!/^\+?[0-9]{4,15}$/.test(phone)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  db.prepare('INSERT OR IGNORE INTO blacklist_numbers (phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?)')
+    .run(phone, isoNow(), req.session.accountId, req.session.login);
+  res.status(201).json({ phone, blacklisted: true });
+});
+
+webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
+  const phone = normalizePhone(req.params.phone);
+  db.prepare('DELETE FROM blacklist_numbers WHERE phone = ?').run(phone);
+  res.json({ phone, blacklisted: false });
 });
 
 webApp.post('/admin/api/fleet-checks', (req, res) => {
@@ -1624,6 +1697,10 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   const contacts = db.prepare(`SELECT * FROM contacts WHERE address_book_id = ? ${contactWhere} ORDER BY id ASC`)
     .all(bookId, ...contactIds);
   if (!contacts.length) return res.status(400).json({ error: 'Aucun contact sélectionné' });
+  const blocked = contacts.filter((contact) => isBlacklisted(contact.phone));
+  if (blocked.length) {
+    return res.status(400).json({ error: `Vérification impossible : ${blocked.map((contact) => contact.phone).join(', ')} est/sont blacklisté(s)` });
+  }
   const createdAt = isoNow();
   let checkId;
   db.exec('BEGIN');
@@ -1639,14 +1716,20 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     `);
     const insertItem = db.prepare(`
       INSERT INTO fleet_check_items
-        (fleet_check_id, message_id, contact_id, first_name, last_name, entity, phone, state)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+        (fleet_check_id, message_id, contact_id, first_name, last_name, entity, service, direction, imei, puk, phone, state)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `);
     for (const contact of contacts) {
+      const renderedMessage = renderContactBody(message, contact);
+      if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
+        db.exec('ROLLBACK');
+        return res.status(400).json({ error: `Message trop long pour ${contact.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
+      }
       const msg = insertMessage.run(
-        contact.phone, message, req.session.accountId, req.session.login, checkId, createdAt, book.group_id
+        contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id
       );
-      insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity, contact.phone);
+      insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity,
+        contact.service, contact.direction, contact.imei, contact.puk, contact.phone);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -1706,12 +1789,12 @@ webApp.get('/admin/api/fleet-checks/:id/export', (req, res) => {
     const text = value == null ? '' : String(value);
     return /[";\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = ['Vérification', 'Carnet', 'Prénom', 'Nom', 'Entité', 'Téléphone', 'Message créé le', 'Envoyé le', 'Remis le', 'État', 'Réponse le', 'Délai réponse (s)', 'Réponse', 'Erreur'];
+  const header = ['Vérification', 'Carnet', 'Prénom', 'Nom', 'Entité', 'Service', 'Direction', 'IMEI', 'PUK', 'Téléphone', 'Message créé le', 'Envoyé le', 'Remis le', 'État', 'Réponse le', 'Délai réponse (s)', 'Réponse', 'Erreur'];
   const lines = rows.map((row) => {
     const responseDelay = row.response_at && row.delivered_at
       ? Math.max(0, Math.round((Date.parse(row.response_at) - Date.parse(row.delivered_at)) / 1000))
       : '';
-    return [check.id, check.address_book_id, row.first_name, row.last_name, row.entity, row.phone,
+    return [check.id, check.address_book_id, row.first_name, row.last_name, row.entity, row.service, row.direction, row.imei, row.puk, row.phone,
       row.message_created_at, row.message_sent_at, row.message_delivered_at, row.state,
       row.response_at, responseDelay, row.response_body, row.error].map(escCsv).join(';');
   });

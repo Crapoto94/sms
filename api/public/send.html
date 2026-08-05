@@ -94,7 +94,8 @@
             <button type="button" data-emoji="👍" title="OK">👍</button>
             <button type="button" data-emoji="🎈" title="Ballon">🎈</button>
           </div>
-           <textarea id="smsBody" maxlength="1000" rows="8" placeholder="Contenu du SMS…"></textarea>
+            <textarea id="smsBody" maxlength="1000" rows="8" placeholder="Contenu du SMS…"></textarea>
+            <div id="contactVariables" class="variable-list hidden"><span class="muted">Variables :</span> <button type="button" data-variable="{prénom}">{prénom}</button><button type="button" data-variable="{nom}">{nom}</button><button type="button" data-variable="{entité}">{entité}</button><button type="button" data-variable="{téléphone}">{téléphone}</button><button type="button" data-variable="{service}">{service}</button><button type="button" data-variable="{direction}">{direction}</button><button type="button" data-variable="{imei}">{imei}</button><button type="button" data-variable="{puk}">{puk}</button></div>
            <label for="smsAttachment">Pièce jointe <span class="muted">(10 Mo maximum, un lien public sera ajouté au SMS)</span></label>
            <input id="smsAttachment" type="file">
            <label for="smsAttachmentExpiry">Conserver la pièce jointe</label>
@@ -134,6 +135,7 @@
         <div>
           <label for="fleetMessage">Message de vérification</label>
           <textarea id="fleetMessage" maxlength="1000" rows="5">Test de vérification de flotte : merci de répondre à ce message.</textarea>
+          <div class="variable-list"><span class="muted">Variables :</span> <button type="button" data-variable-target="fleetMessage" data-variable="{prénom}">{prénom}</button><button type="button" data-variable-target="fleetMessage" data-variable="{nom}">{nom}</button><button type="button" data-variable-target="fleetMessage" data-variable="{entité}">{entité}</button><button type="button" data-variable-target="fleetMessage" data-variable="{téléphone}">{téléphone}</button><button type="button" data-variable-target="fleetMessage" data-variable="{service}">{service}</button><button type="button" data-variable-target="fleetMessage" data-variable="{direction}">{direction}</button><button type="button" data-variable-target="fleetMessage" data-variable="{imei}">{imei}</button><button type="button" data-variable-target="fleetMessage" data-variable="{puk}">{puk}</button></div>
           <button id="btnStartFleet" style="margin-top:12px">Lancer la vérification</button>
           <p id="fleetError" class="error"></p>
         </div>
@@ -142,7 +144,7 @@
         <h3>Vérifications précédentes</h3>
       </div>
       <div class="table-wrap">
-        <table>
+        <div class="table-wrap"><table>
           <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
           <tbody id="fleetChecksBody"></tbody>
         </table>
@@ -151,7 +153,7 @@
         <div class="row"><h3 id="fleetDetailTitle"></h3><button id="btnExportFleet" class="ghost">Exporter CSV</button></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
+            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
             <tbody id="fleetItemsBody"></tbody>
           </table>
         </div>
@@ -195,15 +197,20 @@
           <div>
             <button id="btnAddContact" class="ghost">+ Ajouter un contact</button>
             <button id="btnImportBook" class="ghost">Importer CSV</button>
+            <button id="btnShowBlacklist" class="ghost">Numéros blacklistés</button>
             <button id="btnBackBooks" class="ghost">← Retour</button>
           </div>
         </div>
         <table>
           <thead>
-            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Téléphone</th><th></th></tr>
+            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Téléphone</th><th></th></tr>
           </thead>
           <tbody id="contactsBody"></tbody>
-        </table>
+        </table></div>
+      </div>
+      <div id="blacklistPanel" class="hidden" style="margin-top:20px">
+        <h3>Numéros blacklistés</h3>
+        <div class="table-wrap"><table><thead><tr><th>Numéro</th><th>Date</th><th></th></tr></thead><tbody id="blacklistBody"></tbody></table></div>
       </div>
     </section>
   </main>
@@ -230,6 +237,14 @@
       <input id="contactLastName" autocomplete="off">
       <label for="contactEntity">Entité / société</label>
       <input id="contactEntity" autocomplete="off">
+      <label for="contactService">Service</label>
+      <input id="contactService" autocomplete="off">
+      <label for="contactDirection">Direction</label>
+      <input id="contactDirection" autocomplete="off">
+      <label for="contactImei">IMEI</label>
+      <input id="contactImei" autocomplete="off">
+      <label for="contactPuk">PUK</label>
+      <input id="contactPuk" autocomplete="off">
       <label for="contactPhone">Téléphone</label>
       <input id="contactPhone" placeholder="ex : 06 12 34 56 78" autocomplete="off">
       <div class="row" style="margin-top:16px">

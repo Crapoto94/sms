@@ -261,6 +261,9 @@ body.light .online-pastille.off { background: #fee2e2; color: #7f1d1d; }
 .contact-row .who { flex: 1; min-width: 0; }
 .contact-row .who b { font-size: 13px; }
 .contact-row .phone { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+
+.variable-list { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:6px 0 10px; }
+.variable-list button { padding:3px 7px; font-size:12px; }
 .contact-list-empty { padding: 14px; text-align: center; }
 .composer-count { font-size: 12px; color: var(--muted); }
 

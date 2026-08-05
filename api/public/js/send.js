@@ -163,8 +163,25 @@ function updateComposerMode() {
   $('bookRecipient').classList.toggle('hidden', !book);
   $('btnSendSingle').classList.toggle('hidden', book);
   $('btnSendToSelected').classList.toggle('hidden', !book);
+  $('contactVariables').classList.toggle('hidden', !book);
   updateComposerCount();
 }
+
+function insertVariable(target, variable) {
+  const start = target.selectionStart;
+  const end = target.selectionEnd;
+  target.value = target.value.slice(0, start) + variable + target.value.slice(end);
+  target.selectionStart = target.selectionEnd = start + variable.length;
+  target.focus();
+  target.dispatchEvent(new Event('input'));
+}
+
+document.querySelectorAll('[data-variable]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const target = $(button.dataset.variableTarget || 'smsBody');
+    insertVariable(target, button.dataset.variable);
+  });
+});
 
 function normalizeRecipient(value) {
   return String(value || '').trim().replace(/[\s.\-()]/g, '');
@@ -235,7 +252,12 @@ async function loadRecipients() {
   contacts = id ? await api(`/admin/api/address-books/${id}/contacts`) : [];
   if (id !== loadedBookId) {
     loadedBookId = id;
-    selectedContacts = new Set(contacts.map((c) => c.id));
+    selectedContacts = new Set(contacts.filter((c) => !c.blacklisted).map((c) => c.id));
+  } else {
+    selectedContacts = new Set([...selectedContacts].filter((contactId) => {
+      const contact = contacts.find((c) => c.id === contactId);
+      return contact && !contact.blacklisted;
+    }));
   }
   if (!contacts.length) {
     list.innerHTML = '<div class="contact-list-empty muted">' + (id ? 'Ce carnet ne contient aucun contact.' : 'Choisissez un carnet pour afficher les contacts.') + '</div>';
@@ -246,10 +268,10 @@ async function loadRecipients() {
     const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
     const label = name || c.entity || c.phone;
     return `<label class="contact-row">
-      <input type="checkbox" data-id="${c.id}" ${selectedContacts.has(c.id) ? 'checked' : ''}>
+       <input type="checkbox" data-id="${c.id}" ${c.blacklisted ? 'disabled' : ''} ${selectedContacts.has(c.id) ? 'checked' : ''}>
       <span class="who">
         <b>${esc(label)}</b><br>
-        ${c.entity && name ? `<span class="muted">${esc(c.entity)}</span> · ` : ''}<span class="phone">${esc(c.phone)}</span>
+         ${c.entity && name ? `<span class="muted">${esc(c.entity)}</span> · ` : ''}<span class="phone">${esc(c.phone)}</span>${c.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : ''}
       </span>
     </label>`;
   }).join('');
@@ -271,7 +293,7 @@ $('btnToggleAll').addEventListener('click', () => {
   if (!contacts.length) return;
   const allChecked = contacts.every((c) => selectedContacts.has(c.id));
   if (allChecked) selectedContacts.clear();
-  else selectedContacts = new Set(contacts.map((c) => c.id));
+  else selectedContacts = new Set(contacts.filter((c) => !c.blacklisted).map((c) => c.id));
   document.querySelectorAll('#recipientList input[type=checkbox]').forEach((cb) => {
     cb.checked = selectedContacts.has(Number(cb.dataset.id));
   });
@@ -458,11 +480,11 @@ async function loadFleet() {
 async function loadFleetContacts() {
   const bookId = Number($('fleetBookSelect').value || 0);
   fleetContacts = bookId ? await api(`/admin/api/address-books/${bookId}/contacts`) : [];
-  fleetSelected = new Set(fleetContacts.map((contact) => contact.id));
+  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted).map((contact) => contact.id));
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
-        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" checked><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span></span></label>`;
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${contact.blacklisted ? 'disabled' : 'checked'}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
 }
@@ -504,6 +526,7 @@ async function openFleetCheck(id) {
     const delay = item.response_at && item.delivered_at
       ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
     return `<tr><td>${esc(item.first_name || '')}</td><td>${esc(item.last_name || '')}</td><td>${esc(item.entity || '')}</td>
+      <td>${esc(item.service || '')}</td><td>${esc(item.direction || '')}</td><td>${esc(item.imei || '')}</td><td>${esc(item.puk || '')}</td>
       <td class="code">${esc(item.phone)}</td><td>${fleetState(item.state)}</td><td>${fmtDate(item.delivered_at)}</td>
       <td>${fmtDate(item.response_at)}</td><td>${delay}</td><td>${esc(item.response_body || item.error || '—')}</td></tr>`;
   }).join('');
@@ -780,14 +803,19 @@ async function loadContacts() {
     ? rows.map((c) => `<tr>
         <td>${esc(c.first_name || '')}</td>
         <td>${esc(c.last_name || '')}</td>
-        <td>${esc(c.entity || '')}</td>
-        <td class="code">${esc(c.phone)} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
-        <td>
-          <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+         <td>${esc(c.entity || '')}</td>
+         <td>${esc(c.service || '')}</td>
+         <td>${esc(c.direction || '')}</td>
+         <td>${esc(c.imei || '')}</td>
+         <td>${esc(c.puk || '')}</td>
+         <td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
+         <td>
+           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+           <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
           <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
         </td>
       </tr>`).join('')
-    : '<tr><td colspan="5" class="muted">Aucun contact.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucun contact.</td></tr>';
   document.querySelectorAll('[data-editcontact]').forEach((b) => {
     b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
   });
@@ -795,6 +823,17 @@ async function loadContacts() {
     b.addEventListener('click', async () => {
       if (!confirm('Supprimer ce contact ?')) return;
       await api(`/admin/api/contacts/${b.dataset.delcontact}`, { method: 'DELETE' });
+      loadContacts();
+    });
+  });
+  document.querySelectorAll('[data-blacklist-phone]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const phone = b.dataset.blacklistPhone;
+      if (!confirm(b.textContent === 'Blacklister' ? `Blacklister ${phone} dans tous les carnets ?` : `Remettre ${phone} en service ?`)) return;
+      await api(b.textContent === 'Blacklister' ? '/admin/api/blacklist' : `/admin/api/blacklist/${encodeURIComponent(phone)}`, {
+        method: b.textContent === 'Blacklister' ? 'POST' : 'DELETE',
+        ...(b.textContent === 'Blacklister' ? { body: JSON.stringify({ phone }) } : {})
+      });
       loadContacts();
     });
   });
@@ -809,6 +848,20 @@ $('btnBackBooks').addEventListener('click', () => {
   $('bookContacts').classList.add('hidden');
   $('booksList').classList.remove('hidden');
   loadBooks();
+});
+
+async function loadBlacklist() {
+  const rows = await api('/admin/api/blacklist');
+  $('blacklistBody').innerHTML = rows.length ? rows.map((row) => `<tr><td class="code">${esc(row.phone)}</td><td>${fmtDate(row.created_at)}</td><td><button class="ghost" data-unblacklist="${esc(row.phone)}">Remettre normal</button></td></tr>`).join('') : '<tr><td colspan="3" class="muted">Aucun numéro blacklisté.</td></tr>';
+  document.querySelectorAll('[data-unblacklist]').forEach((button) => button.addEventListener('click', async () => {
+    await api(`/admin/api/blacklist/${encodeURIComponent(button.dataset.unblacklist)}`, { method: 'DELETE' });
+    loadBlacklist(); loadContacts();
+  }));
+}
+
+$('btnShowBlacklist').addEventListener('click', () => {
+  $('blacklistPanel').classList.toggle('hidden');
+  if (!$('blacklistPanel').classList.contains('hidden')) loadBlacklist();
 });
 
 let pendingBookId = null;
@@ -855,6 +908,10 @@ function openContactModal(id = null, data = null) {
   $('contactFirstName').value = data ? data.cname : '';
   $('contactLastName').value = data ? data.clast : '';
   $('contactEntity').value = data ? data.centity : '';
+  $('contactService').value = data ? data.cservice : '';
+  $('contactDirection').value = data ? data.cdirection : '';
+  $('contactImei').value = data ? data.cimei : '';
+  $('contactPuk').value = data ? data.cpuk : '';
   $('contactPhone').value = data ? data.cphone : '';
   $('contactModalError').textContent = '';
   $('contactModalTitle').textContent = id === null ? 'Nouveau contact' : 'Modifier le contact';
@@ -872,6 +929,10 @@ $('btnSaveContact').addEventListener('click', async () => {
     firstName: $('contactFirstName').value,
     lastName: $('contactLastName').value,
     entity: $('contactEntity').value,
+    service: $('contactService').value,
+    direction: $('contactDirection').value,
+    imei: $('contactImei').value,
+    puk: $('contactPuk').value,
     phone: $('contactPhone').value
   };
   try {
@@ -950,7 +1011,11 @@ function handleCsvFile(file) {
         { v: 'phone', l: 'Téléphone (obligatoire)' },
         { v: 'firstName', l: 'Prénom' },
         { v: 'lastName', l: 'Nom' },
-        { v: 'entity', l: 'Entité' }
+        { v: 'entity', l: 'Entité' },
+        { v: 'service', l: 'Service' },
+        { v: 'direction', l: 'Direction' },
+        { v: 'imei', l: 'IMEI' },
+        { v: 'puk', l: 'PUK' }
       ];
       $('mappingBody').innerHTML = csvHeaderCells.map((h, i) => `<tr>
         <td>${esc(h || `Colonne ${i + 1}`)}</td>
@@ -988,7 +1053,7 @@ $('csvFile').addEventListener('change', () => {
 
 $('btnConfirmImport').addEventListener('click', async () => {
   $('importError').textContent = '';
-  const map = { firstName: '', lastName: '', entity: '', phone: '' };
+  const map = { firstName: '', lastName: '', entity: '', service: '', direction: '', imei: '', puk: '', phone: '' };
   document.querySelectorAll('#mappingBody select').forEach((s) => {
     const val = s.value;
     if (val) map[val] = s.dataset.col;
@@ -1020,15 +1085,17 @@ function showImportResult(res) {
   const created = Number(res.created || 0);
   const replaced = Number(res.replaced || 0);
   const duplicates = Number(res.duplicates || 0);
+  const blacklisted = Number(res.blacklisted || 0);
   const invalid = Array.isArray(res.invalid) ? res.invalid : [];
   const lines = [];
-  if (created === 0 && replaced === 0 && invalid.length === 0) {
+  if (created === 0 && replaced === 0 && invalid.length === 0 && blacklisted === 0) {
     lines.push('<p class="muted">Aucun changement : tous les numéros étaient déjà présents ou le fichier était vide.</p>');
   } else {
     lines.push('<p style="margin-top:12px">');
     if (created > 0) lines.push(`<span class="badge ok">${created} numéro(s) importé(s)</span> `);
     if (replaced > 0) lines.push(`<span class="badge pending">${replaced} contact(s) mis à jour</span> `);
     if (duplicates > 0) lines.push(`<span class="badge off">${duplicates} doublon(s) ignoré(s)</span> `);
+    if (blacklisted > 0) lines.push(`<span class="badge failed">${blacklisted} numéro(s) blacklisté(s)</span> `);
     if (invalid.length > 0) lines.push(`<span class="badge failed">${invalid.length} ligne(s) invalide(s)</span> `);
     lines.push('</p>');
   }

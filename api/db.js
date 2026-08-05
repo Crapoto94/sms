@@ -89,6 +89,10 @@ CREATE TABLE IF NOT EXISTS fleet_check_items (
   first_name     TEXT,
   last_name      TEXT,
   entity         TEXT,
+  service        TEXT,
+  direction      TEXT,
+  imei           TEXT,
+  puk            TEXT,
   phone          TEXT NOT NULL,
   state          TEXT NOT NULL DEFAULT 'pending',
   sent_at       TEXT,
@@ -173,11 +177,24 @@ CREATE TABLE IF NOT EXISTS contacts (
   first_name      TEXT,
   last_name       TEXT,
   entity          TEXT,
+  service         TEXT,
+  direction       TEXT,
+  imei            TEXT,
+  puk             TEXT,
   phone           TEXT    NOT NULL,
   created_at      TEXT    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_book ON contacts(address_book_id);
+
+CREATE TABLE IF NOT EXISTS blacklist_numbers (
+  phone       TEXT PRIMARY KEY,
+  created_at  TEXT NOT NULL,
+  created_by  INTEGER,
+  created_by_label TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_blacklist_numbers_phone ON blacklist_numbers(phone);
 
 CREATE TABLE IF NOT EXISTS campaigns (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -260,6 +277,15 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)'
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');
+
+const contactCols = db.prepare('PRAGMA table_info(contacts)').all().map((c) => c.name);
+for (const column of ['service', 'direction', 'imei', 'puk']) {
+  if (!contactCols.includes(column)) db.exec(`ALTER TABLE contacts ADD COLUMN ${column} TEXT`);
+}
+const fleetItemCols = db.prepare('PRAGMA table_info(fleet_check_items)').all().map((c) => c.name);
+for (const column of ['service', 'direction', 'imei', 'puk']) {
+  if (!fleetItemCols.includes(column)) db.exec(`ALTER TABLE fleet_check_items ADD COLUMN ${column} TEXT`);
+}
 
 const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
 if (!attachmentCols.includes('expires_at')) {

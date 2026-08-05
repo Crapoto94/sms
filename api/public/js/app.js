@@ -1039,6 +1039,20 @@ $('btnBackBooks').addEventListener('click', () => {
   loadBooks();
 });
 
+async function loadBlacklist() {
+  const rows = await api('/admin/api/blacklist');
+  $('blacklistBody').innerHTML = rows.length ? rows.map((row) => `<tr><td class="code">${esc(row.phone)}</td><td>${fmtDate(row.created_at)}</td><td><button class="ghost" data-unblacklist="${esc(row.phone)}">Remettre normal</button></td></tr>`).join('') : '<tr><td colspan="3" class="muted">Aucun numéro blacklisté.</td></tr>';
+  document.querySelectorAll('[data-unblacklist]').forEach((button) => button.addEventListener('click', async () => {
+    await api(`/admin/api/blacklist/${encodeURIComponent(button.dataset.unblacklist)}`, { method: 'DELETE' });
+    loadBlacklist(); loadContacts();
+  }));
+}
+
+$('btnShowBlacklist').addEventListener('click', () => {
+  $('blacklistPanel').classList.toggle('hidden');
+  if (!$('blacklistPanel').classList.contains('hidden')) loadBlacklist();
+});
+
 async function loadContacts() {
   const rows = await api(`/admin/api/address-books/${viewBookId}/contacts`);
   const phones = rows.map((c) => c.phone);
@@ -1051,14 +1065,19 @@ async function loadContacts() {
     ? rows.map((c) => `<tr>
         <td>${esc(c.first_name || '')}</td>
         <td>${esc(c.last_name || '')}</td>
-        <td>${esc(c.entity || '')}</td>
-        <td class="code">${esc(c.phone)} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
-        <td>
-          <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+         <td>${esc(c.entity || '')}</td>
+         <td>${esc(c.service || '')}</td>
+         <td>${esc(c.direction || '')}</td>
+         <td>${esc(c.imei || '')}</td>
+         <td>${esc(c.puk || '')}</td>
+         <td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
+         <td>
+           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+           <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
           <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
         </td>
       </tr>`).join('')
-    : '<tr><td colspan="5" class="muted">Aucun contact.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucun contact.</td></tr>';
   document.querySelectorAll('[data-editcontact]').forEach((b) => {
     b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
   });
@@ -1066,6 +1085,17 @@ async function loadContacts() {
     b.addEventListener('click', async () => {
       if (!confirm('Supprimer ce contact ?')) return;
       await api(`/admin/api/contacts/${b.dataset.delcontact}`, { method: 'DELETE' });
+      loadContacts();
+    });
+  });
+  document.querySelectorAll('[data-blacklist-phone]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const phone = b.dataset.blacklistPhone;
+      if (!confirm(b.textContent === 'Blacklister' ? `Blacklister ${phone} dans tous les carnets ?` : `Remettre ${phone} en service ?`)) return;
+      await api(b.textContent === 'Blacklister' ? '/admin/api/blacklist' : `/admin/api/blacklist/${encodeURIComponent(phone)}`, {
+        method: b.textContent === 'Blacklister' ? 'POST' : 'DELETE',
+        ...(b.textContent === 'Blacklister' ? { body: JSON.stringify({ phone }) } : {})
+      });
       loadContacts();
     });
   });
@@ -1122,6 +1152,10 @@ function openContactModal(id = null, data = null) {
   $('contactFirstName').value = data ? data.cname : '';
   $('contactLastName').value = data ? data.clast : '';
   $('contactEntity').value = data ? data.centity : '';
+  $('contactService').value = data ? data.cservice : '';
+  $('contactDirection').value = data ? data.cdirection : '';
+  $('contactImei').value = data ? data.cimei : '';
+  $('contactPuk').value = data ? data.cpuk : '';
   $('contactPhone').value = data ? data.cphone : '';
   $('contactModalError').textContent = '';
   $('contactModalTitle').textContent = id === null ? 'Nouveau contact' : 'Modifier le contact';
@@ -1139,6 +1173,10 @@ $('btnSaveContact').addEventListener('click', async () => {
     firstName: $('contactFirstName').value,
     lastName: $('contactLastName').value,
     entity: $('contactEntity').value,
+    service: $('contactService').value,
+    direction: $('contactDirection').value,
+    imei: $('contactImei').value,
+    puk: $('contactPuk').value,
     phone: $('contactPhone').value
   };
   try {
@@ -1211,7 +1249,11 @@ function handleBookCsvFile(file) {
         { v: 'phone', l: 'Téléphone (obligatoire)' },
         { v: 'firstName', l: 'Prénom' },
         { v: 'lastName', l: 'Nom' },
-        { v: 'entity', l: 'Entité' }
+        { v: 'entity', l: 'Entité' },
+        { v: 'service', l: 'Service' },
+        { v: 'direction', l: 'Direction' },
+        { v: 'imei', l: 'IMEI' },
+        { v: 'puk', l: 'PUK' }
       ];
       $('bookMappingBody').innerHTML = bookCsvHeaderCells.map((h, i) => `<tr>
         <td>${esc(h || `Colonne ${i + 1}`)}</td>
@@ -1275,12 +1317,14 @@ $('btnConfirmBookImport').addEventListener('click', async () => {
     loadBooks();
     const created = Number(res.created || 0);
     const replaced = Number(res.replaced || 0);
+    const blacklisted = Number(res.blacklisted || 0);
     const invalid = Array.isArray(res.invalid) ? res.invalid : [];
     const lines = [];
     lines.push('<p style="margin-top:12px">');
     if (created > 0) lines.push(`<span class="badge ok">${created} numéro(s) importé(s)</span> `);
     if (replaced > 0) lines.push(`<span class="badge pending">${replaced} contact(s) mis à jour</span> `);
     if (Number(res.duplicates || 0) > 0) lines.push(`<span class="badge off">${res.duplicates} doublon(s) ignoré(s)</span> `);
+    if (blacklisted > 0) lines.push(`<span class="badge failed">${blacklisted} numéro(s) blacklisté(s)</span> `);
     if (invalid.length > 0) lines.push(`<span class="badge failed">${invalid.length} ligne(s) invalide(s)</span> `);
     lines.push('</p>');
     if (invalid.length > 0) {
@@ -1291,7 +1335,7 @@ $('btnConfirmBookImport').addEventListener('click', async () => {
       if (invalid.length > 20) lines.push(`<li>… et ${invalid.length - 20} autre(s)</li>`);
       lines.push('</ul>');
     }
-    $('bookImportResultTitle').textContent = (created + replaced) > 0 ? 'Import réussi' : 'Import terminé';
+    $('bookImportResultTitle').textContent = (created + replaced + blacklisted) > 0 ? 'Import réussi' : 'Import terminé';
     $('bookImportResultBody').innerHTML = lines.join('');
     $('bookImportResultModal').classList.remove('hidden');
   } catch (e) {
