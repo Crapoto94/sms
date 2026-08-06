@@ -21,6 +21,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var defaultSmsPromptDone = false
 
+    private val apiRows = mutableMapOf<String, View>()
+    private var updatingToggle = false
+    @Volatile private var statusGeneration = 0
+
     private val smsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
             if (results.values.all { it }) {
@@ -50,6 +54,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         SmsLog.load(this)
         refresh()
+        refreshApis()
         binding.textLastSync.text = if (Config.getLastSyncAt(this) > 0) {
             getString(
                 R.string.last_sync_label,
@@ -99,6 +104,79 @@ class MainActivity : AppCompatActivity() {
 
     private fun openDefaultSmsSettings() {
         startActivity(SmsSender.manualDefaultSmsIntent())
+    }
+
+    /**
+     * Affiche une carte par API configurée : nom, URL, état (joignable ou non)
+     * et un toggle pour l'activer / la désactiver dans la passerelle.
+     */
+    private fun refreshApis() {
+        val profiles = Config.getApiProfiles(this)
+        binding.apiContainer.removeAllViews()
+        apiRows.clear()
+        if (profiles.isEmpty()) {
+            binding.apiContainer.visibility = View.GONE
+            return
+        }
+        binding.apiContainer.visibility = View.VISIBLE
+        for (profile in profiles) {
+            val row = LayoutInflater.from(this).inflate(R.layout.item_api, binding.apiContainer, false)
+            row.findViewById<TextView>(R.id.apiLabel).text = profile.label
+            row.findViewById<TextView>(R.id.apiUrl).text = profile.url
+            val status = row.findViewById<TextView>(R.id.apiStatus).apply {
+                text = getString(R.string.api_status_checking)
+                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.api_status_checking))
+            }
+            val toggle = row.findViewById<android.widget.CompoundButton>(R.id.apiToggle)
+            updatingToggle = true
+            toggle.isChecked = profile.enabled
+            updatingToggle = false
+            toggle.setOnCheckedChangeListener { _, checked ->
+                if (updatingToggle) return@setOnCheckedChangeListener
+                setProfileEnabled(profile.id, checked)
+                row.findViewById<TextView>(R.id.apiStatus).setTextColor(
+                    ContextCompat.getColor(this@MainActivity, R.color.api_status_checking)
+                )
+            }
+            binding.apiContainer.addView(row)
+            apiRows[profile.id] = row
+        }
+        refreshApiStatuses()
+    }
+
+    private fun setProfileEnabled(profileId: String, enabled: Boolean) {
+        val profiles = Config.getApiProfiles(this).map {
+            if (it.id == profileId) it.copy(enabled = enabled) else it
+        }
+        Config.setApiProfiles(this, profiles)
+        SmsGatewayService.requestFlush(this)
+    }
+
+    /** Interroge /health de chaque API en arrière-plan et affiche l'état. */
+    private fun refreshApiStatuses() {
+        val profiles = Config.getApiProfiles(this)
+        if (profiles.isEmpty()) return
+        val generation = ++statusGeneration
+        Thread {
+            val api = ApiClient(this)
+            for (profile in profiles) {
+                val ok = try { api.checkHealth(profile) } catch (_: Exception) { false }
+                if (generation != statusGeneration) return@Thread
+                runOnUiThread {
+                    apiRows[profile.id]?.findViewById<TextView>(R.id.apiStatus)?.let { status ->
+                        status.text = getString(
+                            if (ok) R.string.api_status_ok else R.string.api_status_down
+                        )
+                        status.setTextColor(
+                            ContextCompat.getColor(
+                                this@MainActivity,
+                                if (ok) R.color.api_status_ok else R.color.api_status_down
+                            )
+                        )
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun refresh() {

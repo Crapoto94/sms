@@ -26,6 +26,31 @@ class ApiClient(private val context: Context) {
         .writeTimeout(Config.REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .build()
 
+    private val healthClient = OkHttpClient.Builder()
+        .connectTimeout(10_000L, TimeUnit.MILLISECONDS)
+        .readTimeout(10_000L, TimeUnit.MILLISECONDS)
+        .build()
+
+    /**
+     * Vérifie que l'API est joignable (GET /health -> { ok: true }).
+     * @return true si le serveur répond correctement.
+     */
+    fun checkHealth(profile: ApiProfile): Boolean {
+        val request = Request.Builder()
+            .url("${profile.url}/health")
+            .get()
+            .build()
+        healthClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return false
+            val body = response.body?.string().orEmpty()
+            return try {
+                JSONObject(body).optBoolean("ok", false)
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
     /**
      * Synchronisation passerelle ↔ API.
      * 1. remonte les statuts (sent / delivered / failed) en attente,

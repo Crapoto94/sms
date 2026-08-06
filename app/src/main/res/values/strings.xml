@@ -39,4 +39,9 @@
     <string name="settings_title">Paramètres</string>
     <string name="back">Retour</string>
     <string name="version_format">Version %1$s</string>
+    <string name="api_section_title">APIs</string>
+    <string name="api_section_note">état / activation</string>
+    <string name="api_status_checking">vérification…</string>
+    <string name="api_status_ok">joignable</string>
+    <string name="api_status_down">injoignable</string>
 </resources>

@@ -149,7 +149,7 @@ class SmsGatewayService : Service() {
 
     private fun syncAllProfiles(): List<OutgoingMessage>? {
         sweepTimeouts()
-        val profiles = Config.getApiProfiles(this)
+        val profiles = Config.getApiProfiles(this).filter { it.enabled }
         if (profiles.isEmpty()) {
             lastError = "Aucune API configurée"
             SmsLog.add(this, SmsLog.Entry(now(), SmsLog.TYPE_ERREUR, "", "", "", null, "Clé API non configurée"))
@@ -205,7 +205,7 @@ class SmsGatewayService : Service() {
         }
         if (messages.isEmpty()) return
         try {
-            val profiles = Config.getApiProfiles(this)
+            val profiles = Config.getApiProfiles(this).filter { it.enabled }
             var allAccepted = profiles.isNotEmpty()
             for (profile in profiles) {
                 try {

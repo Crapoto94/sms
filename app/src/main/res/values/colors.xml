@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#0C7BEF</color>
+    <color name="api_status_ok">#2E7D32</color>
+    <color name="api_status_down">#C62828</color>
+    <color name="api_status_checking">#757575</color>
 </resources>

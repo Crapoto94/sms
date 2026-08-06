@@ -55,7 +55,8 @@ object Config {
                         item.optString("id").ifBlank { UUID.randomUUID().toString() },
                         item.optString("label").ifBlank { "API ${i + 1}" },
                         item.optString("url").trimEnd('/'),
-                        item.optString("key").trim()
+                        item.optString("key").trim(),
+                        item.optBoolean("enabled", true)
                     )
                 }.filter { it.url.isNotBlank() && it.key.isNotBlank() }
             } catch (_: Exception) { emptyList() }
@@ -73,6 +74,7 @@ object Config {
                 put("label", profile.label)
                 put("url", profile.url.trimEnd('/'))
                 put("key", profile.key.trim())
+                put("enabled", profile.enabled)
             })
         }
         prefs(context).edit()
@@ -144,7 +146,8 @@ data class ApiProfile(
     val id: String,
     val label: String,
     val url: String,
-    val key: String
+    val key: String,
+    val enabled: Boolean = true
 )
 
 data class IncomingSmsDisplay(
