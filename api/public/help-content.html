@@ -657,9 +657,10 @@
         </ol>
 
         <ul class="help-list">
-          <li><b>Chaque e-mail n'est traité qu'une fois.</b> Seuls les e-mails non lus sont examinés ; une fois traités, ils sont marqués lus et ne sont jamais retraités, même s'ils redeviennent non lus.</li>
+          <li><b>Chaque e-mail n'est traité qu'une fois.</b> Seuls les e-mails non lus sont examinés ; une fois transformés en SMS, ils sont <strong>déplacés</strong> dans un dossier IMAP — <em>SMS Traités</em> par défaut (créé automatiquement, nom configurable dans le formulaire). Ils ne sont donc jamais retraités.</li>
+          <li><b>Relevés bornés.</b> Chaque relevé traite au plus 50 e-mails (variable <span class="code">MAIL2SMS_MAX_PER_SCAN</span>) pour rester rapide ; les e-mails restants sont pris au relevé suivant. Le bouton <em>Scanner</em> affiche le nombre de traités / ignorés / erreurs.</li>
           <li><b>La liste noire s'applique.</b> Les numéros blacklistés sont exclus des destinataires. Si aucun destinataire n'est valide, l'e-mail est refusé et l'expéditeur reçoit un compte-rendu d'erreur qui rappelle le format attendu.</li>
-          <li><b>Traçabilité.</b> L'onglet <em>E-mails traités</em> liste chaque e-mail avec sa boîte, son expéditeur, son sujet, le nombre de SMS créés, le statut du traitement et celui du compte-rendu.</li>
+          <li><b>Traçabilité.</b> L'onglet <em>E-mails traités</em> liste chaque e-mail avec sa boîte, son expéditeur, son sujet, le nombre de SMS créés, le statut du traitement et celui du compte-rendu. Un e-mail rejeté (expéditeur non autorisé, format invalide…) apparaît aussi, avec le motif.</li>
         </ul>
       </article>
 

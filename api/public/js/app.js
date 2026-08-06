@@ -1027,6 +1027,7 @@ function resetMail2SmsForm() {
   ['m2sName', 'm2sEmail', 'm2sLogin', 'm2sPassword', 'm2sImapHost', 'm2sAllowed', 'm2sSmtpHost', 'm2sSmtpPort', 'm2sSmtpLogin', 'm2sSmtpPassword', 'm2sReplySubject'].forEach((id) => { $(id).value = ''; });
   $('m2sImapPort').value = '993';
   $('m2sImapFolder').value = 'INBOX';
+  $('m2sProcessedFolder').value = 'SMS Traités';
   $('m2sScanInterval').value = '60';
   $('m2sReplyDelay').value = '5';
   $('m2sImapSecure').checked = true;
@@ -1048,6 +1049,7 @@ function fillMail2SmsForm(b) {
   $('m2sImapHost').value = b.imap_host;
   $('m2sImapPort').value = b.imap_port;
   $('m2sImapFolder').value = b.imap_folder || 'INBOX';
+  $('m2sProcessedFolder').value = b.processed_folder || 'SMS Traités';
   $('m2sImapSecure').checked = !!b.imap_secure;
   $('m2sAllowed').value = b.allowed_senders;
   $('m2sScanInterval').value = b.scan_interval_sec;
@@ -1075,6 +1077,7 @@ function mail2smsFormPayload() {
     imapHost: $('m2sImapHost').value.trim(),
     imapPort: $('m2sImapPort').value,
     imapFolder: $('m2sImapFolder').value.trim(),
+    processedFolder: $('m2sProcessedFolder').value.trim() || 'SMS Traités',
     imapSecure: $('m2sImapSecure').checked,
     allowedSenders: $('m2sAllowed').value.trim(),
     scanIntervalSec: $('m2sScanInterval').value,
@@ -1127,7 +1130,12 @@ $('mail2smsBoxesBody').addEventListener('click', async (e) => {
   } else if (scan) {
     try {
       const res = await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan`, { method: 'POST' });
-      alert(`Relevé de « ${res.box} » terminé.`);
+      const summary = [`Relevé de « ${res.box} » terminé :`,
+        `${res.processed || 0} traité(s)`, `${res.ignored || 0} ignoré(s)`, `${res.errors || 0} erreur(s)`].join(' ');
+      const extra = res.moveErrors > 0
+        ? ` — ${res.moveErrors} e-mail(s) non déplacé(s) vers « ${res.processed_folder || 'SMS Traités'} »`
+        : (res.remaining ? ' — d’autres e-mails restent à traiter (prochain relevé).' : '');
+      alert(summary + extra);
       loadMail2Sms();
     } catch (err) { alert(err.message); loadMail2Sms(); }
   } else if (edit) {

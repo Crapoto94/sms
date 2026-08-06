@@ -1217,6 +1217,7 @@ function mail2smsBoxFromBody(body, isCreate) {
     smtp_secure: b.smtpSecure === false ? 0 : 1,
     smtp_login: String(b.smtpLogin || '').trim() || null,
     scan_interval_sec: Math.max(10, parseInt(b.scanIntervalSec, 10) || 60),
+    processed_folder: String(b.processedFolder || '').trim() || 'SMS Traités',
     active: b.active === false ? 0 : 1
   };
   if (b.password !== undefined) out.password = String(b.password);
@@ -1242,7 +1243,7 @@ const mail2smsBoxSelect = `
   SELECT id, name, email, imap_host, imap_port, imap_secure, imap_folder, login,
     allowed_senders, reply_enabled, reply_delay_min, reply_subject,
     smtp_host, smtp_port, smtp_secure, smtp_login,
-    scan_interval_sec, active, last_scan_at, last_status, last_error, created_at,
+    scan_interval_sec, processed_folder, active, last_scan_at, last_status, last_error, created_at,
     CASE WHEN password IS NOT NULL AND password <> '' THEN 1 ELSE 0 END AS has_password,
     CASE WHEN smtp_password IS NOT NULL AND smtp_password <> '' THEN 1 ELSE 0 END AS has_smtp_password
   FROM mail2sms_boxes
@@ -1269,13 +1270,13 @@ webApp.post('/admin/api/mail2sms', requireAdmin, (req, res) => {
       (name, email, imap_host, imap_port, imap_secure, imap_folder, login, password,
        allowed_senders, reply_enabled, reply_delay_min, reply_subject,
        smtp_host, smtp_port, smtp_secure, smtp_login, smtp_password,
-       scan_interval_sec, active, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       scan_interval_sec, processed_folder, active, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     box.name, box.email, box.imap_host, box.imap_port, box.imap_secure, box.imap_folder, box.login, box.password,
     box.allowed_senders, box.reply_enabled, box.reply_delay_min, box.reply_subject,
     box.smtp_host, box.smtp_port, box.smtp_secure, box.smtp_login, box.smtp_password,
-    box.scan_interval_sec, box.active, isoNow()
+    box.scan_interval_sec, box.processed_folder, box.active, isoNow()
   );
   res.status(201).json({ id: info.lastInsertRowid });
 });
@@ -1295,7 +1296,7 @@ webApp.patch('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
   for (const key of ['name', 'email', 'imap_host', 'imap_port', 'imap_secure', 'imap_folder', 'login',
     'password', 'allowed_senders', 'reply_enabled', 'reply_delay_min', 'reply_subject',
     'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_login', 'smtp_password',
-    'scan_interval_sec', 'active']) {
+    'scan_interval_sec', 'processed_folder', 'active']) {
     if (!(key in box)) continue;
     sets.push(`${key} = ?`);
     params.push(box[key]);
@@ -1326,7 +1327,7 @@ webApp.post('/admin/api/mail2sms/:id/test', requireAdmin, async (req, res) => {
 webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, async (req, res) => {
   try {
     const result = await mail2sms.scanBoxById(Number(req.params.id));
-    res.json({ ok: true, box: result.box });
+    res.json({ ok: true, box: result.box, ...result });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }

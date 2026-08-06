@@ -34,6 +34,10 @@ const MAX_ATTACHMENTS_PER_MAIL = 5;
 const POLL_DEFAULT_MS = parseInt(process.env.MAIL2SMS_POLL_SEC || '60', 10) * 1000;
 const REPLY_POLL_MS = parseInt(process.env.MAIL2SMS_REPLY_POLL_SEC || '30', 10) * 1000;
 const MAX_REPLY_ATTEMPTS = 5;
+// Bornes le nombre d'e-mails traités par relevé : chaque relevé reste ainsi
+// rapide (pas de timeout 504 du proxy), le reste est pris au relevé suivant.
+const MAX_SCAN_EMAILS = parseInt(process.env.MAIL2SMS_MAX_PER_SCAN || '50', 10);
+const IMAP_TIMEOUT_MS = parseInt(process.env.MAIL2SMS_IMAP_TIMEOUT_MS || '120000', 10);
 
 const PHONE_RE = /^\+?[0-9]{4,15}$/;
 
@@ -370,7 +374,10 @@ function imapConfig(box) {
       pass: String(box.password || '')
     },
     logger: false,
-    verifyOnly: false
+    verifyOnly: false,
+    connectionTimeout: IMAP_TIMEOUT_MS,
+    greetingTimeout: IMAP_TIMEOUT_MS,
+    socketTimeout: IMAP_TIMEOUT_MS
   };
 }
 
@@ -378,7 +385,7 @@ async function processMail(box, message) {
   const uid = String(message.uid);
   const exists = db.prepare('SELECT 1 FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?')
     .get(box.id, uid);
-  if (exists) return;
+  if (exists) return 'exists';
 
   const envelope = message.envelope || {};
   const from = (envelope.from || []).map((a) => a.address).filter(Boolean)[0] || '';
@@ -397,7 +404,7 @@ async function processMail(box, message) {
       VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?)
     `).run(box.id, uid, messageId, from, subject, receivedAt, now,
       `Lecture de l'e-mail impossible : ${String(err.message || err).slice(0, 500)}`);
-    return;
+    return 'error';
   }
 
   const parsedFrom = (parsed.from && parsed.from.value && parsed.from.value[0] && parsed.from.value[0].address) || from;
@@ -417,16 +424,16 @@ async function processMail(box, message) {
       VALUES (?, ?, ?, ?, ?, ?, ?, 'ignored', ?)
     `).run(box.id, uid, messageId, parsedFrom, subject, receivedAt, now,
       `Expéditeur non autorisé (${parsedFrom}). Motifs autorisés : ${box.allowed_senders}`);
-    return;
+    return 'ignored';
   }
 
   if (!subject) {
     recordError('Sujet vide : le contenu du SMS doit être mis dans le sujet de l\'e-mail.');
-    return;
+    return 'error';
   }
   if (subject.length > MAX_MESSAGE_LENGTH) {
     recordError(`Sujet trop long (${subject.length} caractères, maximum ${MAX_MESSAGE_LENGTH}).`);
-    return;
+    return 'error';
   }
 
   const { recipients, resolved } = resolveRecipients(parsed.text || '');
@@ -434,7 +441,7 @@ async function processMail(box, message) {
     recordError(resolved === 0
       ? 'Aucun destinataire trouvé : indiquez des numéros de téléphone et/ou un nom de carnet d\'adresses dans le corps de l\'e-mail.'
       : 'Aucun destinataire valide (tous les numéros trouvés sont blacklistés).');
-    return;
+    return 'error';
   }
 
   const attachments = (parsed.attachments || [])
@@ -485,23 +492,50 @@ async function processMail(box, message) {
     }
     throw err;
   }
+  return 'processed';
+}
+
+// --- Déplacement des e-mails traités dans un dossier IMAP -------------------
+// « SMS Traités » par défaut : le dossier est créé s'il n'existe pas. Après un
+// traitement réussi, l'e-mail quitte la boîte de réception et n'est plus relu.
+// Lève une erreur en cas d'échec : l'appelant laisse alors l'e-mail non lu et
+// le relevé suivant retentera le déplacement.
+async function moveToProcessedFolder(client, box, uid) {
+  const folder = String(box.processed_folder || '').trim();
+  if (!folder) return false;
+  const existing = await client.list();
+  const found = (existing || []).some((m) => String(m.path) === folder);
+  if (!found) await client.mailboxCreate(folder);
+  await client.messageMove(uid, folder, { uid: true });
+  return true;
 }
 
 async function scanBox(box) {
   const client = new ImapFlow(imapConfig(box));
+  const counts = { processed: 0, ignored: 0, errors: 0, moveErrors: 0, remaining: false };
+  const markSeen = (uid) => client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
   try {
     await client.connect();
     const lock = await client.getMailboxLock(String(box.imap_folder || 'INBOX'));
     try {
+      let handled = 0;
+      let lastMoveError = null;
       for await (const message of client.fetch({ seen: false }, {
         envelope: true,
         uid: true,
         internalDate: true,
         source: true
       })) {
+        if (handled >= MAX_SCAN_EMAILS) {
+          counts.remaining = true;
+          break;
+        }
+        handled++;
+        let result;
         try {
-          await processMail(box, message);
+          result = await processMail(box, message);
         } catch (err) {
+          counts.errors++;
           try {
             db.prepare(`
               INSERT INTO mail2sms_emails
@@ -510,12 +544,44 @@ async function scanBox(box) {
             `).run(box.id, String(message.uid), '', '', '', isoNow(), isoNow(),
               `Traitement impossible : ${String(err && err.message ? err.message : err).slice(0, 500)}`);
           } catch { /* ignore */ }
-        } finally {
-          try {
-            await client.messageFlagsAdd(message.uid, ['\\Seen'], { uid: true });
-          } catch { /* ignore */ }
+          await markSeen(message.uid);
+          continue;
+        }
+
+        if (result === 'processed') {
+          counts.processed++;
+          const folder = String(box.processed_folder || '').trim();
+          if (!folder) {
+            await markSeen(message.uid);
+          } else {
+            try {
+              await moveToProcessedFolder(client, box, message.uid);
+            } catch (err) {
+              counts.moveErrors++;
+              lastMoveError = err;
+              // L'e-mail reste non lu : le prochain relevé retentera le déplacement.
+            }
+          }
+        } else if (result === 'ignored') {
+          counts.ignored++;
+          await markSeen(message.uid);
+        } else if (result === 'error') {
+          counts.errors++;
+          await markSeen(message.uid);
+        } else if (result === 'exists') {
+          const rec = db.prepare(
+            'SELECT status FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?'
+          ).get(box.id, String(message.uid));
+          if (rec && rec.status === 'processed') {
+            try {
+              await moveToProcessedFolder(client, box, message.uid);
+            } catch { /* ignore : retenté au relevé suivant */ }
+          } else {
+            await markSeen(message.uid);
+          }
         }
       }
+      if (lastMoveError) counts.moveError = lastMoveError;
     } finally {
       lock.release();
     }
@@ -523,16 +589,26 @@ async function scanBox(box) {
   } finally {
     client.close();
   }
+  return counts;
+}
+
+function recordBoxScan(box, counts) {
+  const status = counts.moveErrors > 0 ? 'error' : 'ok';
+  const error = counts.moveErrors > 0
+    ? `${counts.moveErrors} e-mail(s) traité(s) non déplacé(s) vers « ${box.processed_folder} »` +
+      (counts.moveError ? ` (${String(counts.moveError.message || counts.moveError).slice(0, 400)})` : '')
+    : null;
+  db.prepare('UPDATE mail2sms_boxes SET last_scan_at = ?, last_status = ?, last_error = ? WHERE id = ?')
+    .run(isoNow(), status, error, box.id);
 }
 
 async function scanBoxById(boxId) {
   const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(boxId));
   if (!box) throw new Error('Boîte mail2sms introuvable');
   if (!box.active) throw new Error('Boîte désactivée : activez-la avant de scanner');
-  await scanBox(box);
-  db.prepare('UPDATE mail2sms_boxes SET last_scan_at = ?, last_status = ?, last_error = NULL WHERE id = ?')
-    .run(isoNow(), 'ok', box.id);
-  return { ok: true, box: box.name };
+  const counts = await scanBox(box);
+  recordBoxScan(box, counts);
+  return { ok: true, box: box.name, processedFolder: box.processed_folder || 'SMS Traités', ...counts };
 }
 
 async function scanAll() {
@@ -544,9 +620,8 @@ async function scanAll() {
       const intervalMs = (Number(box.scan_interval_sec) || 60) * 1000;
       if (box.last_scan_at && Date.now() - Date.parse(box.last_scan_at) < intervalMs) continue;
       try {
-        await scanBox(box);
-        db.prepare('UPDATE mail2sms_boxes SET last_scan_at = ?, last_status = ?, last_error = NULL WHERE id = ?')
-          .run(isoNow(), 'ok', box.id);
+        const counts = await scanBox(box);
+        recordBoxScan(box, counts);
       } catch (err) {
         db.prepare('UPDATE mail2sms_boxes SET last_status = ?, last_error = ? WHERE id = ?')
           .run('error', String(err && err.message ? err.message : err).slice(0, 500), box.id);

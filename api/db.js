@@ -282,6 +282,7 @@ CREATE TABLE IF NOT EXISTS mail2sms_boxes (
   smtp_login        TEXT,
   smtp_password     TEXT,
   scan_interval_sec INTEGER NOT NULL DEFAULT 60,
+  processed_folder  TEXT    NOT NULL DEFAULT 'SMS Traités',
   active            INTEGER NOT NULL DEFAULT 1,
   last_scan_at      TEXT,
   last_status       TEXT,
@@ -389,6 +390,12 @@ const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c
 if (!attachmentCols.includes('expires_at')) {
   db.exec('ALTER TABLE attachments ADD COLUMN expires_at TEXT');
   db.exec("UPDATE attachments SET expires_at = datetime(created_at, '+90 days') WHERE expires_at IS NULL");
+}
+
+// Mail → SMS : dossier IMAP de destination des e-mails transformés en SMS.
+const m2sBoxCols = db.prepare('PRAGMA table_info(mail2sms_boxes)').all().map((c) => c.name);
+if (!m2sBoxCols.includes('processed_folder')) {
+  db.exec("ALTER TABLE mail2sms_boxes ADD COLUMN processed_folder TEXT NOT NULL DEFAULT 'SMS Traités'");
 }
 
 // Journal console : mémorise le navigateur/appareil du client pour distinguer
