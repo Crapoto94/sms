@@ -1399,6 +1399,24 @@ webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, (req, res) => {
   }
 });
 
+webApp.post('/admin/api/mail2sms/:id/test-smtp', requireAdmin, async (req, res) => {
+  try {
+    const result = await mail2sms.testSmtp(Number(req.params.id));
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+webApp.post('/admin/api/mail2sms/:id/retry-reply/:emailId', requireAdmin, (req, res) => {
+  const info = db.prepare(
+    'UPDATE mail2sms_emails SET reply_attempts = 0, reply_error = NULL WHERE id = ? AND box_id = ?'
+  ).run(Number(req.params.emailId), Number(req.params.id));
+  if (info.changes === 0) return res.status(404).json({ error: 'Compte-rendu introuvable' });
+  mail2sms.sendPendingReplies().catch(() => {});
+  res.json({ ok: true });
+});
+
 // ---------- Synchronisation de carnets (admin) ----------
 const REMOTE_TIMEOUT_MS = 15000;
 const syncRunning = { active: false };

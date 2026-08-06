@@ -996,6 +996,7 @@ function renderMail2SmsBoxes(boxes) {
         <td>${mail2smsStateBadge(b)}${b.last_error ? `<div class="muted" title="${esc(b.last_error)}">${esc(b.last_error)}</div>` : ''}</td>
         <td>
           <button data-m2s-test="${b.id}" class="ghost">Tester</button>
+          <button data-m2s-smtp="${b.id}" class="ghost">Tester SMTP</button>
           <button data-m2s-scan="${b.id}" class="ghost">Scanner</button>
           <button data-m2s-edit="${b.id}" class="ghost">Éditer</button>
           <button data-m2s-del="${b.id}" class="danger">Supprimer</button>
@@ -1016,7 +1017,9 @@ function renderMail2SmsEmails(emails) {
         <td>${e.reply_sent_at
             ? fmtDate(e.reply_sent_at)
             : (e.status === 'ignored' ? '—' : (e.reply_error
-                ? `<span class="muted" title="${esc(e.reply_error)}">échec (${e.reply_attempts})</span><div class="muted" style="white-space:normal;font-size:12px">${esc(String(e.reply_error).slice(0, 120))}${e.reply_error.length > 120 ? '…' : ''}</div>`
+                ? `<span class="muted" title="${esc(e.reply_error)}">échec (${e.reply_attempts})</span>
+                   <button data-m2s-retry-reply="${e.id}" data-m2s-box="${e.box_id}" class="ghost">Réessayer</button>
+                   <div class="muted" style="white-space:normal;font-size:12px">${esc(String(e.reply_error).slice(0, 120))}${e.reply_error.length > 120 ? '…' : ''}</div>`
                 : 'en attente'))}</td>
         <td class="muted">${esc(e.error || '')}</td>
       </tr>`).join('')
@@ -1127,6 +1130,7 @@ $('btnScanAllMail').addEventListener('click', async () => {
 
 $('mail2smsBoxesBody').addEventListener('click', async (e) => {
   const test = e.target.closest('[data-m2s-test]');
+  const smtp = e.target.closest('[data-m2s-smtp]');
   const scan = e.target.closest('[data-m2s-scan]');
   const edit = e.target.closest('[data-m2s-edit]');
   const del = e.target.closest('[data-m2s-del]');
@@ -1147,6 +1151,25 @@ $('mail2smsBoxesBody').addEventListener('click', async (e) => {
       showM2sResult('Test de connexion IMAP', lines.join('\n'));
     } catch (err) {
       showM2sResult(`Test de connexion IMAP — « ${name} »`, `Échec de la connexion :\n\n${err.message}`);
+    }
+  } else if (smtp) {
+    const box = mail2smsBoxes.find((b) => b.id === Number(smtp.dataset.m2sSmtp));
+    const name = box ? box.name : `boîte #${smtp.dataset.m2sSmtp}`;
+    showM2sResult(`Test SMTP — « ${name} »`, 'Test SMTP en cours…');
+    try {
+      const res = await api(`/admin/api/mail2sms/${smtp.dataset.m2sSmtp}/test-smtp`, { method: 'POST' });
+      const lines = [
+        `Test SMTP — boîte « ${name} »`,
+        '',
+        ...(res.results || []).map((r) => `${r.ok ? 'OK' : 'ÉCHEC'} — ${r.label}${r.error ? ` : ${r.error}` : ''}`),
+        '',
+        res.ok
+          ? 'Connexion SMTP fonctionnelle : le compte-rendu devrait partir.'
+          : 'Aucune variante ne répond : le port est probablement bloqué depuis ce serveur ou les identifiants sont invalides.'
+      ];
+      showM2sResult('Test SMTP', lines.join('\n'));
+    } catch (err) {
+      showM2sResult(`Test SMTP — « ${name} »`, `Échec du test :\n\n${err.message}`);
     }
   } else if (scan) {
     if (scan.dataset.m2sBusy) return;
@@ -1197,6 +1220,18 @@ $('mail2smsBoxesBody').addEventListener('click', async (e) => {
       loadMail2Sms();
     } catch (err) { alert(err.message); }
   }
+});
+
+$('mail2smsEmailsBody').addEventListener('click', async (e) => {
+  const retryReply = e.target.closest('[data-m2s-retry-reply]');
+  if (!retryReply) return;
+  const emailId = retryReply.dataset.m2sRetryReply;
+  const boxId = retryReply.dataset.m2sBox;
+  try {
+    await api(`/admin/api/mail2sms/${boxId}/retry-reply/${emailId}`, { method: 'POST' });
+    showM2sResult('Compte-rendu', 'Envoi du compte-rendu relancé. Le résultat apparaîtra dans le tableau des e-mails.');
+    loadMail2Sms();
+  } catch (err) { alert(err.message); }
 });
 
 // ---------- Comptes ----------

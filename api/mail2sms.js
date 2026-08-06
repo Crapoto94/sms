@@ -207,7 +207,11 @@ function bodyWithAttachments(body, attachments) {
 }
 
 // --- SMTP -------------------------------------------------------------------
-function smtpConfig(box) {
+// Timeouts courts par tentative : un port bloqué (ex. 465) fait échouer
+// rapidement avant d'essayer le port de repli.
+const SMTP_ATTEMPT_TIMEOUT_MS = 30000;
+
+function smtpBaseConfig(box) {
   let host = String(box.smtp_host || '').trim();
   const imapHost = String(box.imap_host || '').trim();
   if (!host) {
@@ -227,21 +231,82 @@ function smtpConfig(box) {
   };
 }
 
+// Variantes à tenter : certaines passerelles bloquent le port 465 mais laissent
+// passer 587 (STARTTLS), ou l'inverse. On déduplique par hôte/port/sécurité.
+function smtpCandidates(box) {
+  const base = smtpBaseConfig(box);
+  if (!base.host) return [];
+  const candidates = [];
+  const push = (cfg) => {
+    const dup = candidates.some((c) => c.host === cfg.host && c.port === cfg.port && c.secure === cfg.secure);
+    if (!dup) candidates.push(cfg);
+  };
+  push(base);
+  if (base.port !== 465) push({ ...base, port: 465, secure: true });
+  if (base.port !== 587) push({ ...base, port: 587, secure: false });
+  return candidates;
+}
+
+function smtpTransporter(cfg) {
+  return nodemailer.createTransport({
+    ...cfg,
+    connectionTimeout: SMTP_ATTEMPT_TIMEOUT_MS,
+    greetingTimeout: SMTP_ATTEMPT_TIMEOUT_MS,
+    socketTimeout: SMTP_ATTEMPT_TIMEOUT_MS
+  });
+}
+
+function smtpLabel(cfg) {
+  return `${cfg.host}:${cfg.port}${cfg.secure ? ' (TLS 465)' : ' (STARTTLS 587)'}`;
+}
+
 async function sendReplyMail(box, to, subject, text, html) {
-  const cfg = smtpConfig(box);
-  if (!cfg.host) throw new Error('Serveur SMTP non configuré');
-  const transporter = nodemailer.createTransport(cfg);
-  try {
-    await transporter.sendMail({
-      from: `"${box.name}" <${box.email}>`,
-      to,
-      subject,
-      text,
-      html
-    });
-  } finally {
-    transporter.close();
+  const candidates = smtpCandidates(box);
+  if (!candidates.length) throw new Error('Serveur SMTP non configuré');
+  const errors = [];
+  for (const cfg of candidates) {
+    const transporter = smtpTransporter(cfg);
+    try {
+      await transporter.sendMail({
+        from: `"${box.name}" <${box.email}>`,
+        to,
+        subject,
+        text,
+        html
+      });
+      return;
+    } catch (err) {
+      errors.push(`${smtpLabel(cfg)} — ${String(err && err.message ? err.message : err).slice(0, 300)}`);
+    } finally {
+      transporter.close();
+    }
   }
+  throw new Error(`Envoi impossible (${candidates.length} tentative(s)) : ${errors.join(' | ')}`);
+}
+
+async function testSmtp(boxId) {
+  const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(boxId));
+  if (!box) throw new Error('Boîte mail2sms introuvable');
+  const candidates = smtpCandidates(box);
+  if (!candidates.length) throw new Error('Serveur SMTP non configuré (aucun hôte)');
+  const results = [];
+  for (const cfg of candidates) {
+    const transporter = smtpTransporter(cfg);
+    try {
+      await transporter.verify();
+      results.push({ label: smtpLabel(cfg), ok: true });
+      return { ok: true, host: cfg.host, results };
+    } catch (err) {
+      results.push({
+        label: smtpLabel(cfg),
+        ok: false,
+        error: String(err && err.message ? err.message : err).slice(0, 300)
+      });
+    } finally {
+      transporter.close();
+    }
+  }
+  return { ok: false, results };
 }
 
 // --- Construction du compte-rendu -------------------------------------------
@@ -530,7 +595,12 @@ async function moveToProcessedFolder(client, box, uid) {
   const existing = await client.list();
   const found = (existing || []).some((m) => String(m.path) === folder);
   if (!found) await client.mailboxCreate(folder);
-  await client.messageMove(uid, folder, { uid: true });
+  // ImapFlow avale les erreurs serveur : messageMove renvoie false quand le
+  // serveur refuse le déplacement. On ne doit pas le considérer comme réussi.
+  const result = await client.messageMove(uid, folder, { uid: true });
+  if (!result) {
+    throw new Error(`Déplacement refusé par le serveur IMAP vers « ${folder} »`);
+  }
   return true;
 }
 
@@ -633,6 +703,36 @@ async function scanBox(box, progress) {
         push(`  E-mail ${handled} : déjà traité.`);
       }
     }
+
+    // Récupère les e-mails déjà enregistrés comme traités (relevés précédents
+    // interrompus avant le déplacement, ou déplacement refusé) qui sont encore
+    // physiquement dans la boîte de réception, et les déplace.
+    push('Vérification des e-mails déjà traités restés dans la boîte…');
+    let swept = 0;
+    let seenUids = [];
+    try {
+      seenUids = await client.search({ seen: true });
+    } catch (err) {
+      if (isDeadConnection(err)) throw err;
+    }
+    for (const uid of seenUids) {
+      if (swept >= MAX_SCAN_EMAILS) break;
+      const rec = db.prepare(
+        'SELECT status FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?'
+      ).get(box.id, String(uid));
+      if (!rec || !['processed', 'replied', 'replied_error'].includes(rec.status)) continue;
+      swept++;
+      try {
+        await moveToProcessedFolder(client, box, uid);
+        push(`  E-mail déjà traité (UID ${uid}) : déplacé vers « ${target || 'SMS Traités'} ».`);
+      } catch (err) {
+        if (isDeadConnection(err)) throw err;
+        counts.moveErrors++;
+        lastMoveError = lastMoveError || err;
+        push(`  E-mail déjà traité (UID ${uid}) : déplacement vers « ${target || 'SMS Traités'} » impossible.`);
+      }
+    }
+
     if (lastMoveError) counts.moveError = lastMoveError;
     push('Déconnexion…');
     if (client) await client.logout().catch(() => {});
@@ -885,6 +985,7 @@ module.exports = {
   getScanJob,
   sendPendingReplies,
   testBox,
+  testSmtp,
   start,
   stop
 };
