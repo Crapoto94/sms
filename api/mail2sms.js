@@ -200,7 +200,12 @@ function bodyWithAttachments(body, attachments) {
 
 // --- SMTP -------------------------------------------------------------------
 function smtpConfig(box) {
-  const host = String(box.smtp_host || box.imap_host || '').trim();
+  let host = String(box.smtp_host || '').trim();
+  const imapHost = String(box.imap_host || '').trim();
+  if (!host) {
+    // Boîtes Google : le serveur SMTP diffère du serveur IMAP.
+    host = /(^|\.)(gmail\.com|googlemail\.com)$/i.test(imapHost) ? 'smtp.gmail.com' : imapHost;
+  }
   const secure = box.smtp_secure != null ? Boolean(box.smtp_secure) : true;
   const port = box.smtp_port || (secure ? 465 : 587);
   return {
@@ -381,6 +386,17 @@ function imapConfig(box) {
   };
 }
 
+// Un client ImapFlow émet des événements 'error' (connexion coupée, serveur
+// inaccessible…) même hors d'un appel en attente : sans écouteur, Node lève
+// « Unhandled 'error' event » et fait planter tout le processus (le conteneur
+// redémarre et les sessions de la console sont perdues). L'écouteur neutralise
+// cette erreur ; les appels qui attendent une réponse reçoivent leur rejet.
+function newImapClient(box) {
+  const client = new ImapFlow(imapConfig(box));
+  client.on('error', () => {});
+  return client;
+}
+
 async function processMail(box, message) {
   const uid = String(message.uid);
   const exists = db.prepare('SELECT 1 FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?')
@@ -511,7 +527,7 @@ async function moveToProcessedFolder(client, box, uid) {
 }
 
 async function scanBox(box) {
-  const client = new ImapFlow(imapConfig(box));
+  const client = newImapClient(box);
   const counts = { processed: 0, ignored: 0, errors: 0, moveErrors: 0, remaining: false };
   const markSeen = (uid) => client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
   try {
@@ -638,7 +654,7 @@ let timers = [];
 async function testBox(boxId) {
   const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(boxId));
   if (!box) throw new Error('Boîte mail2sms introuvable');
-  const client = new ImapFlow(imapConfig(box));
+  const client = newImapClient(box);
   try {
     await client.connect();
     const lock = await client.getMailboxLock(String(box.imap_folder || 'INBOX'));

@@ -315,7 +315,20 @@ function logConsole(req, action, detail, count) {
 }
 
 // ---------- Sessions de l'interface web ----------
-const sessions = new Map(); // sid -> { exp, accountId|null, login, role, groupId|null, isAdmin }
+// Stockées en base (et non en mémoire) : un redémarrage du conteneur ou un
+// basculement de réplica ne déconnecte plus les utilisateurs de la console.
+db.exec(`
+CREATE TABLE IF NOT EXISTS web_sessions (
+  sid         TEXT    PRIMARY KEY,
+  account_id  INTEGER,
+  login       TEXT    NOT NULL,
+  role        TEXT    NOT NULL,
+  group_id    INTEGER,
+  exp         INTEGER NOT NULL,
+  created_at  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_exp ON web_sessions(exp);
+`);
 
 function parseCookies(req) {
   const out = {};
@@ -326,17 +339,52 @@ function parseCookies(req) {
   return out;
 }
 
-function sessionValid(req) {
-  const sid = parseCookies(req).sid;
-  const s = sessions.get(sid);
-  if (!s || s.exp < Date.now()) {
-    sessions.delete(sid);
+function loadSession(sid) {
+  if (!sid) return null;
+  const row = db.prepare('SELECT * FROM web_sessions WHERE sid = ?').get(sid);
+  if (!row) return null;
+  if (row.exp < Date.now()) {
+    db.prepare('DELETE FROM web_sessions WHERE sid = ?').run(sid);
     return null;
   }
+  return {
+    accountId: row.account_id,
+    login: row.login,
+    role: row.role,
+    groupId: row.group_id,
+    isAdmin: row.role === 'admin'
+  };
+}
+
+function saveSession(sid, session) {
+  db.prepare(`
+    INSERT INTO web_sessions (sid, account_id, login, role, group_id, exp, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(sid) DO UPDATE SET
+      account_id = excluded.account_id,
+      login      = excluded.login,
+      role       = excluded.role,
+      group_id   = excluded.group_id,
+      exp        = excluded.exp
+  `).run(
+    sid,
+    session.accountId || null,
+    session.login,
+    session.role,
+    session.groupId || null,
+    session.exp,
+    isoNow()
+  );
+  db.prepare('DELETE FROM web_sessions WHERE exp < ?').run(Date.now());
+}
+
+function sessionValid(req) {
+  const s = loadSession(parseCookies(req).sid);
+  if (!s) return null;
   if (s.accountId) {
     const acc = db.prepare('SELECT id FROM accounts WHERE id = ? AND disabled = 0').get(s.accountId);
     if (!acc) {
-      sessions.delete(sid);
+      db.prepare('DELETE FROM web_sessions WHERE sid = ?').run(parseCookies(req).sid);
       return null;
     }
   }
@@ -745,7 +793,7 @@ webApp.post('/admin/login', (req, res) => {
     groupId,
     isAdmin: role === 'admin'
   };
-  sessions.set(sid, session);
+  saveSession(sid, session);
   req.session = session;
   if (accountId) {
     db.prepare('UPDATE accounts SET last_login_at = ? WHERE id = ?').run(isoNow(), accountId);
@@ -773,7 +821,7 @@ webApp.get('/admin/api/session', requireSession, (req, res) => {
 });
 
 webApp.post('/admin/logout', (req, res) => {
-  sessions.delete(parseCookies(req).sid);
+  db.prepare('DELETE FROM web_sessions WHERE sid = ?').run(parseCookies(req).sid);
   res.json({ ok: true });
 });
 
@@ -1826,6 +1874,8 @@ webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
 
   if (req.session.accountId === id && body.groupId !== undefined) {
     req.session.groupId = Number(body.groupId) || null;
+    db.prepare('UPDATE web_sessions SET group_id = ? WHERE sid = ?')
+      .run(req.session.groupId, parseCookies(req).sid);
   }
   res.json({ ok: true });
 });
@@ -2462,3 +2512,10 @@ mail2sms.start();
 process.on('exit', () => mail2sms.stop());
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
+
+// Une rejet de promesse non rattaché (ex : erreur IMAP survenue après
+// l'interruption d'un relevé) ne doit pas faire planter la passerelle : on la
+// journalise et on continue.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+});

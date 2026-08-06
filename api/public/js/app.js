@@ -959,6 +959,14 @@ $('syncBooksBody').addEventListener('click', async (e) => {
 let mail2smsEditId = null;
 let mail2smsBoxes = [];
 
+function showM2sResult(title, text) {
+  $('m2sResultTitle').textContent = title;
+  $('m2sResultBody').textContent = text;
+  $('m2sResultModal').classList.remove('hidden');
+}
+
+$('btnCloseM2sResult').addEventListener('click', () => $('m2sResultModal').classList.add('hidden'));
+
 function mail2smsStateBadge(b) {
   if (!b.active) return badge('Désactivée', 'off');
   if (b.last_status === 'error') return badge('Erreur', 'failed');
@@ -1008,7 +1016,7 @@ function renderMail2SmsEmails(emails) {
         <td>${e.reply_sent_at
             ? fmtDate(e.reply_sent_at)
             : (e.status === 'ignored' ? '—' : (e.reply_error
-                ? `<span class="muted" title="${esc(e.reply_error)}">échec (${e.reply_attempts})</span>`
+                ? `<span class="muted" title="${esc(e.reply_error)}">échec (${e.reply_attempts})</span><div class="muted" style="white-space:normal;font-size:12px">${esc(String(e.reply_error).slice(0, 120))}${e.reply_error.length > 120 ? '…' : ''}</div>`
                 : 'en attente'))}</td>
         <td class="muted">${esc(e.error || '')}</td>
       </tr>`).join('')
@@ -1112,9 +1120,9 @@ $('btnCancelMailEdit').addEventListener('click', resetMail2SmsForm);
 $('btnScanAllMail').addEventListener('click', async () => {
   try {
     await api('/admin/api/mail2sms/scan-all', { method: 'POST' });
-    alert('Relevé déclenché pour toutes les boîtes actives.');
+    showM2sResult('Scanner toutes les boîtes', 'Relevé déclenché pour toutes les boîtes actives.\nLes résultats détaillés sont disponibles dans la colonne « État » de chaque boîte.');
     loadMail2Sms();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showM2sResult('Scanner toutes les boîtes', `Échec : ${e.message}`); }
 });
 
 $('mail2smsBoxesBody').addEventListener('click', async (e) => {
@@ -1123,21 +1131,47 @@ $('mail2smsBoxesBody').addEventListener('click', async (e) => {
   const edit = e.target.closest('[data-m2s-edit]');
   const del = e.target.closest('[data-m2s-del]');
   if (test) {
+    const box = mail2smsBoxes.find((b) => b.id === Number(test.dataset.m2sTest));
+    const name = box ? box.name : `boîte #${test.dataset.m2sTest}`;
     try {
       const res = await api(`/admin/api/mail2sms/${test.dataset.m2sTest}/test`, { method: 'POST' });
-      alert(`Connexion IMAP OK — ${res.messages} message(s), ${res.unseen} non lu(s).`);
-    } catch (err) { alert(err.message); }
+      const lines = [
+        `Test de connexion IMAP — boîte « ${name} »`,
+        '',
+        `Connexion : OK`,
+        `Messages dans « ${(box && box.imap_folder) || 'INBOX'} » : ${res.messages}`,
+        `Non lus : ${res.unseen}`,
+        '',
+        'Le test vérifie uniquement l\'accès à la boîte. Il ne moissonne rien et n\'envoie aucun SMS.'
+      ];
+      showM2sResult('Test de connexion IMAP', lines.join('\n'));
+    } catch (err) {
+      showM2sResult(`Test de connexion IMAP — « ${name} »`, `Échec de la connexion :\n\n${err.message}`);
+    }
   } else if (scan) {
+    const box = mail2smsBoxes.find((b) => b.id === Number(scan.dataset.m2sScan));
+    const name = box ? box.name : `boîte #${scan.dataset.m2sScan}`;
     try {
       const res = await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan`, { method: 'POST' });
-      const summary = [`Relevé de « ${res.box} » terminé :`,
-        `${res.processed || 0} traité(s)`, `${res.ignored || 0} ignoré(s)`, `${res.errors || 0} erreur(s)`].join(' ');
-      const extra = res.moveErrors > 0
-        ? ` — ${res.moveErrors} e-mail(s) non déplacé(s) vers « ${res.processed_folder || 'SMS Traités'} »`
-        : (res.remaining ? ' — d’autres e-mails restent à traiter (prochain relevé).' : '');
-      alert(summary + extra);
+      const lines = [
+        `Relevé de la boîte « ${name} »`,
+        '',
+        `Moissonnés et traités : ${res.processed || 0} e-mail(s)`,
+        `Ignorés (expéditeur non autorisé) : ${res.ignored || 0}`,
+        `En erreur : ${res.errors || 0}`,
+        `Non déplacés vers « ${res.processedFolder} » : ${res.moveErrors || 0}`,
+        '',
+        `E-mails traités déplacés vers le dossier IMAP « ${res.processedFolder} ».`,
+        res.remaining ? 'D\'autres e-mails restent à traiter : ils seront pris au prochain relevé.' : 'Aucun e-mail en attente.',
+        '',
+        'Rappel : ce relevé déclenche l\'envoi des SMS ; le compte-rendu est renvoyé à l\'expéditeur après le délai configuré.'
+      ];
+      showM2sResult('Relevé de la boîte', lines.join('\n'));
       loadMail2Sms();
-    } catch (err) { alert(err.message); loadMail2Sms(); }
+    } catch (err) {
+      showM2sResult(`Relevé de la boîte « ${name} »`, `Échec du relevé :\n\n${err.message}`);
+      loadMail2Sms();
+    }
   } else if (edit) {
     const box = mail2smsBoxes.find((b) => b.id === Number(edit.dataset.m2sEdit));
     if (box) fillMail2SmsForm(box);
