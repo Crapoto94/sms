@@ -6,11 +6,12 @@ const fs = require('fs');
 const express = require('express');
 const multer = require('multer');
 const db = require('./db');
+const mail2sms = require('./mail2sms');
 
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.40';
+const APP_VERSION = process.env.APP_VERSION || '1.41';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -1196,6 +1197,150 @@ webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
   res.json(rows);
 });
 
+// ---------- Mail → SMS (admin) ----------
+function mail2smsBoxFromBody(body, isCreate) {
+  const b = body || {};
+  const out = {
+    name: String(b.name || '').trim(),
+    email: String(b.email || '').trim().toLowerCase(),
+    imap_host: String(b.imapHost || '').trim(),
+    imap_port: parseInt(b.imapPort, 10) || 993,
+    imap_secure: b.imapSecure === false ? 0 : 1,
+    imap_folder: String(b.imapFolder || '').trim() || 'INBOX',
+    login: String(b.login || '').trim(),
+    allowed_senders: String(b.allowedSenders || '').trim(),
+    reply_enabled: b.replyEnabled === false ? 0 : 1,
+    reply_delay_min: Math.max(1, parseInt(b.replyDelayMin, 10) || 5),
+    reply_subject: String(b.replySubject || '').trim() || 'Re: ',
+    smtp_host: String(b.smtpHost || '').trim() || null,
+    smtp_port: parseInt(b.smtpPort, 10) || null,
+    smtp_secure: b.smtpSecure === false ? 0 : 1,
+    smtp_login: String(b.smtpLogin || '').trim() || null,
+    scan_interval_sec: Math.max(10, parseInt(b.scanIntervalSec, 10) || 60),
+    active: b.active === false ? 0 : 1
+  };
+  if (b.password !== undefined) out.password = String(b.password);
+  if (b.smtpPassword !== undefined) out.smtp_password = String(b.smtpPassword);
+  if (isCreate) {
+    if (!out.password) out.password = '';
+    if (out.smtp_password === undefined) out.smtp_password = '';
+  }
+  return out;
+}
+
+function mail2smsValidation(out, isCreate) {
+  if (!out.name) return 'Nom de la boîte requis';
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(out.email)) return 'Adresse e-mail de la boîte invalide';
+  if (!/^\S+$/.test(out.imap_host)) return 'Serveur IMAP requis (ex : imap.gmail.com)';
+  if (!out.login) return 'Identifiant de connexion requis';
+  if (isCreate && !out.password) return 'Mot de passe ou clé d\'application requis';
+  if (!out.allowed_senders) return 'Indiquez au moins un motif d\'expéditeur autorisé (ex : m*@ivry94.fr)';
+  return null;
+}
+
+const mail2smsBoxSelect = `
+  SELECT id, name, email, imap_host, imap_port, imap_secure, imap_folder, login,
+    allowed_senders, reply_enabled, reply_delay_min, reply_subject,
+    smtp_host, smtp_port, smtp_secure, smtp_login,
+    scan_interval_sec, active, last_scan_at, last_status, last_error, created_at,
+    CASE WHEN password IS NOT NULL AND password <> '' THEN 1 ELSE 0 END AS has_password,
+    CASE WHEN smtp_password IS NOT NULL AND smtp_password <> '' THEN 1 ELSE 0 END AS has_smtp_password
+  FROM mail2sms_boxes
+`;
+
+webApp.get('/admin/api/mail2sms', requireAdmin, (_req, res) => {
+  const boxes = db.prepare(`${mail2smsBoxSelect} ORDER BY id ASC`).all();
+  const emails = db.prepare(`
+    SELECT e.id, e.box_id, b.name AS box_name, e.message_uid, e.from_addr, e.subject,
+      e.received_at, e.processed_at, e.status, e.error, e.recipient_count, e.message_count,
+      e.reply_attempts, e.reply_sent_at, e.reply_error
+    FROM mail2sms_emails e JOIN mail2sms_boxes b ON b.id = e.box_id
+    ORDER BY e.id DESC LIMIT 50
+  `).all();
+  res.json({ boxes, emails });
+});
+
+webApp.post('/admin/api/mail2sms', requireAdmin, (req, res) => {
+  const box = mail2smsBoxFromBody(req.body, true);
+  const error = mail2smsValidation(box, true);
+  if (error) return res.status(400).json({ error });
+  const info = db.prepare(`
+    INSERT INTO mail2sms_boxes
+      (name, email, imap_host, imap_port, imap_secure, imap_folder, login, password,
+       allowed_senders, reply_enabled, reply_delay_min, reply_subject,
+       smtp_host, smtp_port, smtp_secure, smtp_login, smtp_password,
+       scan_interval_sec, active, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    box.name, box.email, box.imap_host, box.imap_port, box.imap_secure, box.imap_folder, box.login, box.password,
+    box.allowed_senders, box.reply_enabled, box.reply_delay_min, box.reply_subject,
+    box.smtp_host, box.smtp_port, box.smtp_secure, box.smtp_login, box.smtp_password,
+    box.scan_interval_sec, box.active, isoNow()
+  );
+  res.status(201).json({ id: info.lastInsertRowid });
+});
+
+webApp.patch('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
+  const box = mail2smsBoxFromBody(req.body, false);
+  // Mot de passe vide = conserve l'actuel
+  if (box.password === '') delete box.password;
+  if (box.smtp_password === '') delete box.smtp_password;
+  const error = mail2smsValidation({ ...existing, ...box }, false);
+  if (error) return res.status(400).json({ error });
+  const sets = [];
+  const params = [];
+  for (const key of ['name', 'email', 'imap_host', 'imap_port', 'imap_secure', 'imap_folder', 'login',
+    'password', 'allowed_senders', 'reply_enabled', 'reply_delay_min', 'reply_subject',
+    'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_login', 'smtp_password',
+    'scan_interval_sec', 'active']) {
+    if (!(key in box)) continue;
+    sets.push(`${key} = ?`);
+    params.push(box[key]);
+  }
+  if (sets.length === 0) return res.status(400).json({ error: 'Aucune modification demandée' });
+  params.push(id);
+  db.prepare(`UPDATE mail2sms_boxes SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  res.json({ ok: true });
+});
+
+webApp.delete('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const info = db.prepare('DELETE FROM mail2sms_boxes WHERE id = ?').run(id);
+  if (info.changes === 0) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
+  db.prepare('DELETE FROM mail2sms_emails WHERE box_id = ?').run(id);
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/mail2sms/:id/test', requireAdmin, async (req, res) => {
+  try {
+    const result = await mail2sms.testBox(Number(req.params.id));
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(502).json({ error: `Connexion IMAP impossible : ${err.message}` });
+  }
+});
+
+webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, async (req, res) => {
+  try {
+    const result = await mail2sms.scanBoxById(Number(req.params.id));
+    res.json({ ok: true, box: result.box });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, async (req, res) => {
+  try {
+    await mail2sms.scanAll();
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------- Synchronisation de carnets (admin) ----------
 const REMOTE_TIMEOUT_MS = 15000;
 const syncRunning = { active: false };
@@ -2310,3 +2455,9 @@ function cleanupExpiredAttachments() {
 
 setInterval(cleanupExpiredAttachments, 60 * 60 * 1000);
 cleanupExpiredAttachments();
+
+// Moissonnage des boîtes mail (mail → SMS) et envoi des compte-rendus.
+mail2sms.start();
+process.on('exit', () => mail2sms.stop());
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));

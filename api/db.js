@@ -261,6 +261,57 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_incoming_created ON incoming_messages(created_at);
+
+CREATE TABLE IF NOT EXISTS mail2sms_boxes (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  name              TEXT    NOT NULL,
+  email             TEXT    NOT NULL,
+  imap_host         TEXT    NOT NULL,
+  imap_port         INTEGER NOT NULL DEFAULT 993,
+  imap_secure       INTEGER NOT NULL DEFAULT 1,
+  imap_folder       TEXT    NOT NULL DEFAULT 'INBOX',
+  login             TEXT    NOT NULL,
+  password          TEXT    NOT NULL,
+  allowed_senders   TEXT    NOT NULL,
+  reply_enabled     INTEGER NOT NULL DEFAULT 1,
+  reply_delay_min   INTEGER NOT NULL DEFAULT 5,
+  reply_subject     TEXT    NOT NULL DEFAULT 'Re: ',
+  smtp_host         TEXT,
+  smtp_port         INTEGER,
+  smtp_secure       INTEGER,
+  smtp_login        TEXT,
+  smtp_password     TEXT,
+  scan_interval_sec INTEGER NOT NULL DEFAULT 60,
+  active            INTEGER NOT NULL DEFAULT 1,
+  last_scan_at      TEXT,
+  last_status       TEXT,
+  last_error        TEXT,
+  created_at        TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mail2sms_boxes_active ON mail2sms_boxes(active);
+
+CREATE TABLE IF NOT EXISTS mail2sms_emails (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  box_id          INTEGER NOT NULL,
+  message_uid     TEXT    NOT NULL,
+  message_id      TEXT,
+  from_addr       TEXT    NOT NULL,
+  subject         TEXT    NOT NULL,
+  received_at     TEXT    NOT NULL,
+  processed_at    TEXT    NOT NULL,
+  status          TEXT    NOT NULL DEFAULT 'processed',
+  error           TEXT,
+  recipient_count INTEGER NOT NULL DEFAULT 0,
+  message_count   INTEGER NOT NULL DEFAULT 0,
+  reply_attempts  INTEGER NOT NULL DEFAULT 0,
+  reply_sent_at   TEXT,
+  reply_error     TEXT,
+  UNIQUE (box_id, message_uid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mail2sms_emails_box   ON mail2sms_emails(box_id);
+CREATE INDEX IF NOT EXISTS idx_mail2sms_emails_reply ON mail2sms_emails(status, reply_sent_at);
 `);
 
 // Migrations : colonnes ajoutées sur des bases existantes (CREATE TABLE
@@ -316,7 +367,11 @@ if (!messageCols.includes('created_by_label')) {
 if (!messageCols.includes('fleet_check_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN fleet_check_id INTEGER');
 }
+if (!messageCols.includes('mail2sms_email_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN mail2sms_email_id INTEGER');
+}
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mail2sms_email_id ON messages(mail2sms_email_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');

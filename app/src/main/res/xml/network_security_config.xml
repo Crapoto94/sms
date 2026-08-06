@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Conserve l'autorisation de trafic en clair (APIs locales en http)
+         et ajoute la racine Sectigo R46 (pas encore distribuée sur tous les
+         smartphones) comme ancre de confiance. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/sectigo_r46_root" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

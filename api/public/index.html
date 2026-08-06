@@ -20,6 +20,7 @@
       <button class="tab" data-tab="books">Carnets</button>
       <button class="tab" data-tab="fleet">Vérification flotte</button>
       <button class="tab" data-tab="sync">Synchro carnets</button>
+      <button class="tab" data-tab="mail2sms">Mail → SMS</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="journal">Journal</button>
       <button class="tab" data-tab="accounts">Comptes</button>
@@ -218,6 +219,97 @@
       <div class="table-wrap"><table>
         <thead><tr><th>Source</th><th>Carnet local</th><th>Carnet distant</th><th>Contacts</th><th>Dernière synchro</th><th>État</th><th>Actions</th></tr></thead>
         <tbody id="syncBooksBody"></tbody>
+      </table></div>
+    </section>
+
+    <section id="mail2sms" class="panel hidden">
+      <div class="row">
+        <h2>Mail → SMS</h2>
+        <button id="btnScanAllMail" class="ghost">Scanner toutes les boîtes</button>
+      </div>
+      <p class="muted">Les boîtes configurées sont relevées en IMAP. Le <b>sujet</b> de l'e-mail devient le contenu du SMS, le <b>corps</b> contient les destinataires : des numéros de téléphone et/ou le nom d'un carnet d'adresses (ligne « carnet : <code>nom</code> », « #<code>nom</code> » ou le nom exact du carnet). Les pièces jointes sont conservées et un lien public est ajouté au SMS. Un compte-rendu est renvoyé à l'expéditeur après le délai configuré.</p>
+      <div class="composer">
+        <div>
+          <h3 id="mail2smsFormTitle">Nouvelle boîte mail</h3>
+          <label for="m2sName">Nom de la boîte</label>
+          <input id="m2sName" placeholder="ex : Mairie — SMS">
+          <label for="m2sEmail">Adresse e-mail</label>
+          <input id="m2sEmail" type="email" placeholder="ex : sms.mairie@ivry94.fr">
+          <label for="m2sLogin">Identifiant de connexion</label>
+          <input id="m2sLogin" autocomplete="off" placeholder="ex : sms.mairie@ivry94.fr">
+          <label for="m2sPassword">Mot de passe / clé d'application <span class="muted">(boîte Google : mot de passe applicatif)</span></label>
+          <input id="m2sPassword" type="password" autocomplete="new-password">
+          <label for="m2sImapHost">Serveur IMAP</label>
+          <input id="m2sImapHost" placeholder="ex : imap.gmail.com">
+          <div class="row" style="margin-top:8px">
+            <div style="min-width:100px">
+              <label for="m2sImapPort">Port</label>
+              <input id="m2sImapPort" type="number" value="993" style="width:100px">
+            </div>
+            <div style="min-width:150px">
+              <label for="m2sImapFolder">Dossier</label>
+              <input id="m2sImapFolder" value="INBOX">
+            </div>
+          </div>
+          <label style="margin-top:10px"><input id="m2sImapSecure" type="checkbox" style="width:auto" checked> Connexion sécurisée (SSL/TLS)</label>
+          <label for="m2sAllowed" style="margin-top:10px">Expéditeurs autorisés <span class="muted">(un motif par ligne, « * » autorisé)</span></label>
+          <textarea id="m2sAllowed" rows="3" placeholder="m*@ivry94.fr"></textarea>
+        </div>
+        <div>
+          <h3>Options</h3>
+          <label for="m2sScanInterval">Relevé toutes les (secondes)</label>
+          <input id="m2sScanInterval" type="number" value="60">
+          <label style="margin-top:10px"><input id="m2sActive" type="checkbox" style="width:auto" checked> Boîte active</label>
+          <label style="margin-top:10px"><input id="m2sReplyEnabled" type="checkbox" style="width:auto" checked> Renvoyer un compte-rendu à l'expéditeur</label>
+          <div class="row" style="margin-top:8px">
+            <div style="min-width:110px">
+              <label for="m2sReplyDelay">Compte-rendu après (min)</label>
+              <input id="m2sReplyDelay" type="number" value="5">
+            </div>
+            <div>
+              <label for="m2sReplySubject">Préfixe de l'objet</label>
+              <input id="m2sReplySubject" value="Re: ">
+            </div>
+          </div>
+          <h3 style="margin-top:16px">Serveur SMTP (réponses)</h3>
+          <p class="muted">Laisser vide pour réutiliser le serveur et les identifiants IMAP.</p>
+          <label for="m2sSmtpHost">Serveur SMTP</label>
+          <input id="m2sSmtpHost" placeholder="ex : smtp.gmail.com">
+          <div class="row" style="margin-top:8px">
+            <div style="min-width:100px">
+              <label for="m2sSmtpPort">Port</label>
+              <input id="m2sSmtpPort" type="number" style="width:100px" placeholder="465">
+            </div>
+            <div style="min-width:150px">
+              <label for="m2sSmtpLogin">Identifiant SMTP</label>
+              <input id="m2sSmtpLogin" autocomplete="off" placeholder="= identifiant IMAP">
+            </div>
+          </div>
+          <label style="margin-top:10px"><input id="m2sSmtpSecure" type="checkbox" style="width:auto" checked> Connexion sécurisée (SSL/TLS)</label>
+          <label for="m2sSmtpPassword" style="margin-top:8px">Mot de passe SMTP <span class="muted">(vide = mot de passe IMAP)</span></label>
+          <input id="m2sSmtpPassword" type="password" autocomplete="new-password">
+          <div class="row" style="margin-top:12px">
+            <button id="btnSaveMailBox">Ajouter la boîte</button>
+            <button id="btnCancelMailEdit" class="ghost hidden">Annuler l'édition</button>
+          </div>
+          <p id="mail2smsError" class="error"></p>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:24px">
+        <h3>Boîtes configurées</h3>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Nom</th><th>Adresse</th><th>Serveur IMAP</th><th>Expéditeurs autorisés</th><th>Dernier relevé</th><th>État</th><th>Actions</th></tr></thead>
+        <tbody id="mail2smsBoxesBody"></tbody>
+      </table></div>
+
+      <div class="row" style="margin-top:24px">
+        <h3>E-mails traités</h3>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Date</th><th>Boîte</th><th>Expéditeur</th><th>Sujet</th><th>SMS</th><th>Statut</th><th>Compte-rendu</th><th>Erreur</th></tr></thead>
+        <tbody id="mail2smsEmailsBody"></tbody>
       </table></div>
     </section>
 

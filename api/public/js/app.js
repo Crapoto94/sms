@@ -98,6 +98,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('books').classList.toggle('hidden', currentTab !== 'books');
     $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
     $('sync').classList.toggle('hidden', currentTab !== 'sync');
+    $('mail2sms').classList.toggle('hidden', currentTab !== 'mail2sms');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
@@ -112,6 +113,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (currentTab === 'books') loadBooks();
     if (currentTab === 'fleet') loadFleet();
     if (currentTab === 'sync') loadSync();
+    if (currentTab === 'mail2sms') loadMail2Sms();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'journal') loadJournal();
     if (currentTab === 'accounts') loadAccounts();
@@ -953,6 +955,193 @@ $('syncBooksBody').addEventListener('click', async (e) => {
   }
 });
 
+// ---------- Mail → SMS ----------
+let mail2smsEditId = null;
+let mail2smsBoxes = [];
+
+function mail2smsStateBadge(b) {
+  if (!b.active) return badge('Désactivée', 'off');
+  if (b.last_status === 'error') return badge('Erreur', 'failed');
+  return badge('Active', 'ok');
+}
+
+function mail2smsEmailBadge(s) {
+  const map = {
+    processed: ['Traité', 'ok'],
+    error: ['Erreur', 'failed'],
+    ignored: ['Ignoré', 'off'],
+    replied: ['Répondu', 'ok'],
+    replied_error: ['Répondu (erreur)', 'revoked']
+  };
+  const [label, cls] = map[s] || [s, 'off'];
+  return badge(label, cls);
+}
+
+function renderMail2SmsBoxes(boxes) {
+  $('mail2smsBoxesBody').innerHTML = boxes.length
+    ? boxes.map((b) => `<tr>
+        <td>${esc(b.name)}</td>
+        <td class="code">${esc(b.email)}</td>
+        <td class="code">${esc(b.imap_host)}:${b.imap_port}${b.imap_secure ? ' (TLS)' : ''}</td>
+        <td class="code">${esc(String(b.allowed_senders).split('\n').join(' · '))}</td>
+        <td>${b.last_scan_at ? fmtDate(b.last_scan_at) : '<span class="muted">jamais</span>'}</td>
+        <td>${mail2smsStateBadge(b)}${b.last_error ? `<div class="muted" title="${esc(b.last_error)}">${esc(b.last_error)}</div>` : ''}</td>
+        <td>
+          <button data-m2s-test="${b.id}" class="ghost">Tester</button>
+          <button data-m2s-scan="${b.id}" class="ghost">Scanner</button>
+          <button data-m2s-edit="${b.id}" class="ghost">Éditer</button>
+          <button data-m2s-del="${b.id}" class="danger">Supprimer</button>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Aucune boîte configurée. Ajoutez-en une ci-dessus.</td></tr>';
+}
+
+function renderMail2SmsEmails(emails) {
+  $('mail2smsEmailsBody').innerHTML = emails.length
+    ? emails.map((e) => `<tr>
+        <td>${fmtDate(e.received_at)}</td>
+        <td>${esc(e.box_name)}</td>
+        <td class="code">${esc(e.from_addr)}</td>
+        <td>${esc(e.subject)}</td>
+        <td>${e.recipient_count || 0} dest. / ${e.message_count || 0} SMS</td>
+        <td>${mail2smsEmailBadge(e.status)}</td>
+        <td>${e.reply_sent_at
+            ? fmtDate(e.reply_sent_at)
+            : (e.status === 'ignored' ? '—' : (e.reply_error
+                ? `<span class="muted" title="${esc(e.reply_error)}">échec (${e.reply_attempts})</span>`
+                : 'en attente'))}</td>
+        <td class="muted">${esc(e.error || '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="muted">Aucun e-mail traité pour le moment.</td></tr>';
+}
+
+async function loadMail2Sms() {
+  const data = await api('/admin/api/mail2sms');
+  mail2smsBoxes = data.boxes || [];
+  renderMail2SmsBoxes(mail2smsBoxes);
+  renderMail2SmsEmails(data.emails || []);
+}
+
+function resetMail2SmsForm() {
+  mail2smsEditId = null;
+  ['m2sName', 'm2sEmail', 'm2sLogin', 'm2sPassword', 'm2sImapHost', 'm2sAllowed', 'm2sSmtpHost', 'm2sSmtpPort', 'm2sSmtpLogin', 'm2sSmtpPassword', 'm2sReplySubject'].forEach((id) => { $(id).value = ''; });
+  $('m2sImapPort').value = '993';
+  $('m2sImapFolder').value = 'INBOX';
+  $('m2sScanInterval').value = '60';
+  $('m2sReplyDelay').value = '5';
+  $('m2sImapSecure').checked = true;
+  $('m2sActive').checked = true;
+  $('m2sReplyEnabled').checked = true;
+  $('m2sSmtpSecure').checked = true;
+  $('m2sFormTitle').textContent = 'Nouvelle boîte mail';
+  $('btnSaveMailBox').textContent = 'Ajouter la boîte';
+  $('btnCancelMailEdit').classList.add('hidden');
+  $('mail2smsError').textContent = '';
+}
+
+function fillMail2SmsForm(b) {
+  mail2smsEditId = b.id;
+  $('m2sName').value = b.name;
+  $('m2sEmail').value = b.email;
+  $('m2sLogin').value = b.login;
+  $('m2sPassword').value = '';
+  $('m2sImapHost').value = b.imap_host;
+  $('m2sImapPort').value = b.imap_port;
+  $('m2sImapFolder').value = b.imap_folder || 'INBOX';
+  $('m2sImapSecure').checked = !!b.imap_secure;
+  $('m2sAllowed').value = b.allowed_senders;
+  $('m2sScanInterval').value = b.scan_interval_sec;
+  $('m2sActive').checked = !!b.active;
+  $('m2sReplyEnabled').checked = !!b.reply_enabled;
+  $('m2sReplyDelay').value = b.reply_delay_min;
+  $('m2sReplySubject').value = b.reply_subject || 'Re: ';
+  $('m2sSmtpHost').value = b.smtp_host || '';
+  $('m2sSmtpPort').value = b.smtp_port || '';
+  $('m2sSmtpLogin').value = b.smtp_login || '';
+  $('m2sSmtpPassword').value = '';
+  $('m2sSmtpSecure').checked = b.smtp_secure !== 0;
+  $('m2sFormTitle').textContent = `Modifier la boîte « ${b.name} »`;
+  $('btnSaveMailBox').textContent = 'Enregistrer';
+  $('btnCancelMailEdit').classList.remove('hidden');
+  $('mail2smsError').textContent = '';
+}
+
+function mail2smsFormPayload() {
+  return {
+    name: $('m2sName').value.trim(),
+    email: $('m2sEmail').value.trim(),
+    login: $('m2sLogin').value.trim(),
+    password: $('m2sPassword').value,
+    imapHost: $('m2sImapHost').value.trim(),
+    imapPort: $('m2sImapPort').value,
+    imapFolder: $('m2sImapFolder').value.trim(),
+    imapSecure: $('m2sImapSecure').checked,
+    allowedSenders: $('m2sAllowed').value.trim(),
+    scanIntervalSec: $('m2sScanInterval').value,
+    active: $('m2sActive').checked,
+    replyEnabled: $('m2sReplyEnabled').checked,
+    replyDelayMin: $('m2sReplyDelay').value,
+    replySubject: $('m2sReplySubject').value,
+    smtpHost: $('m2sSmtpHost').value.trim(),
+    smtpPort: $('m2sSmtpPort').value,
+    smtpLogin: $('m2sSmtpLogin').value.trim(),
+    smtpPassword: $('m2sSmtpPassword').value,
+    smtpSecure: $('m2sSmtpSecure').checked
+  };
+}
+
+$('btnSaveMailBox').addEventListener('click', async () => {
+  $('mail2smsError').textContent = '';
+  try {
+    const payload = mail2smsFormPayload();
+    if (mail2smsEditId) {
+      await api(`/admin/api/mail2sms/${mail2smsEditId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    } else {
+      await api('/admin/api/mail2sms', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    resetMail2SmsForm();
+    loadMail2Sms();
+  } catch (e) { $('mail2smsError').textContent = e.message; }
+});
+
+$('btnCancelMailEdit').addEventListener('click', resetMail2SmsForm);
+
+$('btnScanAllMail').addEventListener('click', async () => {
+  try {
+    await api('/admin/api/mail2sms/scan-all', { method: 'POST' });
+    alert('Relevé déclenché pour toutes les boîtes actives.');
+    loadMail2Sms();
+  } catch (e) { alert(e.message); }
+});
+
+$('mail2smsBoxesBody').addEventListener('click', async (e) => {
+  const test = e.target.closest('[data-m2s-test]');
+  const scan = e.target.closest('[data-m2s-scan]');
+  const edit = e.target.closest('[data-m2s-edit]');
+  const del = e.target.closest('[data-m2s-del]');
+  if (test) {
+    try {
+      const res = await api(`/admin/api/mail2sms/${test.dataset.m2sTest}/test`, { method: 'POST' });
+      alert(`Connexion IMAP OK — ${res.messages} message(s), ${res.unseen} non lu(s).`);
+    } catch (err) { alert(err.message); }
+  } else if (scan) {
+    try {
+      const res = await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan`, { method: 'POST' });
+      alert(`Relevé de « ${res.box} » terminé.`);
+      loadMail2Sms();
+    } catch (err) { alert(err.message); loadMail2Sms(); }
+  } else if (edit) {
+    const box = mail2smsBoxes.find((b) => b.id === Number(edit.dataset.m2sEdit));
+    if (box) fillMail2SmsForm(box);
+  } else if (del) {
+    if (!confirm('Supprimer cette boîte et l\'historique des e-mails traités ?')) return;
+    try {
+      await api(`/admin/api/mail2sms/${del.dataset.m2sDel}`, { method: 'DELETE' });
+      loadMail2Sms();
+    } catch (err) { alert(err.message); }
+  }
+});
+
 // ---------- Comptes ----------
 let pendingAccountId = null;
 let pendingAccountEdit = false;
@@ -1704,6 +1893,7 @@ setInterval(() => {
   if (currentTab === 'gateways') loadGateways();
   if (currentTab === 'messages') loadMessages();
   if (currentTab === 'logs') loadLogs();
+  if (currentTab === 'mail2sms') loadMail2Sms();
   if (currentTab === 'books' && $('bookContacts').classList.contains('hidden')) loadBooks();
   if (currentTab === 'fleet') {
     loadFleetChecks();
