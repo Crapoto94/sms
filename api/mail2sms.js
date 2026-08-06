@@ -37,7 +37,15 @@ const MAX_REPLY_ATTEMPTS = 5;
 // Bornes le nombre d'e-mails traités par relevé : chaque relevé reste ainsi
 // rapide (pas de timeout 504 du proxy), le reste est pris au relevé suivant.
 const MAX_SCAN_EMAILS = parseInt(process.env.MAIL2SMS_MAX_PER_SCAN || '50', 10);
+// Timeouts de connexion / d'accueil (établissement de la connexion).
 const IMAP_TIMEOUT_MS = parseInt(process.env.MAIL2SMS_IMAP_TIMEOUT_MS || '120000', 10);
+// Timeout de socket : délai sans aucune donnée réseau avant fermeture. Doit être
+// nettement supérieur au traitement d'un e-mail (l'analyse locale laisse la
+// connexion inactive) : un relevé ne doit pas être tué par le timeout.
+const SCAN_SOCKET_TIMEOUT_MS = parseInt(process.env.MAIL2SMS_SOCKET_TIMEOUT_MS || '300000', 10);
+// Durée maximale pour le traitement d'un e-mail (récupération + analyse + déplacement).
+// En cas de dépassement, le relevé marque l'e-mail en erreur et passe au suivant.
+const MESSAGE_TIMEOUT_MS = parseInt(process.env.MAIL2SMS_MESSAGE_TIMEOUT_MS || '240000', 10);
 
 const PHONE_RE = /^\+?[0-9]{4,15}$/;
 
@@ -382,7 +390,7 @@ function imapConfig(box) {
     verifyOnly: false,
     connectionTimeout: IMAP_TIMEOUT_MS,
     greetingTimeout: IMAP_TIMEOUT_MS,
-    socketTimeout: IMAP_TIMEOUT_MS
+    socketTimeout: SCAN_SOCKET_TIMEOUT_MS
   };
 }
 
@@ -527,105 +535,198 @@ async function moveToProcessedFolder(client, box, uid) {
 }
 
 async function scanBox(box, progress) {
-  const client = newImapClient(box);
   const counts = { processed: 0, ignored: 0, errors: 0, moveErrors: 0, remaining: false };
   const push = typeof progress === 'function' ? progress : () => {};
-  const markSeen = (uid) => client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
+  const folder = String(box.imap_folder || 'INBOX');
+  const target = String(box.processed_folder || '').trim();
+
+  let client = null;
+  let lock = null;
+  const releaseLock = () => {
+    if (lock) { try { lock.release(); } catch { /* ignore */ } lock = null; }
+  };
+  const closeClient = () => {
+    if (client) { try { client.close(); } catch { /* ignore */ } client = null; }
+  };
+  const connectAndLock = async () => {
+    client = newImapClient(box);
+    await client.connect();
+    lock = await client.getMailboxLock(folder);
+  };
+
+  let lastMoveError = null;
   try {
     push(`Connexion à ${box.imap_host}…`);
-    await client.connect();
+    await connectAndLock();
     push('Connexion : OK.');
-    const folder = String(box.imap_folder || 'INBOX');
-    push(`Ouverture du dossier « ${folder} »…`);
-    const lock = await client.getMailboxLock(folder);
-    try {
-      push(`Dossier « ${folder} » : OK.`);
-      push('Vérification des messages…');
-      const unseenUids = await client.search({ seen: false });
-      const messageCount = unseenUids.length;
-      push(messageCount === 0
-        ? 'Aucun message non lu : rien à traiter.'
-        : `${messageCount} message(s) non lu(s)` +
-          (messageCount > MAX_SCAN_EMAILS ? ` — seuls les ${MAX_SCAN_EMAILS} premiers seront traités.` : '.'));
-      let handled = 0;
-      let lastMoveError = null;
-      for await (const message of client.fetch({ seen: false }, {
-        envelope: true,
-        uid: true,
-        internalDate: true,
-        source: true
-      })) {
-        if (handled >= MAX_SCAN_EMAILS) {
-          counts.remaining = true;
-          break;
-        }
-        handled++;
-        push(`  Traitement de l'e-mail ${handled}…`);
-        let result;
-        try {
-          result = await processMail(box, message);
-        } catch (err) {
-          counts.errors++;
-          try {
-            db.prepare(`
-              INSERT INTO mail2sms_emails
-                (box_id, message_uid, message_id, from_addr, subject, received_at, processed_at, status, error)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?)
-            `).run(box.id, String(message.uid), '', '', '', isoNow(), isoNow(),
-              `Traitement impossible : ${String(err && err.message ? err.message : err).slice(0, 500)}`);
-          } catch { /* ignore */ }
-          await markSeen(message.uid);
-          push(`  E-mail ${handled} : erreur de traitement (${String(err && err.message ? err.message : err).slice(0, 200)}).`);
-          continue;
-        }
+    push(`Dossier « ${folder} » : OK.`);
+    push('Vérification des messages…');
 
-        if (result === 'processed') {
-          counts.processed++;
-          const target = String(box.processed_folder || '').trim();
-          if (!target) {
-            await markSeen(message.uid);
-          } else {
-            try {
-              await moveToProcessedFolder(client, box, message.uid);
-              push(`  E-mail ${handled} : SMS créés, déplacé vers « ${target} ».`);
-            } catch (err) {
-              counts.moveErrors++;
-              lastMoveError = err;
-              // L'e-mail reste non lu : le prochain relevé retentera le déplacement.
-              push(`  E-mail ${handled} : SMS créés mais déplacement vers « ${target} » impossible (retenté au prochain relevé).`);
-            }
-          }
-        } else if (result === 'ignored') {
-          counts.ignored++;
-          await markSeen(message.uid);
-          push(`  E-mail ${handled} : expéditeur non autorisé (ignoré).`);
-        } else if (result === 'error') {
-          counts.errors++;
-          await markSeen(message.uid);
-          push(`  E-mail ${handled} : erreur (détail dans le tableau « E-mails traités »).`);
-        } else if (result === 'exists') {
-          const rec = db.prepare(
-            'SELECT status FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?'
-          ).get(box.id, String(message.uid));
-          if (rec && rec.status === 'processed') {
-            try {
-              await moveToProcessedFolder(client, box, message.uid);
-            } catch { /* ignore : retenté au relevé suivant */ }
-          } else {
-            await markSeen(message.uid);
+    const unseenUids = await client.search({ seen: false });
+    const messageCount = unseenUids.length;
+    push(messageCount === 0
+      ? 'Aucun message non lu : rien à traiter.'
+      : `${messageCount} message(s) non lu(s).`);
+    const toProcess = unseenUids.slice(0, MAX_SCAN_EMAILS);
+    if (messageCount > MAX_SCAN_EMAILS) {
+      counts.remaining = true;
+      push(`Seuls les ${MAX_SCAN_EMAILS} premiers seront traités.`);
+    }
+
+    let handled = 0;
+    for (const uid of toProcess) {
+      handled++;
+      push(`  Traitement de l'e-mail ${handled}…`);
+      let outcome;
+      try {
+        outcome = await withTimeout(
+          processMessage(client, box, uid),
+          MESSAGE_TIMEOUT_MS,
+          `Traitement de l'e-mail ${handled}`
+        );
+      } catch (err) {
+        const dead = isDeadConnection(err) || err.code === 'M2STimeout';
+        counts.errors++;
+        recordProcessError(box, uid, dead
+          ? `Connexion perdue pendant le traitement (${String(err && err.message ? err.message : err).slice(0, 200)})`
+          : String(err && err.message ? err.message : err).slice(0, 500));
+        push(`  E-mail ${handled} : ${dead
+          ? 'connexion perdue, reconnexion…'
+          : `erreur (${String(err && err.message ? err.message : err).slice(0, 200)})`}`);
+        if (dead) {
+          // La connexion n'est plus fiable : on la ferme et on repart sur une
+          // connexion neuve pour les e-mails restants.
+          releaseLock();
+          closeClient();
+          try {
+            await connectAndLock();
+            push('  Reconnexion : OK.');
+          } catch (e2) {
+            counts.errors += toProcess.length - handled;
+            push(`  Reconnexion impossible : ${String(e2 && e2.message ? e2.message : e2).slice(0, 200)}. Relevé interrompu.`);
+            break;
           }
         }
+        continue;
       }
-      if (lastMoveError) counts.moveError = lastMoveError;
-    } finally {
-      lock.release();
+
+      if (!outcome || outcome.status === 'gone') {
+        push(`  E-mail ${handled} : disparu (supprimé depuis le relevé), ignoré.`);
+        continue;
+      }
+      if (outcome.status === 'processed') {
+        counts.processed++;
+        if (outcome.moveError) {
+          counts.moveErrors++;
+          lastMoveError = outcome.moveError;
+          push(`  E-mail ${handled} : SMS créés mais déplacement vers « ${target || 'SMS Traités'} » impossible (retenté au prochain relevé).`);
+        } else {
+          push(`  E-mail ${handled} : SMS créés${target ? `, déplacé vers « ${target} »` : ''}.`);
+        }
+      } else if (outcome.status === 'ignored') {
+        counts.ignored++;
+        push(`  E-mail ${handled} : expéditeur non autorisé (ignoré).`);
+      } else if (outcome.status === 'error') {
+        counts.errors++;
+        push(`  E-mail ${handled} : erreur (détail dans le tableau « E-mails traités »).`);
+      } else if (outcome.status === 'exists') {
+        push(`  E-mail ${handled} : déjà traité.`);
+      }
     }
+    if (lastMoveError) counts.moveError = lastMoveError;
     push('Déconnexion…');
-    await client.logout();
+    if (client) await client.logout().catch(() => {});
   } finally {
-    client.close();
+    releaseLock();
+    closeClient();
   }
   return counts;
+}
+
+// --- Traitement d'un e-mail (une connexion vivante à la fois) ----------------
+// Récupère l'e-mail par son UID, le traite puis le déplace / le marque vu.
+// Chaque opération est une commande IMAP courte (aucune commande FETCH laissée
+// en attente pendant l'analyse locale) : la connexion reste saine et un e-mail
+// lent ou invalide n'entraîne plus la perte du relevé entier.
+async function processMessage(client, box, uid) {
+  const message = await client.fetchOne(uid, {
+    uid: true,
+    envelope: true,
+    internalDate: true,
+    source: true
+  });
+  if (!message) return { status: 'gone' };
+
+  let result;
+  try {
+    result = await processMail(box, message);
+  } catch (err) {
+    if (isDeadConnection(err)) throw err;
+    recordProcessError(box, uid,
+      `Traitement impossible : ${String(err && err.message ? err.message : err).slice(0, 500)}`);
+    await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
+    return { status: 'error' };
+  }
+
+  const target = String(box.processed_folder || '').trim();
+  if (result === 'processed') {
+    if (!target) {
+      await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+    } else {
+      try {
+        await moveToProcessedFolder(client, box, uid);
+      } catch (err) {
+        if (isDeadConnection(err)) throw err;
+        // L'e-mail reste non lu : le prochain relevé retentera le déplacement.
+        return { status: 'processed', moveError: err };
+      }
+    }
+  } else if (result === 'ignored' || result === 'error') {
+    await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+  } else if (result === 'exists') {
+    const rec = db.prepare(
+      'SELECT status FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?'
+    ).get(box.id, String(uid));
+    if (rec && rec.status === 'processed') {
+      try {
+        await moveToProcessedFolder(client, box, uid);
+      } catch (err) {
+        if (isDeadConnection(err)) throw err;
+        // retenté au relevé suivant
+      }
+    } else {
+      await client.messageFlagsAdd(uid, ['\\Seen'], { uid: true });
+    }
+  }
+  return { status: result };
+}
+
+function recordProcessError(box, uid, error) {
+  try {
+    db.prepare(`
+      INSERT INTO mail2sms_emails
+        (box_id, message_uid, message_id, from_addr, subject, received_at, processed_at, status, error)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'error', ?)
+    `).run(box.id, String(uid), '', '', '', isoNow(), isoNow(), String(error).slice(0, 500));
+  } catch { /* ignore */ }
+}
+
+function isDeadConnection(err) {
+  if (!err) return false;
+  return err.code === 'NoConnection' || err.code === 'ETIMEOUT' || err.code === 'EConnectionClosed' ||
+    /Connection not available|Socket timeout|Unexpected close/i.test(String(err.message));
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label || 'Opération'} trop longue (> ${Math.round(ms / 1000)} s)`);
+      err.code = 'M2STimeout';
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // --- Relevés en arrière-plan avec progression --------------------------------
