@@ -526,14 +526,27 @@ async function moveToProcessedFolder(client, box, uid) {
   return true;
 }
 
-async function scanBox(box) {
+async function scanBox(box, progress) {
   const client = newImapClient(box);
   const counts = { processed: 0, ignored: 0, errors: 0, moveErrors: 0, remaining: false };
+  const push = typeof progress === 'function' ? progress : () => {};
   const markSeen = (uid) => client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }).catch(() => {});
   try {
+    push(`Connexion à ${box.imap_host}…`);
     await client.connect();
-    const lock = await client.getMailboxLock(String(box.imap_folder || 'INBOX'));
+    push('Connexion : OK.');
+    const folder = String(box.imap_folder || 'INBOX');
+    push(`Ouverture du dossier « ${folder} »…`);
+    const lock = await client.getMailboxLock(folder);
     try {
+      push(`Dossier « ${folder} » : OK.`);
+      push('Vérification des messages…');
+      const unseenUids = await client.search({ seen: false });
+      const messageCount = unseenUids.length;
+      push(messageCount === 0
+        ? 'Aucun message non lu : rien à traiter.'
+        : `${messageCount} message(s) non lu(s)` +
+          (messageCount > MAX_SCAN_EMAILS ? ` — seuls les ${MAX_SCAN_EMAILS} premiers seront traités.` : '.'));
       let handled = 0;
       let lastMoveError = null;
       for await (const message of client.fetch({ seen: false }, {
@@ -547,6 +560,7 @@ async function scanBox(box) {
           break;
         }
         handled++;
+        push(`  Traitement de l'e-mail ${handled}…`);
         let result;
         try {
           result = await processMail(box, message);
@@ -561,29 +575,34 @@ async function scanBox(box) {
               `Traitement impossible : ${String(err && err.message ? err.message : err).slice(0, 500)}`);
           } catch { /* ignore */ }
           await markSeen(message.uid);
+          push(`  E-mail ${handled} : erreur de traitement (${String(err && err.message ? err.message : err).slice(0, 200)}).`);
           continue;
         }
 
         if (result === 'processed') {
           counts.processed++;
-          const folder = String(box.processed_folder || '').trim();
-          if (!folder) {
+          const target = String(box.processed_folder || '').trim();
+          if (!target) {
             await markSeen(message.uid);
           } else {
             try {
               await moveToProcessedFolder(client, box, message.uid);
+              push(`  E-mail ${handled} : SMS créés, déplacé vers « ${target} ».`);
             } catch (err) {
               counts.moveErrors++;
               lastMoveError = err;
               // L'e-mail reste non lu : le prochain relevé retentera le déplacement.
+              push(`  E-mail ${handled} : SMS créés mais déplacement vers « ${target} » impossible (retenté au prochain relevé).`);
             }
           }
         } else if (result === 'ignored') {
           counts.ignored++;
           await markSeen(message.uid);
+          push(`  E-mail ${handled} : expéditeur non autorisé (ignoré).`);
         } else if (result === 'error') {
           counts.errors++;
           await markSeen(message.uid);
+          push(`  E-mail ${handled} : erreur (détail dans le tableau « E-mails traités »).`);
         } else if (result === 'exists') {
           const rec = db.prepare(
             'SELECT status FROM mail2sms_emails WHERE box_id = ? AND message_uid = ?'
@@ -601,11 +620,82 @@ async function scanBox(box) {
     } finally {
       lock.release();
     }
+    push('Déconnexion…');
     await client.logout();
   } finally {
     client.close();
   }
   return counts;
+}
+
+// --- Relevés en arrière-plan avec progression --------------------------------
+// Un relevé déclenché depuis la console s'exécute en arrière-plan : la requête
+// HTTP répond immédiatement et le JS interroge l'état du job (lignes de
+// progression) via GET /admin/api/mail2sms/:id/scan-status. Sans cela, un relevé
+// long dépasse le timeout du proxy (504) et la boîte de dialogue ne reçoit rien.
+const scanJobs = new Map();
+
+function createScanJob(box) {
+  const job = {
+    boxId: box.id,
+    boxName: box.name,
+    processedFolder: box.processed_folder || 'SMS Traités',
+    startedAt: isoNow(),
+    status: 'running',
+    lines: [],
+    counts: null,
+    error: null
+  };
+  scanJobs.set(box.id, job);
+  return job;
+}
+
+function getScanJob(boxId) {
+  const job = scanJobs.get(Number(boxId));
+  if (!job) return null;
+  return {
+    boxId: job.boxId,
+    boxName: job.boxName,
+    processedFolder: job.processedFolder,
+    startedAt: job.startedAt,
+    status: job.status,
+    lines: job.lines.slice(),
+    counts: job.counts,
+    error: job.error
+  };
+}
+
+async function runScanJob(job, box) {
+  job.lines.push(`Démarrage du relevé de « ${box.name} »…`);
+  try {
+    const counts = await scanBox(box, (line) => job.lines.push(String(line)));
+    recordBoxScan(box, counts);
+    job.counts = counts;
+    job.status = 'done';
+    job.lines.push(`Relevé terminé : ${counts.processed} traité(s), ${counts.ignored} ignoré(s), ` +
+      `${counts.errors} en erreur, ${counts.moveErrors} non déplacé(s).`);
+  } catch (err) {
+    job.status = 'error';
+    job.error = String(err && err.message ? err.message : err).slice(0, 500);
+    db.prepare('UPDATE mail2sms_boxes SET last_status = ?, last_error = ? WHERE id = ?')
+      .run('error', job.error, box.id);
+    job.lines.push(`Erreur : ${job.error}`);
+  }
+}
+
+function startScanJob(boxId) {
+  const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(boxId));
+  if (!box) throw new Error('Boîte mail2sms introuvable');
+  if (!box.active) throw new Error('Boîte désactivée : activez-la avant de scanner');
+  const running = scanJobs.get(box.id);
+  if (running && running.status === 'running') return getScanJob(box.id);
+  const job = createScanJob(box);
+  runScanJob(job, box).catch((err) => {
+    job.status = 'error';
+    job.error = String(err && err.message ? err.message : err).slice(0, 500);
+    job.lines.push(`Erreur : ${job.error}`);
+  });
+  return getScanJob(box.id);
 }
 
 function recordBoxScan(box, counts) {
@@ -618,13 +708,8 @@ function recordBoxScan(box, counts) {
     .run(isoNow(), status, error, box.id);
 }
 
-async function scanBoxById(boxId) {
-  const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(boxId));
-  if (!box) throw new Error('Boîte mail2sms introuvable');
-  if (!box.active) throw new Error('Boîte désactivée : activez-la avant de scanner');
-  const counts = await scanBox(box);
-  recordBoxScan(box, counts);
-  return { ok: true, box: box.name, processedFolder: box.processed_folder || 'SMS Traités', ...counts };
+function startScanAll() {
+  scanAll().catch(() => {});
 }
 
 async function scanAll() {
@@ -635,12 +720,19 @@ async function scanAll() {
     for (const box of boxes) {
       const intervalMs = (Number(box.scan_interval_sec) || 60) * 1000;
       if (box.last_scan_at && Date.now() - Date.parse(box.last_scan_at) < intervalMs) continue;
+      const existing = scanJobs.get(box.id);
+      if (existing && existing.status === 'running') continue;
+      const job = createScanJob(box);
       try {
-        const counts = await scanBox(box);
+        const counts = await scanBox(box, (line) => job.lines.push(String(line)));
         recordBoxScan(box, counts);
+        job.counts = counts;
+        job.status = 'done';
       } catch (err) {
+        job.status = 'error';
+        job.error = String(err && err.message ? err.message : err).slice(0, 500);
         db.prepare('UPDATE mail2sms_boxes SET last_status = ?, last_error = ? WHERE id = ?')
-          .run('error', String(err && err.message ? err.message : err).slice(0, 500), box.id);
+          .run('error', job.error, box.id);
       }
     }
   } finally {
@@ -687,7 +779,9 @@ function stop() {
 
 module.exports = {
   scanAll,
-  scanBoxById,
+  startScanAll,
+  startScanJob,
+  getScanJob,
   sendPendingReplies,
   testBox,
   start,

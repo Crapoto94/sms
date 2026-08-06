@@ -1149,28 +1149,43 @@ $('mail2smsBoxesBody').addEventListener('click', async (e) => {
       showM2sResult(`Test de connexion IMAP — « ${name} »`, `Échec de la connexion :\n\n${err.message}`);
     }
   } else if (scan) {
+    if (scan.dataset.m2sBusy) return;
+    scan.dataset.m2sBusy = '1';
     const box = mail2smsBoxes.find((b) => b.id === Number(scan.dataset.m2sScan));
     const name = box ? box.name : `boîte #${scan.dataset.m2sScan}`;
+    const lines = [`Relevé de la boîte « ${name} »`, ''];
+    const renderLines = () => { $('m2sResultBody').textContent = lines.join('\n'); };
+    showM2sResult('Relevé de la boîte', lines.join('\n'));
+    renderLines();
     try {
-      const res = await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan`, { method: 'POST' });
-      const lines = [
-        `Relevé de la boîte « ${name} »`,
-        '',
-        `Moissonnés et traités : ${res.processed || 0} e-mail(s)`,
-        `Ignorés (expéditeur non autorisé) : ${res.ignored || 0}`,
-        `En erreur : ${res.errors || 0}`,
-        `Non déplacés vers « ${res.processedFolder} » : ${res.moveErrors || 0}`,
-        '',
-        `E-mails traités déplacés vers le dossier IMAP « ${res.processedFolder} ».`,
-        res.remaining ? 'D\'autres e-mails restent à traiter : ils seront pris au prochain relevé.' : 'Aucun e-mail en attente.',
-        '',
-        'Rappel : ce relevé déclenche l\'envoi des SMS ; le compte-rendu est renvoyé à l\'expéditeur après le délai configuré.'
-      ];
-      showM2sResult('Relevé de la boîte', lines.join('\n'));
+      await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan`, { method: 'POST' });
+      const started = Date.now();
+      let finished = false;
+      while (!finished && Date.now() - started < 30 * 60 * 1000) {
+        await new Promise((r) => setTimeout(r, 1000));
+        let job;
+        try {
+          job = await api(`/admin/api/mail2sms/${scan.dataset.m2sScan}/scan-status`);
+        } catch (err) {
+          lines.push(`Erreur du suivi : ${err.message}`);
+          break;
+        }
+        if (job && Array.isArray(job.lines) && job.lines.length) {
+          lines.length = 2;
+          lines.push(...job.lines);
+          renderLines();
+        }
+        if (job && (job.status === 'done' || job.status === 'error')) finished = true;
+      }
+      if (!finished) lines.push('Le relevé continue en arrière-plan ; l\'état de la boîte sera mis à jour.');
+      renderLines();
       loadMail2Sms();
     } catch (err) {
-      showM2sResult(`Relevé de la boîte « ${name} »`, `Échec du relevé :\n\n${err.message}`);
+      lines.push(`Échec du déclenchement : ${err.message}`);
+      renderLines();
       loadMail2Sms();
+    } finally {
+      delete scan.dataset.m2sBusy;
     }
   } else if (edit) {
     const box = mail2smsBoxes.find((b) => b.id === Number(edit.dataset.m2sEdit));

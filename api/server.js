@@ -1372,18 +1372,27 @@ webApp.post('/admin/api/mail2sms/:id/test', requireAdmin, async (req, res) => {
   }
 });
 
-webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, async (req, res) => {
+webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, (req, res) => {
   try {
-    const result = await mail2sms.scanBoxById(Number(req.params.id));
-    res.json({ ok: true, box: result.box, ...result });
+    // Le relevé s'exécute en arrière-plan : la requête répond immédiatement
+    // (pas de timeout 504 du proxy) et le JS suit la progression via
+    // GET /admin/api/mail2sms/:id/scan-status.
+    const job = mail2sms.startScanJob(Number(req.params.id));
+    res.json({ ok: true, ...job });
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
 });
 
-webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, async (req, res) => {
+webApp.get('/admin/api/mail2sms/:id/scan-status', requireAdmin, (req, res) => {
+  const job = mail2sms.getScanJob(Number(req.params.id));
+  if (!job) return res.status(404).json({ error: 'Aucun relevé en cours ou terminé pour cette boîte' });
+  res.json(job);
+});
+
+webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, (req, res) => {
   try {
-    await mail2sms.scanAll();
+    mail2sms.startScanAll();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
