@@ -5,10 +5,11 @@ plugins {
 
 val versionCounterFile = file("version-counter.txt")
 
-fun nextBuildNumber(): Int {
-    val current = versionCounterFile.readText().trim().toIntOrNull() ?: 1
-    versionCounterFile.writeText((current + 1).toString())
-    return current
+// La version de l'APK doit rester alignée sur celle de l'interface web (APP_VERSION
+// dans api/server.js). Le compteur n'est donc PAS incrémenté automatiquement : on le
+// règle à la main, en même temps que la version web.
+fun currentBuildNumber(): Int {
+    return versionCounterFile.readText().trim().toIntOrNull() ?: 1
 }
 
 android {
@@ -19,7 +20,7 @@ android {
         applicationId = "com.example.smsgateway"
         minSdk = 26
         targetSdk = 35
-        val buildNumber = nextBuildNumber()
+        val buildNumber = currentBuildNumber()
         versionCode = buildNumber
         versionName = "1.$buildNumber"
     }

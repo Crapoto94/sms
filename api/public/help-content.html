@@ -12,12 +12,13 @@
         <a href="#help-cycle">6 · Vie d'un message</a>
         <a href="#help-blacklist">7 · La liste noire</a>
         <a href="#help-flotte">8 · Vérification de flotte</a>
-        <a href="#help-roles">9 · Les rôles</a>
-        <a href="#help-user">10 · L'utilisateur</a>
-        <a href="#help-admin">11 · L'administrateur</a>
-        <a href="#help-matrice">12 · Matrice des droits</a>
-        <a href="#help-glossaire">13 · Glossaire</a>
-        <a href="#help-depannage">14 · Dépannage</a>
+        <a href="#help-mail2sms">9 · Mail vers SMS</a>
+        <a href="#help-roles">10 · Qui fait quoi — les rôles</a>
+        <a href="#help-user">11 · L'utilisateur</a>
+        <a href="#help-admin">12 · L'administrateur</a>
+        <a href="#help-matrice">13 · Matrice des droits</a>
+        <a href="#help-glossaire">14 · Glossaire</a>
+        <a href="#help-depannage">15 · Dépannage</a>
       </nav>
 
       <article class="help-block" id="help-principe">
@@ -627,8 +628,43 @@
         </ul>
       </article>
 
+      <article class="help-block" id="help-mail2sms">
+        <h3>9 · Mail vers SMS : transformer un e-mail en SMS</h3>
+        <p>
+          L'onglet <em>Mail → SMS</em> permet de déclarer des <strong>boîtes mail</strong> (IMAP) que la passerelle
+          surveille régulièrement. Un e-mail reçu sur une boîte active, s'il provient d'un <strong>expéditeur
+          autorisé</strong> et respecte le format décrit ci-dessous, est transformé en SMS envoyé par les téléphones
+          de la flotte. Quelques minutes plus tard, un <strong>compte-rendu</strong> est renvoyé par e-mail à
+          l'expéditeur.
+        </p>
+
+        <h4 class="help-sub">Le format attendu</h4>
+        <ul class="help-list">
+          <li><b>Le sujet de l'e-mail devient le contenu du SMS.</b> 1000 caractères maximum ; au-delà, l'e-mail est refusé et l'expéditeur reçoit un compte-rendu d'erreur.</li>
+          <li><b>Le corps indique les destinataires.</b> Des numéros de téléphone (un par ligne, ou séparés par des espaces, virgules ou points-virgules) et/ou le nom d'un carnet d'adresses : une ligne <span class="code">carnet : Astreinte</span>, ou <span class="code">#Astreinte</span>, ou le nom exact du carnet sur sa propre ligne.</li>
+          <li><b>Les pièces jointes deviennent des liens.</b> Jusqu'à 5 pièces jointes de 10&nbsp;Mo chacune sont conservées et un lien de téléchargement public est ajouté au SMS (jusqu'à la limite des 1000 caractères).</li>
+          <li><b>Le compte-rendu.</b> Envoyé à l'expéditeur après le délai configuré (5&nbsp;minutes par défaut) : nombre de SMS demandés, statut de chacun (remis, envoyé, en attente, échec, annulé), horaires et éventuelles erreurs.</li>
+        </ul>
+
+        <h4 class="help-sub">Déclarer une boîte</h4>
+        <ol class="help-steps">
+          <li data-step="1"><b>Ouvrir l'onglet <em>Mail → SMS</em></b> puis <em>Nouvelle boîte mail</em>.</li>
+          <li data-step="2"><b>Identifiants IMAP.</b> Nom de la boîte, adresse e-mail, serveur IMAP (hôte, port 993 par défaut, dossier INBOX), identifiant et mot de passe. Pour une boîte Google, utilisez un <strong>mot de passe d'application</strong>.</li>
+          <li data-step="3"><b>Expéditeurs autorisés.</b> Un motif par ligne, avec « * » pour remplacer n'importe quelle suite de caractères — par exemple <span class="code">m*@ivry94.fr</span>. Tout e-mail venant d'une autre adresse est ignoré (et noté dans l'historique).</li>
+          <li data-step="4"><b>Options de relevé.</b> Période du relevé (60&nbsp;secondes par défaut), boîte active ou non.</li>
+          <li data-step="5"><b>Compte-rendu.</b> Activer ou non la réponse, délai avant envoi, préfixe de l'objet, et serveur SMTP — laisser vide pour réutiliser le serveur et les identifiants IMAP.</li>
+          <li data-step="6"><b>Enregistrer puis vérifier.</b> Le bouton <em>Tester</em> contrôle la connexion IMAP (nombre de messages, non lus) ; le bouton <em>Scanner</em> relève la boîte immédiatement. Les boîtes actives sont relevées automatiquement.</li>
+        </ol>
+
+        <ul class="help-list">
+          <li><b>Chaque e-mail n'est traité qu'une fois.</b> Seuls les e-mails non lus sont examinés ; une fois traités, ils sont marqués lus et ne sont jamais retraités, même s'ils redeviennent non lus.</li>
+          <li><b>La liste noire s'applique.</b> Les numéros blacklistés sont exclus des destinataires. Si aucun destinataire n'est valide, l'e-mail est refusé et l'expéditeur reçoit un compte-rendu d'erreur qui rappelle le format attendu.</li>
+          <li><b>Traçabilité.</b> L'onglet <em>E-mails traités</em> liste chaque e-mail avec sa boîte, son expéditeur, son sujet, le nombre de SMS créés, le statut du traitement et celui du compte-rendu.</li>
+        </ul>
+      </article>
+
       <article class="help-block" id="help-roles">
-        <h3>9 · Qui fait quoi — les rôles</h3>
+        <h3>10 · Qui fait quoi — les rôles</h3>
         <p>
           Deux mondes cohabitent : les <strong>comptes humains</strong>, qui se connectent avec un identifiant et un
           mot de passe sur la console (port web), et les <strong>clés API</strong>, qui authentifient des machines sur
@@ -670,7 +706,7 @@
       </article>
 
       <article class="help-block" id="help-user">
-        <h3>10 · Ce que peut faire un utilisateur</h3>
+        <h3>11 · Ce que peut faire un utilisateur</h3>
         <p>
           Un utilisateur travaille dans l'interface d'envoi, cloisonnée à son groupe. Il ne voit jamais les messages
           des autres groupes, ni la configuration technique de la passerelle.
@@ -723,7 +759,7 @@
       </article>
 
       <article class="help-block" id="help-admin">
-        <h3>11 · Ce que peut faire un administrateur</h3>
+        <h3>12 · Ce que peut faire un administrateur</h3>
         <p>
           L'administrateur dispose de tout ce qui précède, sans cloisonnement par groupe, plus la totalité de la
           configuration et de la supervision.
@@ -763,6 +799,14 @@
             </ul>
           </div>
           <div class="help-feature">
+            <h4>Configurer Mail → SMS</h4>
+            <ul>
+              <li>Déclarer les boîtes mail à relever, leurs expéditeurs autorisés et le serveur de réponse.</li>
+              <li>Tester la connexion IMAP d'une boîte et la scanner à la demande.</li>
+              <li>Suivre les e-mails traités, les SMS créés et les comptes-rendus envoyés.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
             <h4>Tracer l'usage</h4>
             <ul>
               <li>Journal de la console : connexions, envois et campagnes, avec l'utilisateur, la quantité et l'adresse IP.</li>
@@ -773,7 +817,7 @@
       </article>
 
       <article class="help-block" id="help-matrice">
-        <h3>12 · Matrice des droits</h3>
+        <h3>13 · Matrice des droits</h3>
         <div class="table-wrap"><table class="help-matrix">
           <thead>
             <tr>
@@ -805,7 +849,7 @@
       </article>
 
       <article class="help-block" id="help-glossaire">
-        <h3>13 · Glossaire</h3>
+        <h3>14 · Glossaire</h3>
         <dl class="help-gloss">
           <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
           <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
@@ -821,7 +865,7 @@
       </article>
 
       <article class="help-block" id="help-depannage">
-        <h3>14 · Dépannage courant</h3>
+        <h3>15 · Dépannage courant</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>Symptôme</th><th>Cause la plus fréquente</th><th>Vérification</th></tr></thead>
           <tbody>
