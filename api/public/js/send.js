@@ -671,6 +671,7 @@ async function openFleetCheck(id) {
       ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
     return `<tr><td>${esc(item.first_name || '')}</td><td>${esc(item.last_name || '')}</td><td>${esc(item.entity || '')}</td>
       <td>${esc(item.service || '')}</td><td>${esc(item.direction || '')}</td><td>${esc(item.imei || '')}</td><td>${esc(item.puk || '')}</td>
+      <td>${esc(item.line_status || '')}</td><td>${esc(item.plan || '')}</td><td>${esc(item.device_terminal || '')}</td><td>${esc(item.secondary_line || '')}</td>
       <td class="code">${esc(item.phone)}</td><td>${fleetState(item.state)}</td><td>${fmtDate(item.delivered_at)}</td>
       <td>${fmtDate(item.response_at)}</td><td>${delay}</td><td>${esc(item.response_body || item.error || '—')}</td></tr>`;
   }).join('');
@@ -969,14 +970,18 @@ async function loadContacts() {
          <td>${esc(c.direction || '')}</td>
          <td>${esc(c.imei || '')}</td>
          <td>${esc(c.puk || '')}</td>
+         <td>${esc(c.line_status || '')}</td>
+         <td>${esc(c.plan || '')}</td>
+         <td>${esc(c.device_terminal || '')}</td>
+         <td>${esc(c.secondary_line || '')}</td>
          <td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
          <td>
-           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-clinestatus="${esc(c.line_status || '')}" data-cplan="${esc(c.plan || '')}" data-cdeviceterminal="${esc(c.device_terminal || '')}" data-csecondaryline="${esc(c.secondary_line || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
            <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
           <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
         </td>
       </tr>`).join('')
-    : '<tr><td colspan="9" class="muted">Aucun contact.</td></tr>';
+    : '<tr><td colspan="13" class="muted">Aucun contact.</td></tr>';
   document.querySelectorAll('[data-editcontact]').forEach((b) => {
     b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
   });
@@ -1073,6 +1078,10 @@ function openContactModal(id = null, data = null) {
   $('contactDirection').value = data ? data.cdirection : '';
   $('contactImei').value = data ? data.cimei : '';
   $('contactPuk').value = data ? data.cpuk : '';
+  $('contactLineStatus').value = data ? data.clinestatus : '';
+  $('contactPlan').value = data ? data.cplan : '';
+  $('contactDeviceTerminal').value = data ? data.cdeviceterminal : '';
+  $('contactSecondaryLine').value = data ? data.csecondaryline : '';
   $('contactPhone').value = data ? data.cphone : '';
   $('contactModalError').textContent = '';
   $('contactModalTitle').textContent = id === null ? 'Nouveau contact' : 'Modifier le contact';
@@ -1094,6 +1103,10 @@ $('btnSaveContact').addEventListener('click', async () => {
     direction: $('contactDirection').value,
     imei: $('contactImei').value,
     puk: $('contactPuk').value,
+    lineStatus: $('contactLineStatus').value,
+    plan: $('contactPlan').value,
+    deviceTerminal: $('contactDeviceTerminal').value,
+    secondaryLine: $('contactSecondaryLine').value,
     phone: $('contactPhone').value
   };
   try {

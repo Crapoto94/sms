@@ -576,7 +576,7 @@
           <li data-step="3"><b>Rédiger le message de test.</b> Les mêmes variables que les campagnes sont disponibles (<span class="code">{prénom}</span>, <span class="code">{service}</span>, <span class="code">{imei}</span>…), ce qui permet de demander une confirmation personnalisée.</li>
           <li data-step="4"><b>Lancer la vérification.</b> Les messages partent par la file normale, comme n'importe quelle campagne — ils consomment donc des SMS du forfait.</li>
           <li data-step="5"><b>Laisser courir 72 heures.</b> Chaque réponse reçue sur la ligne de la passerelle est rattachée automatiquement au contact qui l'a envoyée.</li>
-          <li data-step="6"><b>Lire le bilan.</b> Le tableau donne, par contact, l'état, la date de remise, la date de réponse, le délai écoulé et le texte de la réponse. L'export CSV reprend le tout avec l'identité, l'entité, le service, la direction, l'IMEI et le PUK.</li>
+          <li data-step="6"><b>Lire le bilan.</b> Le tableau donne, par contact, l'état, la date de remise, la date de réponse, le délai écoulé et le texte de la réponse. L'export CSV reprend le tout avec l'identité, l'entité, le service, la direction, l'IMEI, le PUK, le statut ligne, le forfait, le terminal communiquant et la ligne secondaire.</li>
         </ol>
 
         <figure class="figure">
@@ -737,7 +737,7 @@
             <ul>
               <li>Créer, renommer et supprimer des carnets ; ajouter, modifier et supprimer des contacts.</li>
               <li>Importer un fichier CSV avec correspondance des colonnes à l'écran et aperçu avant validation.</li>
-              <li>Renseigner les champs métier : entité, service, direction, IMEI, code PUK.</li>
+              <li>Renseigner les champs métier : entité, service, direction, IMEI, code PUK, statut ligne, forfait, terminal communiquant et ligne secondaire.</li>
               <li>Blacklister un numéro : il est alors refusé à l'envoi, pour tout le monde et sur toute l'instance.</li>
             </ul>
           </div>
@@ -855,7 +855,7 @@
         <dl class="help-gloss">
           <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
           <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
-          <dt>Carnet d'adresses</dt><dd>Liste de contacts appartenant à un groupe, avec les champs métier entité, service, direction, IMEI et PUK.</dd>
+          <dt>Carnet d'adresses</dt><dd>Liste de contacts appartenant à un groupe, avec les champs métier entité, service, direction, IMEI, PUK, statut ligne, forfait, terminal communiquant et ligne secondaire.</dd>
           <dt>Campagne</dt><dd>Envoi groupé issu d'un carnet. Les messages restent regroupés dans l'historique, avec leurs compteurs et une annulation d'ensemble.</dd>
           <dt>Variable</dt><dd>Marqueur du type <span class="code">{prénom}</span> remplacé, pour chaque destinataire, par la valeur de sa fiche contact.</dd>
           <dt>Liste noire</dt><dd>Numéros interdits d'envoi sur toute l'instance. Une campagne qui en contient est refusée avant tout départ.</dd>

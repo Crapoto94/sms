@@ -186,7 +186,7 @@
         <div class="row"><h3 id="fleetDetailTitle"></h3><button id="btnExportFleet" class="ghost">Exporter CSV</button></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
+            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Statut ligne</th><th>Forfait</th><th>Terminal com.</th><th>Ligne sec.</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
             <tbody id="fleetItemsBody"></tbody>
           </table>
         </div>
@@ -236,7 +236,7 @@
         </div>
         <div class="table-wrap"><table>
           <thead>
-            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Téléphone</th><th></th></tr>
+            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Statut ligne</th><th>Forfait</th><th>Terminal com.</th><th>Ligne sec.</th><th>Téléphone</th><th></th></tr>
           </thead>
           <tbody id="contactsBody"></tbody>
         </table></div>
@@ -278,6 +278,14 @@
       <input id="contactImei" autocomplete="off">
       <label for="contactPuk">PUK</label>
       <input id="contactPuk" autocomplete="off">
+      <label for="contactLineStatus">Statut ligne</label>
+      <input id="contactLineStatus" autocomplete="off">
+      <label for="contactPlan">Forfait</label>
+      <input id="contactPlan" autocomplete="off">
+      <label for="contactDeviceTerminal">Terminal communiquant</label>
+      <input id="contactDeviceTerminal" autocomplete="off">
+      <label for="contactSecondaryLine">Ligne secondaire</label>
+      <input id="contactSecondaryLine" autocomplete="off">
       <label for="contactPhone">Téléphone</label>
       <input id="contactPhone" placeholder="ex : 06 12 34 56 78" autocomplete="off">
       <div class="row" style="margin-top:16px">

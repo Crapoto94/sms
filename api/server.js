@@ -429,7 +429,7 @@ function requireApiKey(type) {
 
 // ---------- API publique (port 3250) ----------
 const apiApp = express();
-apiApp.use(express.json());
+apiApp.use(express.json({ limit: '25mb' }));
 apiApp.use((_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
@@ -750,7 +750,7 @@ function requireAdmin(req, res, next) {
 }
 
 const webApp = express();
-webApp.use(express.json());
+webApp.use(express.json({ limit: '25mb' }));
 webApp.use((_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
@@ -1441,7 +1441,7 @@ function getRemoteBookContactsLocal(id) {
   if (!book) return null;
   const group = book.group_id ? db.prepare('SELECT name FROM groups WHERE id = ?').get(book.group_id) : null;
   const contacts = db.prepare(`
-    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone
+    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.line_status, c.plan, c.device_terminal, c.secondary_line, c.phone
     FROM contacts c WHERE c.address_book_id = ? ORDER BY c.id ASC
   `).all(book.id);
   return {
@@ -1523,7 +1523,7 @@ async function syncOneBook(syncBook) {
     }
     db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(localBookId);
     const insert = db.prepare(
-      'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     const now = isoNow();
     for (const c of data.contacts) {
@@ -1533,6 +1533,7 @@ async function syncOneBook(syncBook) {
         localBookId,
         c.first_name || '', c.last_name || '', c.entity || '',
         c.service || '', c.direction || '', c.imei || '', c.puk || '',
+        c.line_status || '', c.plan || '', c.device_terminal || '', c.secondary_line || '',
         phone, now
       );
       inserted++;
@@ -1703,7 +1704,7 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
         .run(name, isoNow());
       localBookId = info.lastInsertRowid;
       const insert = db.prepare(
-        'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       );
       const now = isoNow();
       let inserted = 0;
@@ -1712,7 +1713,9 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
         if (!/^\+?[0-9]{4,15}$/.test(phone)) continue;
         insert.run(
           localBookId, c.first_name || '', c.last_name || '', c.entity || '',
-          c.service || '', c.direction || '', c.imei || '', c.puk || '', phone, now
+          c.service || '', c.direction || '', c.imei || '', c.puk || '',
+          c.line_status || '', c.plan || '', c.device_terminal || '', c.secondary_line || '',
+          phone, now
         );
         inserted++;
       }
@@ -2064,7 +2067,7 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   if (checked.error) return res.status(404).json({ error: checked.error });
   const limit = Math.min(Math.max(parseInt(req.query.limit || '500', 10) || 500, 1), 2000);
   const rows = db.prepare(`
-    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.phone, c.created_at,
+    SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.line_status, c.plan, c.device_terminal, c.secondary_line, c.phone, c.created_at,
       CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted
     FROM contacts c LEFT JOIN blacklist_numbers b ON b.phone = c.phone
     WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ?
@@ -2082,6 +2085,10 @@ webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const direction = String((req.body || {}).direction || '').trim();
   const imei = String((req.body || {}).imei || '').trim();
   const puk = String((req.body || {}).puk || '').trim();
+  const lineStatus = String((req.body || {}).lineStatus || '').trim();
+  const plan = String((req.body || {}).plan || '').trim();
+  const deviceTerminal = String((req.body || {}).deviceTerminal || '').trim();
+  const secondaryLine = String((req.body || {}).secondaryLine || '').trim();
   const phone = normalizePhone((req.body || {}).phone || '');
   if (!/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -2090,9 +2097,9 @@ webApp.post('/admin/api/address-books/:bookId/contacts', (req, res) => {
     return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
   }
   const info = db.prepare(
-    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(checked.book.id, first, last, entity, service, direction, imei, puk, phone, isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, first_name: first, last_name: last, entity, service, direction, imei, puk, phone, created_at: isoNow() });
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(checked.book.id, first, last, entity, service, direction, imei, puk, lineStatus, plan, deviceTerminal, secondaryLine, phone, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, first_name: first, last_name: last, entity, service, direction, imei, puk, line_status: lineStatus, plan, device_terminal: deviceTerminal, secondary_line: secondaryLine, phone, created_at: isoNow() });
 });
 
 webApp.delete('/admin/api/contacts/:contactId', (req, res) => {
@@ -2117,6 +2124,10 @@ webApp.patch('/admin/api/contacts/:contactId', (req, res) => {
   const direction = String(body.direction !== undefined ? body.direction : contact.direction || '').trim();
   const imei = String(body.imei !== undefined ? body.imei : contact.imei || '').trim();
   const puk = String(body.puk !== undefined ? body.puk : contact.puk || '').trim();
+  const lineStatus = String(body.lineStatus !== undefined ? body.lineStatus : contact.line_status || '').trim();
+  const plan = String(body.plan !== undefined ? body.plan : contact.plan || '').trim();
+  const deviceTerminal = String(body.deviceTerminal !== undefined ? body.deviceTerminal : contact.device_terminal || '').trim();
+  const secondaryLine = String(body.secondaryLine !== undefined ? body.secondaryLine : contact.secondary_line || '').trim();
   const phone = normalizePhone(body.phone !== undefined ? body.phone : contact.phone);
   if (!/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -2125,9 +2136,9 @@ webApp.patch('/admin/api/contacts/:contactId', (req, res) => {
     return res.status(400).json({ error: 'Prénom, nom ou entité requis' });
   }
   db.prepare(
-    'UPDATE contacts SET first_name = ?, last_name = ?, entity = ?, service = ?, direction = ?, imei = ?, puk = ?, phone = ? WHERE id = ?'
-  ).run(first, last, entity, service, direction, imei, puk, phone, contact.id);
-  res.json({ ok: true, id: contact.id, first_name: first, last_name: last, entity, service, direction, imei, puk, phone });
+    'UPDATE contacts SET first_name = ?, last_name = ?, entity = ?, service = ?, direction = ?, imei = ?, puk = ?, line_status = ?, plan = ?, device_terminal = ?, secondary_line = ?, phone = ? WHERE id = ?'
+  ).run(first, last, entity, service, direction, imei, puk, lineStatus, plan, deviceTerminal, secondaryLine, phone, contact.id);
+  res.json({ ok: true, id: contact.id, first_name: first, last_name: last, entity, service, direction, imei, puk, line_status: lineStatus, plan, device_terminal: deviceTerminal, secondary_line: secondaryLine, phone });
 });
 
 webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
@@ -2143,6 +2154,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     direction: String(mp.direction !== undefined ? mp.direction : (body.direction || '')),
     imei: String(mp.imei !== undefined ? mp.imei : (body.imei || '')),
     puk: String(mp.puk !== undefined ? mp.puk : (body.puk || '')),
+    lineStatus: String(mp.lineStatus !== undefined ? mp.lineStatus : (body.lineStatus || '')),
+    plan: String(mp.plan !== undefined ? mp.plan : (body.plan || '')),
+    deviceTerminal: String(mp.deviceTerminal !== undefined ? mp.deviceTerminal : (body.deviceTerminal || '')),
+    secondaryLine: String(mp.secondaryLine !== undefined ? mp.secondaryLine : (body.secondaryLine || '')),
     phone: String(mp.phone !== undefined ? mp.phone : (body.phone || ''))
   };
   const rows = Array.isArray(body.rows) ? body.rows : [];
@@ -2161,6 +2176,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   const di = idx(map.direction);
   const ii = idx(map.imei);
   const pi = idx(map.puk);
+  const lsi = idx(map.lineStatus);
+  const pli = idx(map.plan);
+  const dti = idx(map.deviceTerminal);
+  const sli = idx(map.secondaryLine);
 
   const invalid = [];
   const toInsert = [];
@@ -2175,6 +2194,10 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     const direction = di >= 0 ? String(raw[di] == null ? '' : raw[di]).trim() : '';
     const imei = ii >= 0 ? String(raw[ii] == null ? '' : raw[ii]).trim() : '';
     const puk = pi >= 0 ? String(raw[pi] == null ? '' : raw[pi]).trim() : '';
+    const lineStatus = lsi >= 0 ? String(raw[lsi] == null ? '' : raw[lsi]).trim() : '';
+    const plan = pli >= 0 ? String(raw[pli] == null ? '' : raw[pli]).trim() : '';
+    const deviceTerminal = dti >= 0 ? String(raw[dti] == null ? '' : raw[dti]).trim() : '';
+    const secondaryLine = sli >= 0 ? String(raw[sli] == null ? '' : raw[sli]).trim() : '';
     if (!/^\+?[0-9]{4,15}$/.test(phone)) {
       invalid.push({ row: r + 2, phone, error: 'Numéro invalide' });
       continue;
@@ -2182,7 +2205,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     const key = phone;
     if (seen.has(key)) continue;
     seen.add(key);
-    toInsert.push({ first, last, entity, service, direction, imei, puk, phone });
+    toInsert.push({ first, last, entity, service, direction, imei, puk, lineStatus, plan, deviceTerminal, secondaryLine, phone });
   }
 
   const bookId = checked.book.id;
@@ -2192,13 +2215,13 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
     ? db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(bookId).changes
     : 0;
   const insert = db.prepare(
-    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const createdAt = isoNow();
   db.exec('BEGIN');
   try {
     for (const c of toInsert) {
-      insert.run(bookId, c.first, c.last, c.entity, c.service, c.direction, c.imei, c.puk, c.phone, createdAt);
+      insert.run(bookId, c.first, c.last, c.entity, c.service, c.direction, c.imei, c.puk, c.lineStatus, c.plan, c.deviceTerminal, c.secondaryLine, c.phone, createdAt);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -2372,8 +2395,8 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     `);
     const insertItem = db.prepare(`
       INSERT INTO fleet_check_items
-        (fleet_check_id, message_id, contact_id, first_name, last_name, entity, service, direction, imei, puk, phone, state)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        (fleet_check_id, message_id, contact_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, state)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `);
     for (const contact of contacts) {
       const renderedMessage = renderContactBody(message, contact);
@@ -2385,7 +2408,7 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
         contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id
       );
       insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity,
-        contact.service, contact.direction, contact.imei, contact.puk, contact.phone);
+        contact.service, contact.direction, contact.imei, contact.puk, contact.line_status, contact.plan, contact.device_terminal, contact.secondary_line, contact.phone);
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -2446,12 +2469,12 @@ webApp.get('/admin/api/fleet-checks/:id/export', (req, res) => {
     const text = value == null ? '' : String(value);
     return /[";\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = ['Vérification', 'Carnet', 'Prénom', 'Nom', 'Entité', 'Service', 'Direction', 'IMEI', 'PUK', 'Téléphone', 'Message créé le', 'Envoyé le', 'Remis le', 'État', 'Réponse le', 'Délai réponse (s)', 'Réponse', 'Erreur'];
+  const header = ['Vérification', 'Carnet', 'Prénom', 'Nom', 'Entité', 'Service', 'Direction', 'IMEI', 'PUK', 'Statut ligne', 'Forfait', 'Terminal communiquant', 'Ligne secondaire', 'Téléphone', 'Message créé le', 'Envoyé le', 'Remis le', 'État', 'Réponse le', 'Délai réponse (s)', 'Réponse', 'Erreur'];
   const lines = rows.map((row) => {
     const responseDelay = row.response_at && row.delivered_at
       ? Math.max(0, Math.round((Date.parse(row.response_at) - Date.parse(row.delivered_at)) / 1000))
       : '';
-    return [check.id, check.address_book_id, row.first_name, row.last_name, row.entity, row.service, row.direction, row.imei, row.puk, row.phone,
+    return [check.id, check.address_book_id, row.first_name, row.last_name, row.entity, row.service, row.direction, row.imei, row.puk, row.line_status, row.plan, row.device_terminal, row.secondary_line, row.phone,
       row.message_created_at, row.message_sent_at, row.message_delivered_at, row.state,
       row.response_at, responseDelay, row.response_body, row.error].map(escCsv).join(';');
   });

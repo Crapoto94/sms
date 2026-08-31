@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS fleet_check_items (
   direction      TEXT,
   imei           TEXT,
   puk            TEXT,
+  line_status    TEXT,
+  plan           TEXT,
+  device_terminal TEXT,
+  secondary_line  TEXT,
   phone          TEXT NOT NULL,
   state          TEXT NOT NULL DEFAULT 'pending',
   sent_at       TEXT,
@@ -221,6 +225,10 @@ CREATE TABLE IF NOT EXISTS contacts (
   direction       TEXT,
   imei            TEXT,
   puk             TEXT,
+  line_status     TEXT,
+  plan            TEXT,
+  device_terminal TEXT,
+  secondary_line  TEXT,
   phone           TEXT    NOT NULL,
   created_at      TEXT    NOT NULL
 );
@@ -381,9 +389,17 @@ const contactCols = db.prepare('PRAGMA table_info(contacts)').all().map((c) => c
 for (const column of ['service', 'direction', 'imei', 'puk']) {
   if (!contactCols.includes(column)) db.exec(`ALTER TABLE contacts ADD COLUMN ${column} TEXT`);
 }
+const bookContactCols = db.prepare('PRAGMA table_info(contacts)').all().map((c) => c.name);
+for (const column of ['line_status', 'plan', 'device_terminal', 'secondary_line']) {
+  if (!bookContactCols.includes(column)) db.exec(`ALTER TABLE contacts ADD COLUMN ${column} TEXT`);
+}
 const fleetItemCols = db.prepare('PRAGMA table_info(fleet_check_items)').all().map((c) => c.name);
 for (const column of ['service', 'direction', 'imei', 'puk']) {
   if (!fleetItemCols.includes(column)) db.exec(`ALTER TABLE fleet_check_items ADD COLUMN ${column} TEXT`);
+}
+const fleetItemNewCols = db.prepare('PRAGMA table_info(fleet_check_items)').all().map((c) => c.name);
+for (const column of ['line_status', 'plan', 'device_terminal', 'secondary_line']) {
+  if (!fleetItemNewCols.includes(column)) db.exec(`ALTER TABLE fleet_check_items ADD COLUMN ${column} TEXT`);
 }
 
 const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);

@@ -7,7 +7,7 @@ services:
       - "3250:3250"
       - "3251:3251"
     environment:
-      - ADMIN_PASSWORD=CHANGEZ_MOI
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-CHANGEZ_MOI}
       - PORT_API=3250
       - PORT_WEB=3251
       - DATA_DIR=/data
