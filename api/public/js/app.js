@@ -1989,35 +1989,141 @@ async function loadFleetChecks() {
   $('fleetChecksBody').innerHTML = checks.length
     ? checks.map((check) => `<tr>
         <td>${check.id}</td><td>${fmtDate(check.created_at)}</td><td>${esc(check.book_name || '—')}</td>
-        <td>${check.total || 0}</td><td>${check.replied || 0}</td><td>${check.no_response || 0}</td><td>${check.failed || 0}</td>
+        <td>${check.total || 0}</td><td>${check.delivered || 0}</td><td>${check.replied || 0}</td><td>${check.no_response || 0}</td><td>${check.failed || 0}</td>
         <td><button class="ghost" data-fleet-open="${check.id}">Détails</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="8" class="muted">Aucune vérification lancée.</td></tr>';
+    : '<tr><td colspan="9" class="muted">Aucune vérification lancée.</td></tr>';
   document.querySelectorAll('[data-fleet-open]').forEach((button) => {
     button.addEventListener('click', () => openFleetCheck(Number(button.dataset.fleetOpen)));
   });
 }
 
+// Colonnes des détails de vérification flotte. La colonne « Réponse » est
+// toujours affichée (always). Chaqué colonne visible a un filtre dédié.
+const FLEET_COLS = [
+  { key: 'first_name', label: 'Prénom' },
+  { key: 'last_name', label: 'Nom' },
+  { key: 'entity', label: 'Entité' },
+  { key: 'service', label: 'Service' },
+  { key: 'direction', label: 'Direction' },
+  { key: 'imei', label: 'IMEI' },
+  { key: 'puk', label: 'PUK' },
+  { key: 'line_status', label: 'Statut ligne' },
+  { key: 'plan', label: 'Forfait' },
+  { key: 'device_terminal', label: 'Terminal com.' },
+  { key: 'secondary_line', label: 'Ligne sec.' },
+  { key: 'phone', label: 'Téléphone' },
+  { key: 'state', label: 'État' },
+  { key: 'delivered_at', label: 'Remis le' },
+  { key: 'response_at', label: 'Réponse le' },
+  { key: 'delay', label: 'Délai' },
+  { key: 'response', label: 'Réponse', always: true }
+];
+
+let fleetItems = [];
+let fleetVisibleCols = new Set(FLEET_COLS.map((c) => c.key));
+let fleetStatusFilter = 'all';
+let fleetColFilters = {};
+
+const FLEET_STATE_TEXT = { pending: 'en attente', sent: 'envoyé', delivered: 'remis', replied: 'répondu', no_response: 'sans réponse', failed: 'échec' };
+
+function fleetCellText(col, item) {
+  switch (col) {
+    case 'state': return FLEET_STATE_TEXT[item.state] || item.state || '';
+    case 'delivered_at': return item.delivered_at ? fmtDate(item.delivered_at) : '';
+    case 'response_at': return item.response_at ? fmtDate(item.response_at) : '';
+    case 'delay': return item.response_at && item.delivered_at
+      ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '';
+    case 'response': return item.response_body || item.error || '';
+    default: return item[col] || '';
+  }
+}
+
+function fleetCell(col, item) {
+  if (col === 'state') return fleetState(item.state);
+  if (col === 'delay') return item.response_at && item.delivered_at
+    ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
+  return esc(fleetCellText(col, item) || '—');
+}
+
+function fleetMatchesFilters(item) {
+  if (fleetStatusFilter === 'replied' && item.state !== 'replied') return false;
+  if (fleetStatusFilter === 'failed' && item.state !== 'failed') return false;
+  if (fleetStatusFilter === 'no_response' && (item.state === 'replied' || item.state === 'failed')) return false;
+  for (const col of FLEET_COLS) {
+    if (!fleetVisibleCols.has(col.key)) continue;
+    const f = (fleetColFilters[col.key] || '').trim().toLowerCase();
+    if (f && !fleetCellText(col.key, item).toLowerCase().includes(f)) return false;
+  }
+  return true;
+}
+
+function renderFleetColToggles() {
+  $('fleetColToggles').innerHTML = FLEET_COLS.map((col) => {
+    const on = fleetVisibleCols.has(col.key) || col.always;
+    const disabled = col.always ? ' disabled' : '';
+    return `<label style="margin-right:10px;white-space:nowrap"><input type="checkbox" data-fleetcol="${col.key}" ${on ? 'checked' : ''}${disabled}>${esc(col.label)}${col.always ? ' <span class="muted">(toujours)</span>' : ''}</label>`;
+  }).join('');
+}
+
+function renderFleetHead() {
+  renderFleetColToggles();
+  const visible = FLEET_COLS.filter((c) => fleetVisibleCols.has(c.key));
+  let head = '<tr>';
+  for (const col of visible) head += `<th>${esc(col.label)}${col.always ? ' <span class="muted">*</span>' : ''}</th>`;
+  head += '</tr><tr>';
+  for (const col of visible) {
+    head += `<th><input data-colfilter="${col.key}" value="${esc(fleetColFilters[col.key] || '')}" placeholder="Filtrer…" style="min-width:70px"></th>`;
+  }
+  head += '</tr>';
+  $('fleetItemsHead').innerHTML = head;
+}
+
+function renderFleetRows() {
+  const visible = FLEET_COLS.filter((c) => fleetVisibleCols.has(c.key));
+  const filtered = fleetItems.filter(fleetMatchesFilters);
+  $('fleetItemsBody').innerHTML = filtered.length
+    ? filtered.map((item) => {
+        return `<tr>${visible.map((col) => `<td>${fleetCell(col.key, item)}</td>`).join('')}</tr>`;
+      }).join('')
+    : `<tr><td colspan="${visible.length}" class="muted">Aucun résultat.</td></tr>`;
+  $('fleetDetailCount').textContent = `${filtered.length} / ${fleetItems.length} ligne(s)`;
+}
+
 async function openFleetCheck(id) {
   const data = await api(`/admin/api/fleet-checks/${id}`);
   fleetCheckId = id;
+  fleetItems = data.items;
+  fleetStatusFilter = 'all';
+  fleetColFilters = {};
+  fleetVisibleCols = new Set(FLEET_COLS.map((c) => c.key));
+  $('fleetStatusFilter').value = 'all';
   $('fleetDetailTitle').textContent = `Vérification #${id}`;
   $('fleetDetail').classList.remove('hidden');
-  $('fleetItemsBody').innerHTML = data.items.map((item) => {
-    const delay = item.response_at && item.delivered_at
-      ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
-    const fcol = (v) => v ? '' : 'hidden-col';
-    return `<tr><td>${esc(item.first_name || '')}</td><td>${esc(item.last_name || '')}</td><td>${esc(item.entity || '')}</td>
-      <td>${esc(item.service || '')}</td><td>${esc(item.direction || '')}</td><td>${esc(item.imei || '')}</td><td>${esc(item.puk || '')}</td>
-      <td class="${fcol(item.line_status)}">${esc(item.line_status || '')}</td><td class="${fcol(item.plan)}">${esc(item.plan || '')}</td><td class="${fcol(item.device_terminal)}">${esc(item.device_terminal || '')}</td><td class="${fcol(item.secondary_line)}">${esc(item.secondary_line || '')}</td>
-      <td class="code">${esc(item.phone)}</td><td>${fleetState(item.state)}</td><td>${fmtDate(item.delivered_at)}</td>
-      <td>${fmtDate(item.response_at)}</td><td>${delay}</td><td>${esc(item.response_body || item.error || '—')}</td></tr>`;
-  }).join('');
-  document.querySelectorAll('.fcol-line').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.line_status)));
-  document.querySelectorAll('.fcol-plan').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.plan)));
-  document.querySelectorAll('.fcol-term').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.device_terminal)));
-  document.querySelectorAll('.fcol-sec').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.secondary_line)));
+  renderFleetHead();
+  renderFleetRows();
 }
+
+$('fleetStatusFilter').addEventListener('change', () => {
+  fleetStatusFilter = $('fleetStatusFilter').value;
+  renderFleetRows();
+});
+
+$('fleetColToggles').addEventListener('change', (event) => {
+  const cb = event.target.closest('[data-fleetcol]');
+  if (!cb) return;
+  if (cb.checked) fleetVisibleCols.add(cb.dataset.fleetcol);
+  else fleetVisibleCols.delete(cb.dataset.fleetcol);
+  renderFleetHead();
+  renderFleetRows();
+});
+
+$('fleetItemsHead').addEventListener('input', (event) => {
+  const input = event.target.closest('[data-colfilter]');
+  if (!input) return;
+  fleetColFilters[input.dataset.colfilter] = input.value;
+  renderFleetRows();
+});
 
 $('btnExportFleet').addEventListener('click', () => {
   if (fleetCheckId) location.href = `/admin/api/fleet-checks/${fleetCheckId}/export`;

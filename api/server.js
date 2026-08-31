@@ -2547,6 +2547,7 @@ webApp.get('/admin/api/fleet-checks', (req, res) => {
   const checks = db.prepare(`
     SELECT f.*, ab.name AS book_name,
       COUNT(i.id) AS total,
+      SUM(CASE WHEN i.state = 'delivered' THEN 1 ELSE 0 END) AS delivered,
       SUM(CASE WHEN i.state = 'replied' THEN 1 ELSE 0 END) AS replied,
       SUM(CASE WHEN i.state = 'no_response' THEN 1 ELSE 0 END) AS no_response,
       SUM(CASE WHEN i.state = 'failed' THEN 1 ELSE 0 END) AS failed

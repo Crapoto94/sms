@@ -179,15 +179,27 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Remis</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
           <tbody id="fleetChecksBody"></tbody>
         </table>
       </div>
       <div id="fleetDetail" class="hidden" style="margin-top:20px">
         <div class="row"><h3 id="fleetDetailTitle"></h3><button id="btnExportFleet" class="ghost">Exporter CSV</button></div>
+        <div class="row" style="margin-top:8px;align-items:center">
+          <label>Statut :
+            <select id="fleetStatusFilter">
+              <option value="all">Tous</option>
+              <option value="replied">Répondu</option>
+              <option value="no_response">Non répondu</option>
+              <option value="failed">Échec</option>
+            </select>
+          </label>
+          <span id="fleetColToggles" style="margin-left:12px"></span>
+          <span id="fleetDetailCount" class="muted" style="margin-left:auto"></span>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th class="fcol-line">Statut ligne</th><th class="fcol-plan">Forfait</th><th class="fcol-term">Terminal com.</th><th class="fcol-sec">Ligne sec.</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
+            <thead id="fleetItemsHead"></thead>
             <tbody id="fleetItemsBody"></tbody>
           </table>
         </div>

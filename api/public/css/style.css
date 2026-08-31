@@ -607,6 +607,17 @@ tbody:empty::after { content: ""; }
 .hidden { display: none !important; }
 .hidden-col { display: none !important; }
 
+#fleetItemsHead input {
+  width: 100%;
+  min-width: 60px;
+  padding: 2px 5px;
+  font-size: 12px;
+  border: 1px solid var(--input-border, var(--border));
+  background: var(--input-bg, var(--bg));
+  color: inherit;
+  border-radius: 4px;
+}
+
 .muted { color: var(--muted); font-size: 12.5px; }
 .error { color: var(--error); font-size: 12.5px; }
 .error:empty { display: none; }
