@@ -605,6 +605,7 @@ tbody:empty::after { content: ""; }
 /* ---------- 8. Utilitaires ---------- */
 
 .hidden { display: none !important; }
+.hidden-col { display: none !important; }
 
 .muted { color: var(--muted); font-size: 12.5px; }
 .error { color: var(--error); font-size: 12.5px; }

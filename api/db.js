@@ -341,6 +341,16 @@ if (!accountCols.includes('is_group_manager')) {
 if (!accountCols.includes('last_login_at')) {
   db.exec('ALTER TABLE accounts ADD COLUMN last_login_at TEXT');
 }
+if (!accountCols.includes('phone')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN phone TEXT');
+}
+
+// Entrée pivot « admin » : le compte administrateur (connexion sans login)
+// n'a pas de ligne dans accounts ; on stocke ici son numéro de téléphone
+// pour les alertes SMS. La ligne est garantie au démarrage.
+db.prepare(
+  'INSERT OR IGNORE INTO accounts (login, password_hash, role, disabled, created_at) VALUES (?, ?, ?, 0, ?)'
+).run('', '', 'admin', new Date().toISOString());
 const keyCols = db.prepare('PRAGMA table_info(keys)').all().map((c) => c.name);
 if (!keyCols.includes('app_version')) {
   db.exec('ALTER TABLE keys ADD COLUMN app_version TEXT');

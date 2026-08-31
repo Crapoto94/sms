@@ -295,6 +295,72 @@ function logAuthAttempt(req, keyId, reason) {
   } catch (_) { /* ne bloque jamais la réponse */ }
 }
 
+// ---------- Numéro de téléphone du compte admin (alertes SMS) ----------
+// Le compte administrateur (connexion sans login) stocke son numéro dans une
+// ligne pivot de `accounts` (login vide). Renseigné dans l'interface admin.
+function getAdminPhone() {
+  const row = db.prepare('SELECT phone FROM accounts WHERE login = ?').get('');
+  return row && row.phone ? row.phone : '';
+}
+
+function setAdminPhone(phone) {
+  const normalized = normalizePhone(phone);
+  return db.prepare('UPDATE accounts SET phone = ? WHERE login = ?').run(normalized, '');
+}
+
+// ---------- Anti-bruteforce sur la connexion console ----------
+// Suit les échecs consécutifs par IP + login tenté (en mémoire). Chaque échec
+// augmente le délai d'attente imposé avant la prochaine tentative, et les
+// échecs sont journalisés dans `auth_logs`. Après BRUTE_FORCE_ALERT_THRESHOLD
+// échecs consécutifs, un SMS d'alerte est envoyé au compte administrateur.
+const BRUTE_FORCE_WINDOW_MS = 10 * 60 * 1000;   // fenêtre de comptage des échecs
+const BRUTE_FORCE_ALERT_THRESHOLD = 5;          // déclenche l'alerte SMS
+const BRUTE_FORCE_DELAYS = [0, 0, 0, 0, 0, 5000, 15000, 30000, 60000, 120000, 300000]; // ms par rang
+const authFailures = new Map(); // key -> { count, lastAt }
+
+function authFailureKey(req, login) {
+  return `${clientIp(req)}|${login || 'admin'}`;
+}
+
+function authRequiredDelay(req, login) {
+  const entry = authFailures.get(authFailureKey(req, login));
+  if (!entry) return 0;
+  const elapsed = Date.now() - entry.lastAt;
+  if (elapsed > BRUTE_FORCE_WINDOW_MS) {
+    authFailures.delete(authFailureKey(req, login));
+    return 0;
+  }
+  const rank = Math.min(entry.count, BRUTE_FORCE_DELAYS.length - 1);
+  return Math.max(0, BRUTE_FORCE_DELAYS[rank] - elapsed);
+}
+
+// Enregistre un échec ; renvoie true si un SMS d'alerte doit être envoyé
+// (atteinte du seuil sans dépassement sur la fenêtre courante).
+function recordAuthFailure(req, login) {
+  const key = authFailureKey(req, login);
+  const now = Date.now();
+  const prev = authFailures.get(key);
+  const count = (prev && now - prev.lastAt <= BRUTE_FORCE_WINDOW_MS) ? prev.count + 1 : 1;
+  authFailures.set(key, { count, lastAt: now });
+  return count === BRUTE_FORCE_ALERT_THRESHOLD;
+}
+
+// Supprime l'historique d'échecs d'une clé (après une connexion réussie).
+function clearAuthFailures(req, login) {
+  authFailures.delete(authFailureKey(req, login));
+}
+
+function sendAdminAlertSms(message) {
+  const phone = getAdminPhone();
+  if (!phone) return;
+  try {
+    db.prepare(`
+      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by_label, created_at, group_id)
+      VALUES (?, ?, 'pending', 'console', 'Alerte sécurité', 'Sécurité', ?, NULL)
+    `).run(phone, message.slice(0, MAX_MESSAGE_LENGTH), isoNow());
+  } catch (_) { /* l'alerte ne bloque jamais la connexion */ }
+}
+
 // ---------- Journal de la console (connexions et envois, quantitatif) ----------
 function logConsole(req, action, detail, count) {
   try {
@@ -759,24 +825,43 @@ webApp.use((_req, res, next) => {
 webApp.post('/admin/login', (req, res) => {
   const login = String((req.body || {}).login || '').trim();
   const password = String((req.body || {}).password || '');
+  const efLogin = login === '' ? 'admin' : login;
+
+  // Anti-bruteforce : si un délai d'attente est imposé à cette IP+login, on
+  // refuse la tentative (sans valider le mot de passe) et on journalise.
+  const delay = authRequiredDelay(req, efLogin);
+  if (delay > 0) {
+    logAuthAttempt(req, null, `429 Ralentissement anti-bruteforce (${efLogin}, réessayez dans ${Math.ceil(delay / 1000)} s)`);
+    return res.status(429).json({
+      error: `Trop de tentatives. Réessayez dans ${Math.ceil(delay / 1000)} seconde(s).`
+    });
+  }
 
   let accountId = null;
   let sessionLogin;
   let role = 'user';
   let groupId = null;
 
+  const fail = (reason) => {
+    logAuthAttempt(req, null, reason);
+    if (recordAuthFailure(req, efLogin)) {
+      sendAdminAlertSms(
+        `Alerte sécurité : ${BRUTE_FORCE_ALERT_THRESHOLD} tentatives de connexion infructueuses sur la console (login « ${efLogin.slice(0, 32)} », IP ${clientIp(req)}).`
+      );
+    }
+    return res.status(401).json({ error: 'Identifiant ou mot de passe incorrect' });
+  };
+
   if (login === '') {
     if (password !== ADMIN_PASSWORD) {
-      logAuthAttempt(req, null, '401 Mot de passe admin incorrect');
-      return res.status(401).json({ error: 'Mot de passe incorrect' });
+      return fail('401 Mot de passe admin incorrect');
     }
     role = 'admin';
     sessionLogin = 'admin';
   } else {
     const row = db.prepare('SELECT * FROM accounts WHERE login = ?').get(login);
     if (!row || row.disabled || !verifyPassword(password, row.password_hash)) {
-      logAuthAttempt(req, null, `401 Connexion échouée (compte « ${login.slice(0, 32)} »)`);
-      return res.status(401).json({ error: 'Identifiant ou mot de passe incorrect' });
+      return fail(`401 Connexion échouée (compte « ${login.slice(0, 32)} »)`);
     }
     accountId = row.id;
     sessionLogin = row.login;
@@ -784,6 +869,7 @@ webApp.post('/admin/login', (req, res) => {
     groupId = row.group_id || null;
   }
 
+  clearAuthFailures(req, efLogin);
   const sid = newToken();
   const session = {
     exp: Date.now() + SESSION_TTL_MS,
@@ -1244,6 +1330,25 @@ webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
   `).all(limit);
   res.json(rows);
 });
+
+// ---------- Configuration sécurité : numéro admin pour les alertes SMS ----------
+webApp.get('/admin/api/security', requireAdmin, (_req, res) => {
+  res.json({
+    adminPhone: getAdminPhone(),
+    alertThreshold: BRUTE_FORCE_ALERT_THRESHOLD
+  });
+});
+
+webApp.post('/admin/api/security/phone', requireAdmin, (req, res) => {
+  const phone = String((req.body || {}).phone || '').trim();
+  if (phone !== '' && !/^\+?[0-9]{4,15}$/.test(phone)) {
+    return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  }
+  setAdminPhone(phone);
+  logConsole(req, 'config sécurité', 'Numéro d\'alerte admin mis à jour');
+  res.json({ ok: true, adminPhone: getAdminPhone() });
+});
+
 
 // ---------- Mail → SMS (admin) ----------
 function mail2smsBoxFromBody(body, isCreate) {
@@ -2065,13 +2170,24 @@ webApp.delete('/admin/api/address-books/:bookId', (req, res) => {
 webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const checked = requireGroupBook(req, res);
   if (checked.error) return res.status(404).json({ error: checked.error });
-  const limit = Math.min(Math.max(parseInt(req.query.limit || '500', 10) || 500, 1), 2000);
+  const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || req.query.limit || '500', 10) || 500, 1), 2000);
+  const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
+  const offset = (page - 1) * pageSize;
+  const latestCheck = db.prepare('SELECT id FROM fleet_checks WHERE address_book_id = ? ORDER BY id DESC LIMIT 1').get(checked.book.id);
+  let recentPhones = new Set();
+  if (latestCheck) {
+    recentPhones = new Set(db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ?').all(latestCheck.id).map((r) => r.phone));
+  }
   const rows = db.prepare(`
     SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.line_status, c.plan, c.device_terminal, c.secondary_line, c.phone, c.created_at,
       CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted
     FROM contacts c LEFT JOIN blacklist_numbers b ON b.phone = c.phone
-    WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ?
-  `).all(checked.book.id, limit);
+    WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ? OFFSET ?
+  `).all(checked.book.id, pageSize, offset);
+  rows.forEach((row) => { row.recent_checked = recentPhones.has(row.phone) ? 1 : 0; });
+  const total = db.prepare('SELECT COUNT(*) c FROM contacts WHERE address_book_id = ?').get(checked.book.id).c;
+  res.set('X-Total-Count', total);
+  res.set('X-Page-Size', pageSize);
   res.json(rows);
 });
 

@@ -231,7 +231,7 @@ let singleBookContacts = [];
 
 async function loadSingleBookContacts() {
   const bookId = Number($('singleBookSelect').value || 0);
-  singleBookContacts = bookId ? await api(`/admin/api/address-books/${bookId}/contacts`) : [];
+  singleBookContacts = bookId ? await fetchAllBookContacts(bookId) : [];
   renderSingleBookContacts();
 }
 
@@ -319,7 +319,7 @@ function fillExcludeBookSelect(selectId, primaryId) {
 async function excludedPhonesFor(selectId) {
   const bookId = Number($(selectId).value || 0);
   if (!bookId) return new Set();
-  const rows = await api(`/admin/api/address-books/${bookId}/contacts`);
+  const rows = await fetchAllBookContacts(bookId);
   return new Set(rows.map((contact) => contact.phone));
 }
 
@@ -328,7 +328,7 @@ async function loadRecipients() {
   composerBookId = id;
   const list = $('recipientList');
   const [bookContacts, excludedPhones] = id
-    ? await Promise.all([api(`/admin/api/address-books/${id}/contacts`), excludedPhonesFor('excludeBookSelect')])
+    ? await Promise.all([fetchAllBookContacts(id), excludedPhonesFor('excludeBookSelect')])
     : [[], new Set()];
   contacts = bookContacts;
   const isExcluded = (contact) => excludedPhones.has(contact.phone);
@@ -613,20 +613,40 @@ function fillFleetExcludeBookSelect() {
   if (fleetBooks.some((book) => String(book.id) === previous && String(book.id) !== String(primaryId))) select.value = previous;
 }
 
+async function fetchAllBookContacts(bookId) {
+  const all = [];
+  let page = 1;
+  while (page <= 100) {
+    const rows = await api(`/admin/api/address-books/${bookId}/contacts?pageSize=2000&page=${page}`);
+    all.push(...rows);
+    if (rows.length < 2000) break;
+    page++;
+  }
+  return all;
+}
+
 async function loadFleetContacts() {
   const bookId = Number($('fleetBookSelect').value || 0);
   const [bookContacts, excludedPhones] = bookId
-    ? await Promise.all([api(`/admin/api/address-books/${bookId}/contacts`), excludedPhonesFor('fleetExcludeBookSelect')])
+    ? await Promise.all([fetchAllBookContacts(bookId), excludedPhonesFor('fleetExcludeBookSelect')])
     : [[], new Set()];
   fleetContacts = bookContacts;
   const isExcluded = (contact) => excludedPhones.has(contact.phone);
-  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact)).map((contact) => contact.id));
+  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact) && !contact.recent_checked).map((contact) => contact.id));
+  const skipped = fleetContacts.filter((c) => c.recent_checked).length;
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
-        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${contact.blacklisted || isExcluded(contact) ? 'disabled' : 'checked'}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : ''}</span></label>`;
+        const checked = contact.blacklisted || isExcluded(contact) ? 'disabled' : (contact.recent_checked ? '' : 'checked');
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
+  updateFleetCount(skipped);
+}
+
+function updateFleetCount(skipped) {
+  const list = fleetContacts.filter((c) => !c.blacklisted);
+  $('fleetCount').textContent = `${fleetSelected.size} / ${list.length} contact(s) sélectionné(s)${skipped ? ` (${skipped} déjà vérifié(s), décoché(s) par défaut)` : ''}`;
 }
 
 $('fleetBookSelect').addEventListener('change', async () => {
@@ -639,6 +659,7 @@ $('fleetContactList').addEventListener('change', (event) => {
   if (!checkbox) return;
   const id = Number(checkbox.dataset.fleetContact);
   if (checkbox.checked) fleetSelected.add(id); else fleetSelected.delete(id);
+  updateFleetCount();
 });
 
 function fleetState(state) {
@@ -669,12 +690,17 @@ async function openFleetCheck(id) {
   $('fleetItemsBody').innerHTML = data.items.map((item) => {
     const delay = item.response_at && item.delivered_at
       ? `${Math.max(0, Math.round((Date.parse(item.response_at) - Date.parse(item.delivered_at)) / 1000))} s` : '—';
+    const fcol = (v) => v ? '' : 'hidden-col';
     return `<tr><td>${esc(item.first_name || '')}</td><td>${esc(item.last_name || '')}</td><td>${esc(item.entity || '')}</td>
       <td>${esc(item.service || '')}</td><td>${esc(item.direction || '')}</td><td>${esc(item.imei || '')}</td><td>${esc(item.puk || '')}</td>
-      <td>${esc(item.line_status || '')}</td><td>${esc(item.plan || '')}</td><td>${esc(item.device_terminal || '')}</td><td>${esc(item.secondary_line || '')}</td>
+      <td class="${fcol(item.line_status)}">${esc(item.line_status || '')}</td><td class="${fcol(item.plan)}">${esc(item.plan || '')}</td><td class="${fcol(item.device_terminal)}">${esc(item.device_terminal || '')}</td><td class="${fcol(item.secondary_line)}">${esc(item.secondary_line || '')}</td>
       <td class="code">${esc(item.phone)}</td><td>${fleetState(item.state)}</td><td>${fmtDate(item.delivered_at)}</td>
       <td>${fmtDate(item.response_at)}</td><td>${delay}</td><td>${esc(item.response_body || item.error || '—')}</td></tr>`;
   }).join('');
+  document.querySelectorAll('.fcol-line').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.line_status)));
+  document.querySelectorAll('.fcol-plan').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.plan)));
+  document.querySelectorAll('.fcol-term').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.device_terminal)));
+  document.querySelectorAll('.fcol-sec').forEach((el) => el.classList.toggle('hidden-col', !data.items.some((i) => i.secondary_line)));
 }
 
 $('btnExportFleet').addEventListener('click', () => {
@@ -954,7 +980,7 @@ async function openBook(bookId) {
 }
 
 async function loadContacts() {
-  const rows = await api(`/admin/api/address-books/${viewBookId}/contacts`);
+  const rows = await fetchAllBookContacts(viewBookId);
   const phones = rows.map((c) => c.phone);
   let counts = {};
   try {
@@ -970,10 +996,10 @@ async function loadContacts() {
          <td>${esc(c.direction || '')}</td>
          <td>${esc(c.imei || '')}</td>
          <td>${esc(c.puk || '')}</td>
-         <td>${esc(c.line_status || '')}</td>
-         <td>${esc(c.plan || '')}</td>
-         <td>${esc(c.device_terminal || '')}</td>
-         <td>${esc(c.secondary_line || '')}</td>
+         <td class="${c.line_status ? '' : 'hidden-col'}">${esc(c.line_status || '')}</td>
+         <td class="${c.plan ? '' : 'hidden-col'}">${esc(c.plan || '')}</td>
+         <td class="${c.device_terminal ? '' : 'hidden-col'}">${esc(c.device_terminal || '')}</td>
+         <td class="${c.secondary_line ? '' : 'hidden-col'}">${esc(c.secondary_line || '')}</td>
          <td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
          <td>
            <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-clinestatus="${esc(c.line_status || '')}" data-cplan="${esc(c.plan || '')}" data-cdeviceterminal="${esc(c.device_terminal || '')}" data-csecondaryline="${esc(c.secondary_line || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
@@ -982,6 +1008,14 @@ async function loadContacts() {
         </td>
       </tr>`).join('')
     : '<tr><td colspan="13" class="muted">Aucun contact.</td></tr>';
+  const hideColLine = !rows.some((c) => c.line_status);
+  const hideColPlan = !rows.some((c) => c.plan);
+  const hideColTerm = !rows.some((c) => c.device_terminal);
+  const hideColSec = !rows.some((c) => c.secondary_line);
+  document.querySelectorAll('.col-line').forEach((el) => el.classList.toggle('hidden-col', hideColLine));
+  document.querySelectorAll('.col-plan').forEach((el) => el.classList.toggle('hidden-col', hideColPlan));
+  document.querySelectorAll('.col-term').forEach((el) => el.classList.toggle('hidden-col', hideColTerm));
+  document.querySelectorAll('.col-sec').forEach((el) => el.classList.toggle('hidden-col', hideColSec));
   document.querySelectorAll('[data-editcontact]').forEach((b) => {
     b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
   });

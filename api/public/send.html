@@ -164,6 +164,7 @@
           <div id="fleetContactList" class="recipients" style="margin-top:10px">
             <div class="contact-list-empty muted">Choisissez un carnet.</div>
           </div>
+          <p id="fleetCount" class="muted" style="margin-top:8px"></p>
         </div>
         <div>
           <label for="fleetMessage">Message de vérification</label>
@@ -186,7 +187,7 @@
         <div class="row"><h3 id="fleetDetailTitle"></h3><button id="btnExportFleet" class="ghost">Exporter CSV</button></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Statut ligne</th><th>Forfait</th><th>Terminal com.</th><th>Ligne sec.</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
+            <thead><tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th class="fcol-line">Statut ligne</th><th class="fcol-plan">Forfait</th><th class="fcol-term">Terminal com.</th><th class="fcol-sec">Ligne sec.</th><th>Téléphone</th><th>État</th><th>Remis le</th><th>Réponse le</th><th>Délai</th><th>Réponse</th></tr></thead>
             <tbody id="fleetItemsBody"></tbody>
           </table>
         </div>
@@ -236,7 +237,7 @@
         </div>
         <div class="table-wrap"><table>
           <thead>
-            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th>Statut ligne</th><th>Forfait</th><th>Terminal com.</th><th>Ligne sec.</th><th>Téléphone</th><th></th></tr>
+            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th class="col-line">Statut ligne</th><th class="col-plan">Forfait</th><th class="col-term">Terminal com.</th><th class="col-sec">Ligne sec.</th><th>Téléphone</th><th></th></tr>
           </thead>
           <tbody id="contactsBody"></tbody>
         </table></div>
