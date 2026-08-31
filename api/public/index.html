@@ -21,6 +21,7 @@
       <button class="tab" data-tab="fleet">Vérification flotte</button>
       <button class="tab" data-tab="sync">Synchro carnets</button>
       <button class="tab" data-tab="mail2sms">Mail → SMS</button>
+      <button class="tab" data-tab="frizbi">SMS externe (Frizbi)</button>
       <button class="tab" data-tab="logs">Logs</button>
       <button class="tab" data-tab="journal">Journal</button>
       <button class="tab" data-tab="accounts">Comptes</button>
@@ -54,9 +55,23 @@
         <h2>Passerelles</h2>
         <span id="online" class="muted"></span>
       </div>
+      <p class="muted">
+        Chaque passerelle en ligne reçoit en priorité les envois vers les numéros qu'elle a déjà contactés récemment,
+        puis se voit attribuer les nouveaux numéros par ordre de charge croissante, dans la limite du quota ci-dessous
+        (protection contre le blocage anti-spam opérateur — les forfaits mobile grand public limitent en général les
+        SMS illimités à ~200 destinataires distincts par mois).
+      </p>
+      <div class="row">
+        <label for="gwQuotaCap">Quota par passerelle (destinataires distincts)</label>
+        <input id="gwQuotaCap" type="number" min="1" value="180" style="max-width:100px">
+        <label for="gwQuotaWindow">Fenêtre glissante (jours)</label>
+        <input id="gwQuotaWindow" type="number" min="1" value="30" style="max-width:100px">
+        <button id="btnSaveGwQuota" class="ghost">Enregistrer</button>
+        <span id="gwQuotaStatus" class="muted"></span>
+      </div>
       <div class="table-wrap"><table>
         <thead>
-          <tr><th>Passerelle</th><th>Appareil</th><th>Version APK</th><th>Dernier contact</th><th>En cours</th><th>Envoyés</th><th>Remis</th><th>Échecs</th><th>État</th></tr>
+          <tr><th>Passerelle</th><th>Appareil</th><th>Version APK</th><th>Dernier contact</th><th>En cours</th><th>Envoyés</th><th>Remis</th><th>Échecs</th><th>Quota</th><th>État</th></tr>
         </thead>
         <tbody id="gatewaysBody"></tbody>
       </table></div>
@@ -330,6 +345,75 @@
       <div class="table-wrap"><table>
         <thead><tr><th>Date</th><th>Boîte</th><th>Expéditeur</th><th>Sujet</th><th>SMS</th><th>Statut</th><th>Compte-rendu</th><th>Erreur</th></tr></thead>
         <tbody id="mail2smsEmailsBody"></tbody>
+      </table></div>
+    </section>
+
+    <section id="frizbi" class="panel hidden">
+      <h2>SMS externe (Frizbi)</h2>
+      <p class="muted">
+        Choisissez le canal d'envoi des SMS : les passerelles internes (téléphones), l'API externe Frizbi, ou les deux.
+        En mode « Les deux », Frizbi n'est utilisé que si l'envoi dépasse le seuil ci-dessous ; sous ce seuil, l'envoi passe par les passerelles.
+        La <b>vérification de flotte</b> reste toujours envoyée en interne (elle attend une réponse SMS, impossible avec le sender ID alphanumérique de Frizbi).
+      </p>
+      <div class="row">
+        <label for="frizbiMode">Mode d'envoi</label>
+        <select id="frizbiMode" style="max-width:280px">
+          <option value="internal">Passerelles internes uniquement</option>
+          <option value="frizbi">Frizbi uniquement</option>
+          <option value="both">Les deux (Frizbi au-delà du seuil)</option>
+        </select>
+        <label for="frizbiThreshold">Seuil (destinataires)</label>
+        <input id="frizbiThreshold" type="number" min="1" value="10" style="max-width:100px">
+      </div>
+      <div class="row" style="margin-top:16px">
+        <label for="frizbiApiUrl">URL de l'API</label>
+        <input id="frizbiApiUrl" placeholder="https://apiv2.frizbi.evolnet.fr" style="max-width:320px">
+      </div>
+      <div class="row">
+        <label for="frizbiSenderId">Sender ID</label>
+        <input id="frizbiSenderId" maxlength="11" placeholder="IVRY" style="max-width:160px">
+      </div>
+      <div class="row">
+        <label for="frizbiClientId">Client ID</label>
+        <input id="frizbiClientId" style="max-width:280px">
+      </div>
+      <div class="row">
+        <label for="frizbiClientSecret">Client Secret</label>
+        <input id="frizbiClientSecret" type="password" style="max-width:280px">
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="btnSaveFrizbi">Enregistrer</button>
+        <button id="btnTestFrizbiConnection" class="ghost">Tester la connexion</button>
+        <span id="frizbiStatus" class="muted"></span>
+      </div>
+      <div class="row" style="margin-top:24px">
+        <h3>Envoi de test</h3>
+      </div>
+      <div class="row">
+        <input id="frizbiTestMobile" type="tel" placeholder="06XXXXXXXX" style="max-width:200px">
+        <button id="btnSendFrizbiTest" class="ghost">Envoyer un SMS de test</button>
+      </div>
+
+      <div class="row" style="margin-top:24px">
+        <h3>Callback de statut</h3>
+      </div>
+      <p class="muted">
+        À enregistrer côté Frizbi (Admin &gt; API) pour recevoir les statuts de remise en temps réel, sans attendre le polling automatique (toutes les 60 s).
+        Préfixez par l'URL publique de l'API (port 3250, celle utilisée par les passerelles) :
+      </p>
+      <div class="row">
+        <input id="frizbiCallbackPath" readonly style="max-width:520px" class="code">
+        <button id="btnCopyFrizbiCallback" class="ghost">Copier</button>
+      </div>
+
+      <div class="row" style="margin-top:24px">
+        <h3>Journal Frizbi</h3>
+        <button id="btnRefreshFrizbiEvents" class="ghost">Actualiser</button>
+      </div>
+      <p class="muted">La documentation Frizbi ne détaille pas le format exact des callbacks/statuts : ce journal montre les données brutes reçues, utile pour vérifier/ajuster une fois le trafic réel disponible.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Reçu le</th><th>Source</th><th>Message</th><th>Destinataire</th><th>Statut brut</th><th>Appliqué</th><th>Payload</th></tr></thead>
+        <tbody id="frizbiEventsBody"></tbody>
       </table></div>
     </section>
 

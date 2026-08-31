@@ -8,17 +8,18 @@
         <a href="#help-telephone">2 · Mettre un téléphone en service</a>
         <a href="#help-multi-tel">3 · Plusieurs téléphones</a>
         <a href="#help-multi-pass">4 · Plusieurs passerelles</a>
-        <a href="#help-synchro">5 · Synchro des carnets</a>
-        <a href="#help-cycle">6 · Vie d'un message</a>
-        <a href="#help-blacklist">7 · La liste noire</a>
-        <a href="#help-flotte">8 · Vérification de flotte</a>
-        <a href="#help-mail2sms">9 · Mail vers SMS</a>
-        <a href="#help-roles">10 · Qui fait quoi — les rôles</a>
-        <a href="#help-user">11 · L'utilisateur</a>
-        <a href="#help-admin">12 · L'administrateur</a>
-        <a href="#help-matrice">13 · Matrice des droits</a>
-        <a href="#help-glossaire">14 · Glossaire</a>
-        <a href="#help-depannage">15 · Dépannage</a>
+        <a href="#help-frizbi">5 · Envoi via Frizbi (API externe)</a>
+        <a href="#help-synchro">6 · Synchro des carnets</a>
+        <a href="#help-cycle">7 · Vie d'un message</a>
+        <a href="#help-blacklist">8 · La liste noire</a>
+        <a href="#help-flotte">9 · Vérification de flotte</a>
+        <a href="#help-mail2sms">10 · Mail vers SMS</a>
+        <a href="#help-roles">11 · Qui fait quoi — les rôles</a>
+        <a href="#help-user">12 · L'utilisateur</a>
+        <a href="#help-admin">13 · L'administrateur</a>
+        <a href="#help-matrice">14 · Matrice des droits</a>
+        <a href="#help-glossaire">15 · Glossaire</a>
+        <a href="#help-depannage">16 · Dépannage</a>
       </nav>
 
       <article class="help-block" id="help-principe">
@@ -271,10 +272,12 @@
       <article class="help-block" id="help-multi-tel">
         <h3>3 · Plusieurs téléphones pour une même passerelle</h3>
         <p>
-          Un téléphone envoie un SMS toutes les quelques secondes : au-delà de quelques centaines de messages, il
-          devient le goulot d'étranglement. Il suffit alors de déclarer <strong>une clé « passerelle » par
-          téléphone</strong> et de les faire pointer vers le même serveur. Aucune configuration supplémentaire n'est
-          nécessaire côté serveur : la répartition est automatique.
+          Un téléphone envoie un SMS toutes les quelques secondes : au-delà de quelques centaines de destinataires,
+          il devient le goulot d'étranglement — et surtout, sa carte SIM grand public risque de dépasser le quota de
+          destinataires distincts que l'opérateur tolère avant de bloquer la ligne pour suspicion de spam (souvent
+          autour de 200 par mois). Il suffit alors de déclarer <strong>une clé « passerelle » par téléphone</strong>
+          et de les faire pointer vers le même serveur : chaque téléphone apporte sa propre ligne, donc son propre
+          quota. Aucune configuration supplémentaire n'est nécessaire côté serveur : la répartition est automatique.
         </p>
 
         <figure class="figure">
@@ -291,8 +294,8 @@
             <rect class="d-queue" x="180" y="188" width="18" height="18" rx="4"/>
             <rect class="d-queue" x="202" y="188" width="18" height="18" rx="4"/>
             <rect class="d-queue" x="224" y="188" width="18" height="18" rx="4"/>
-            <text class="d-m" x="158" y="230" text-anchor="middle">chaque téléphone actif réclame</text>
-            <text class="d-m" x="158" y="248" text-anchor="middle">environ 1/N de la file</text>
+            <text class="d-m" x="158" y="230" text-anchor="middle">chaque numéro reste sur le même</text>
+            <text class="d-m" x="158" y="248" text-anchor="middle">téléphone, sous son quota mensuel</text>
 
             <!-- Liaisons -->
             <path class="d-line-accent" d="M292 158 C 460 158, 520 64, 692 64"/>
@@ -329,14 +332,16 @@
             <text class="d-s" x="804" y="290" text-anchor="start">Téléphone 3</text>
             <text class="d-m" x="804" y="308" text-anchor="start">clé passerelle C</text>
           </svg>
-          <figcaption>Trois téléphones actifs se partagent la file : chacun ne prend qu'un tiers des messages en attente.</figcaption>
+          <figcaption>Trois téléphones actifs se partagent la file, chacun sous son propre quota de destinataires distincts.</figcaption>
         </figure>
 
         <ul class="help-list">
-          <li><b>Répartition automatique.</b> À chaque tour de 60&nbsp;secondes, le serveur compte les téléphones actifs et n'accorde à chacun qu'environ 1/N des messages en attente. Le débit est donc multiplié par le nombre de téléphones.</li>
-          <li><b>Rattrapage.</b> Si un message attend depuis plus d'un intervalle, il devient prenable par n'importe quel téléphone : une panne de terminal ne bloque jamais la file.</li>
-          <li><b>Reprise des blocages.</b> Un message resté « en cours d'envoi » plus de 10&nbsp;minutes (téléphone éteint, hors réseau) est automatiquement remis à disposition d'un autre téléphone.</li>
-          <li><b>Supervision.</b> L'onglet <em>Passerelles</em> indique pour chaque téléphone son dernier contact, sa version d'APK et son compteur d'envois ; la pastille verte en haut de page compte les téléphones actifs.</li>
+          <li><b>Un numéro, un téléphone.</b> Le serveur attribue chaque destinataire au téléphone le moins chargé (en nombre de destinataires distincts contactés récemment), et s'en souvient : si ce numéro reçoit un autre SMS plus tard, il repart automatiquement par le même téléphone, tant que celui-ci reste en ligne — reprendre un numéro déjà contacté ne coûte rien de plus sur le quota de cette ligne, alors que le faire partir d'une ligne différente en consommerait un de plus, pour rien.</li>
+          <li><b>Quota par téléphone.</b> Réglable dans l'onglet <em>Passerelles</em> (180 destinataires distincts par défaut, sur une fenêtre glissante de 30&nbsp;jours) : protection contre le blocage anti-spam qu'appliquent les opérateurs aux forfaits grand public. La colonne <em>Quota</em> de cet onglet indique, pour chaque téléphone, sa consommation actuelle.</li>
+          <li><b>Si toutes les lignes sont au plafond.</b> Le message part quand même, dès qu'un téléphone se libère — mais sans garantie de répartition. La console affiche alors un avertissement pour vous inviter à ajouter une passerelle plutôt que de laisser une ligne se faire bloquer.</li>
+          <li><b>Rattrapage.</b> Si un message attend depuis plus d'un intervalle, il devient prenable par n'importe quel téléphone : une panne de terminal ne bloque jamais la file. Un message resté « en cours d'envoi » plus de 10&nbsp;minutes (téléphone éteint, hors réseau) est automatiquement remis à disposition d'un autre téléphone, de même que les messages attribués à un téléphone qui a cessé de répondre.</li>
+          <li><b>Un téléphone, deux lignes.</b> Sur un téléphone à double carte SIM, l'application alterne automatiquement 50/50 entre les deux SIM à chaque envoi : c'est un doublement de capacité gratuit, sans configuration, sur un seul appareil. Le quota par téléphone reste néanmoins compté globalement pour l'appareil, pas séparément par SIM — dimensionnez-le en conséquence si vous comptez sur cette capacité doublée.</li>
+          <li><b>Supervision.</b> L'onglet <em>Passerelles</em> indique pour chaque téléphone son dernier contact, sa version d'APK, son compteur d'envois et sa consommation de quota ; la pastille verte en haut de page compte les téléphones actifs.</li>
         </ul>
       </article>
 
@@ -405,12 +410,58 @@
           <li><b>Un profil = une passerelle.</b> Dans l'application Android, chaque profil porte un libellé, l'URL de la passerelle (port API) et la clé « passerelle » créée sur cette passerelle. Les profils s'ajoutent et se retirent sans réinstaller l'APK.</li>
           <li><b>Des clés distinctes.</b> Le même téléphone reçoit une clé différente sur chaque passerelle. Révoquer la clé sur une passerelle ne coupe pas les autres.</li>
           <li><b>Les passerelles s'ignorent.</b> Elles ne communiquent pas entre elles pour les envois : chacune tient sa propre file, ses propres statuts, son propre journal. Seuls les carnets d'adresses peuvent être partagés (voir ci-dessous).</li>
-          <li><b>Une SIM, un forfait.</b> Les SMS des différentes passerelles partagent la même ligne : c'est le point à surveiller lors du dimensionnement, pas la puissance du serveur.</li>
+          <li><b>Une SIM, un forfait.</b> Les SMS des différentes passerelles partagent la même ligne : c'est le point à surveiller lors du dimensionnement, pas la puissance du serveur. Attention en particulier au quota par destinataires distincts (voir section précédente) : chaque passerelle serveur suit sa propre consommation sans savoir ce que la même carte SIM envoie pour les autres, le quota réel de la ligne peut donc être dépassé sans qu'aucune des passerelles ne le voie venir.</li>
+        </ul>
+      </article>
+
+      <article class="help-block" id="help-frizbi">
+        <h3>5 · Envoi via une API externe (Frizbi)</h3>
+        <p>
+          Au-delà d'un certain volume, faire porter l'envoi par des cartes SIM grand public sur des téléphones
+          devient fragile : quota de destinataires distincts, blocage anti-spam opérateur, matériel à entretenir.
+          L'onglet <em>SMS externe (Frizbi)</em> permet de basculer une partie ou la totalité des envois vers une
+          plateforme d'envoi en masse professionnelle (API Frizbi), sans changer la façon dont les messages sont
+          composés côté console.
+        </p>
+
+        <h4 class="help-sub">Le mode d'envoi</h4>
+        <div class="table-wrap"><table class="help-doors">
+          <thead><tr><th>Mode</th><th>Comportement</th></tr></thead>
+          <tbody>
+            <tr><td>Passerelles internes uniquement</td><td>Comportement historique : tout part par les téléphones de la flotte. C'est le mode par défaut, rien ne change si vous ne touchez à rien.</td></tr>
+            <tr><td>Frizbi uniquement</td><td>Tout part par l'API Frizbi, même un envoi à un seul destinataire. Les téléphones de la flotte ne reçoivent plus rien à envoyer (ils continuent en revanche de recevoir les réponses SMS, voir plus bas).</td></tr>
+            <tr><td>Les deux</td><td>Sous le seuil configuré (10 destinataires par défaut), l'envoi part par les passerelles internes ; au-delà, il part par Frizbi en un seul appel groupé, quel que soit le nombre de destinataires.</td></tr>
+          </tbody>
+        </table></div>
+        <p>
+          Le seuil et les identifiants (URL de l'API, sender ID, client ID, client secret) se règlent dans l'onglet
+          lui-même, avec un bouton <em>Tester la connexion</em> et un envoi de SMS de test pour vérifier la
+          configuration avant de l'utiliser en réel.
+        </p>
+
+        <h4 class="help-sub">Ce qui ne change pas</h4>
+        <ul class="help-list">
+          <li><b>La composition du message.</b> Rédaction, variables par contact, pièces jointes : tout se fait exactement comme pour un envoi interne. Le choix du canal est invisible pour la personne qui rédige.</li>
+          <li><b>Le suivi dans l'onglet Messages.</b> Un message parti par Frizbi apparaît avec la mention « Frizbi » dans la colonne <em>Passerelle</em>, à la place du nom d'un téléphone.</li>
+        </ul>
+
+        <p class="help-warn">
+          <b>La vérification de flotte reste toujours envoyée en interne</b>, quel que soit le mode choisi et même
+          au-delà du seuil. Ce contrôle attend une <strong>réponse SMS</strong> du destinataire ; or l'API Frizbi
+          envoie avec un identifiant d'expéditeur alphanumérique (ex.&nbsp;« IVRY »), qui ne peut recevoir aucune
+          réponse — c'est une limitation du réseau GSM, pas de Frizbi en particulier. Router ces messages vers
+          Frizbi romprait donc silencieusement tout le suivi des réponses.
+        </p>
+
+        <h4 class="help-sub">Limites connues à ce jour</h4>
+        <ul class="help-list">
+          <li><b>Pas d'accusé de remise détaillé.</b> Le statut « remis » d'un message parti par Frizbi dépend de ce que l'API renvoie sur son point de statut ; en l'état de la documentation disponible, ce comportement n'est pas garanti pour tous les cas.</li>
+          <li><b>Pas de réception des réponses.</b> Pour la même raison que la vérification de flotte : un message envoyé par Frizbi ne peut pas recevoir de réponse SMS tant que l'expéditeur est un identifiant alphanumérique.</li>
         </ul>
       </article>
 
       <article class="help-block" id="help-synchro">
-        <h3>5 · Synchronisation des carnets entre passerelles</h3>
+        <h3>6 · Synchronisation des carnets entre passerelles</h3>
         <p>
           Les carnets d'adresses sont souvent tenus à jour à un seul endroit (les élus, les agents d'astreinte, une
           liste de diffusion). L'onglet <em>Synchro carnets</em> permet à une passerelle d'aller <strong>recopier
@@ -467,7 +518,7 @@
       </article>
 
       <article class="help-block" id="help-cycle">
-        <h3>6 · La vie d'un message</h3>
+        <h3>7 · La vie d'un message</h3>
         <p>
           Chaque message porte un statut, visible dans l'onglet <em>Messages</em> et filtrable. Comprendre cet
           enchaînement suffit à diagnostiquer la quasi-totalité des situations.
@@ -525,7 +576,7 @@
 
 
       <article class="help-block" id="help-blacklist">
-        <h3>7 · La liste noire</h3>
+        <h3>8 · La liste noire</h3>
         <p>
           La liste noire recense les numéros que la passerelle doit refuser : une personne qui a demandé à ne plus
           être contactée, une ligne résiliée qui a été réattribuée à quelqu'un d'autre, le numéro d'un agent parti.
@@ -557,7 +608,7 @@
       </article>
 
       <article class="help-block" id="help-flotte">
-        <h3>8 · La vérification de flotte</h3>
+        <h3>9 · La vérification de flotte</h3>
         <p>
           Vérifier une flotte, c'est répondre à une question que l'inventaire ne sait pas trancher : <strong>ces
           téléphones sont-ils réellement en service, et leurs porteurs répondent-ils&nbsp;?</strong> La passerelle
@@ -629,7 +680,7 @@
       </article>
 
       <article class="help-block" id="help-mail2sms">
-        <h3>9 · Mail vers SMS : transformer un e-mail en SMS</h3>
+        <h3>10 · Mail vers SMS : transformer un e-mail en SMS</h3>
         <p>
           L'onglet <em>Mail → SMS</em> permet de déclarer des <strong>boîtes mail</strong> (IMAP) que la passerelle
           surveille régulièrement. Un e-mail reçu sur une boîte active, s'il provient d'un <strong>expéditeur
@@ -666,7 +717,7 @@
       </article>
 
       <article class="help-block" id="help-roles">
-        <h3>10 · Qui fait quoi — les rôles</h3>
+        <h3>11 · Qui fait quoi — les rôles</h3>
         <p>
           Deux mondes cohabitent : les <strong>comptes humains</strong>, qui se connectent avec un identifiant et un
           mot de passe sur la console (port web), et les <strong>clés API</strong>, qui authentifient des machines sur
@@ -708,7 +759,7 @@
       </article>
 
       <article class="help-block" id="help-user">
-        <h3>11 · Ce que peut faire un utilisateur</h3>
+        <h3>12 · Ce que peut faire un utilisateur</h3>
         <p>
           Un utilisateur travaille dans l'interface d'envoi, cloisonnée à son groupe. Il ne voit jamais les messages
           des autres groupes, ni la configuration technique de la passerelle.
@@ -761,7 +812,7 @@
       </article>
 
       <article class="help-block" id="help-admin">
-        <h3>12 · Ce que peut faire un administrateur</h3>
+        <h3>13 · Ce que peut faire un administrateur</h3>
         <p>
           L'administrateur dispose de tout ce qui précède, sans cloisonnement par groupe, plus la totalité de la
           configuration et de la supervision.
@@ -779,9 +830,17 @@
           <div class="help-feature">
             <h4>Superviser la flotte de passerelles</h4>
             <ul>
-              <li>Voir chaque téléphone : dernier contact, identifiant d'appareil, version d'APK, messages en cours, envoyés, remis, en échec.</li>
+              <li>Voir chaque téléphone : dernier contact, identifiant d'appareil, version d'APK, messages en cours, envoyés, remis, en échec, et consommation de quota.</li>
+              <li>Régler le quota de destinataires distincts par passerelle et sa fenêtre glissante, pour éviter le blocage anti-spam opérateur.</li>
               <li>Consulter le journal des appels des passerelles (rapports remontés et messages récupérés à chaque tour).</li>
               <li>Repérer les tentatives d'authentification échouées, avec IP et motif.</li>
+            </ul>
+          </div>
+          <div class="help-feature">
+            <h4>Configurer l'envoi via Frizbi</h4>
+            <ul>
+              <li>Choisir le mode d'envoi (interne, Frizbi, ou les deux avec un seuil) et les identifiants de connexion.</li>
+              <li>Tester la connexion et envoyer un SMS de test avant de basculer un vrai volume.</li>
             </ul>
           </div>
           <div class="help-feature">
@@ -819,7 +878,7 @@
       </article>
 
       <article class="help-block" id="help-matrice">
-        <h3>13 · Matrice des droits</h3>
+        <h3>14 · Matrice des droits</h3>
         <div class="table-wrap"><table class="help-matrix">
           <thead>
             <tr>
@@ -851,7 +910,7 @@
       </article>
 
       <article class="help-block" id="help-glossaire">
-        <h3>14 · Glossaire</h3>
+        <h3>15 · Glossaire</h3>
         <dl class="help-gloss">
           <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
           <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
@@ -863,11 +922,14 @@
           <dt>Pièce jointe</dt><dd>Fichier téléversé sur la passerelle et diffusé sous forme de lien ajouté au SMS, avec date d'expiration et suivi des ouvertures.</dd>
           <dt>Profil API</dt><dd>Couple URL + clé enregistré dans l'application Android. Un profil par passerelle servie.</dd>
           <dt>Sondage</dt><dd>Appel périodique du téléphone vers le serveur. Il n'existe aucune connexion entrante vers le téléphone.</dd>
+          <dt>Frizbi</dt><dd>API externe d'envoi de SMS en masse, alternative aux passerelles internes pour les gros volumes. Se configure dans l'onglet <em>SMS externe (Frizbi)</em>.</dd>
+          <dt>Quota (passerelle)</dt><dd>Nombre maximal de destinataires distincts qu'une passerelle interne peut contacter sur une fenêtre glissante (30&nbsp;jours par défaut), pour rester sous le seuil de blocage anti-spam de l'opérateur. Réglable dans l'onglet <em>Passerelles</em>.</dd>
+          <dt>Multi-SIM</dt><dd>Téléphone équipé de deux cartes SIM. L'application y alterne automatiquement les envois 50/50 entre les deux lignes.</dd>
         </dl>
       </article>
 
       <article class="help-block" id="help-depannage">
-        <h3>15 · Dépannage courant</h3>
+        <h3>16 · Dépannage courant</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>Symptôme</th><th>Cause la plus fréquente</th><th>Vérification</th></tr></thead>
           <tbody>
@@ -889,7 +951,27 @@
             <tr>
               <td>« Envoyé » mais jamais « remis »</td>
               <td>L'opérateur ou le mobile destinataire ne renvoie pas d'accusé</td>
-              <td>Comportement normal chez certains opérateurs : l'absence d'accusé ne signifie pas un échec.</td>
+              <td>Comportement normal chez certains opérateurs : l'absence d'accusé ne signifie pas un échec. Un seul segment reçu suffit désormais à faire passer un message long (plusieurs segments) en « remis ».</td>
+            </tr>
+            <tr>
+              <td>Beaucoup de SMS « envoyé » mais très peu « remis », sur un gros envoi</td>
+              <td>Cadence trop régulière et/ou trop de destinataires distincts sur une même ligne : l'opérateur suspecte du spam et limite ou bloque discrètement l'émission</td>
+              <td>Onglet <em>Passerelles</em> : colonne « Quota » de la ligne concernée. Espacer les envois, répartir sur plus de passerelles, et rester sous le quota configuré (180 destinataires distincts/mois par défaut).</td>
+            </tr>
+            <tr>
+              <td>SMS « envoyé » mais jamais reçu, même en test unique, sur une ligne interne</td>
+              <td>La ligne est probablement bloquée par l'opérateur en émission (réception toujours normale) après un envoi en masse trop agressif</td>
+              <td>Tester un envoi manuel depuis l'appli SMS native du téléphone vers un numéro externe fiable : s'il échoue aussi, contacter le support de la ligne pour lever un blocage anti-fraude.</td>
+            </tr>
+            <tr>
+              <td>Un envoi part par Frizbi alors qu'un envoi interne était attendu (ou l'inverse)</td>
+              <td>Mode ou seuil de bascule mal réglé dans l'onglet <em>SMS externe (Frizbi)</em></td>
+              <td>Vérifier le mode choisi et le seuil ; la colonne <em>Passerelle</em> de l'onglet <em>Messages</em> indique « Frizbi » ou le nom d'un téléphone pour chaque message déjà parti.</td>
+            </tr>
+            <tr>
+              <td>Un envoi via Frizbi échoue</td>
+              <td>Identifiants incorrects, service Frizbi indisponible, ou paramètres incomplets</td>
+              <td>Onglet <em>SMS externe (Frizbi)</em> : bouton <em>Tester la connexion</em>. Le motif exact de l'échec est visible dans la colonne « Erreur » de l'onglet <em>Messages</em>.</td>
             </tr>
             <tr>
               <td>Une campagne est refusée d'emblée</td>

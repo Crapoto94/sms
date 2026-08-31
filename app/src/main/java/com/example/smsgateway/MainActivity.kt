@@ -87,7 +87,8 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.SEND_SMS,
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.RECEIVE_MMS,
-            Manifest.permission.RECEIVE_WAP_PUSH
+            Manifest.permission.RECEIVE_WAP_PUSH,
+            Manifest.permission.READ_PHONE_STATE
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             needed.add(Manifest.permission.POST_NOTIFICATIONS)

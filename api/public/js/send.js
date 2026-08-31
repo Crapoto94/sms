@@ -488,13 +488,27 @@ $('btnCancelConfirm').addEventListener('click', () => {
 $('btnConfirmSend').addEventListener('click', async () => {
   const fn = pendingSend;
   if (!fn) return;
+  // On vide pendingSend et on désactive les boutons avant l'attente réseau :
+  // un envoi via Frizbi attend désormais la réponse de l'API externe (plus
+  // long qu'un simple INSERT local), donc un double-clic pendant ce délai
+  // pouvait déclencher deux envois. Les deux garde-fous (variable + bouton
+  // désactivé) se couvrent l'un l'autre.
+  pendingSend = null;
   $('confirmError').textContent = '';
+  $('btnConfirmSend').disabled = true;
+  $('btnCancelConfirm').disabled = true;
+  const originalLabel = $('btnConfirmSend').textContent;
+  $('btnConfirmSend').textContent = 'Envoi en cours…';
   try {
     await fn();
-    pendingSend = null;
     $('confirmModal').classList.add('hidden');
   } catch (e) {
     $('confirmError').textContent = e.message;
+    pendingSend = fn; // permet de réessayer après une erreur
+  } finally {
+    $('btnConfirmSend').disabled = false;
+    $('btnCancelConfirm').disabled = false;
+    $('btnConfirmSend').textContent = originalLabel;
   }
 });
 
@@ -573,9 +587,9 @@ $('btnSendToSelected').addEventListener('click', () => {
       body: JSON.stringify({ bookId: composerBookId, excludeBookId: Number($('excludeBookSelect').value || 0) || null, contactIds, message: body, scheduledAt: scheduledIso(), attachmentId: attachment ? attachment.id : null })
     });
     $('composerSummary').classList.remove('hidden');
-    $('composerSummary').textContent = res.status === 'scheduled'
+    $('composerSummary').textContent = (res.status === 'scheduled'
       ? `${res.count} SMS programmés pour le carnet « ${res.bookName} » : pris en compte, envoi prévu ${scheduleLabel()}.`
-      : `${res.count} SMS pris en compte pour le carnet « ${res.bookName} », envoi immédiat.`;
+      : `${res.count} SMS pris en compte pour le carnet « ${res.bookName} », envoi immédiat.`) + (res.quotaWarning ? ` ⚠ ${res.quotaWarning}` : '');
     checks.forEach((c) => { c.checked = false; });
     selectedContacts = new Set();
     updateComposerCount();

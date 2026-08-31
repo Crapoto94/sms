@@ -118,6 +118,49 @@ CREATE INDEX IF NOT EXISTS idx_messages_status    ON messages(status);
 CREATE INDEX IF NOT EXISTS idx_messages_claimed_by ON messages(claimed_by);
 CREATE INDEX IF NOT EXISTS idx_keys_type          ON keys(type);
 
+-- Envoi de SMS externe (Frizbi) : identifiants API + mode de routage.
+-- mode : 'internal' (passerelles uniquement, comportement historique),
+-- 'frizbi' (toujours Frizbi), 'both' (Frizbi seulement au-delà de
+-- both_threshold destinataires dans un même envoi, sinon passerelles).
+-- Quota par passerelle interne : nombre maxi de destinataires distincts sur
+-- une fenêtre glissante (protection contre le blocage anti-spam opérateur,
+-- ex. SFR limite les forfaits grand public à 200 destinataires distincts/mois).
+CREATE TABLE IF NOT EXISTS gateway_settings (
+  id                INTEGER PRIMARY KEY CHECK (id = 1),
+  quota_cap         INTEGER NOT NULL DEFAULT 180,
+  quota_window_days INTEGER NOT NULL DEFAULT 30
+);
+
+CREATE TABLE IF NOT EXISTS frizbi_settings (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  mode           TEXT    NOT NULL DEFAULT 'internal',
+  both_threshold INTEGER NOT NULL DEFAULT 10,
+  api_url        TEXT    NOT NULL DEFAULT 'https://apiv2.frizbi.evolnet.fr',
+  client_id      TEXT,
+  client_secret  TEXT,
+  sender_id      TEXT    NOT NULL DEFAULT 'IVRY',
+  callback_token TEXT,
+  updated_at     TEXT
+);
+
+-- Journal des callbacks Frizbi reçus (statut d'envoi). La doc V2.3 ne
+-- fournit pas d'exemple JSON pour ce callback ni pour /api/sms/status :
+-- ce journal sert à observer le trafic réel une fois configuré côté
+-- Frizbi (Admin > API) plutôt qu'à deviner le format à l'avance.
+CREATE TABLE IF NOT EXISTS frizbi_events (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  received_at            TEXT    NOT NULL,
+  source                 TEXT    NOT NULL DEFAULT 'callback',
+  message_id             INTEGER,
+  customer_sms_id        TEXT,
+  customer_sms_contact_id TEXT,
+  status_raw             TEXT,
+  payload                TEXT,
+  applied                INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_frizbi_events_received ON frizbi_events(received_at);
+
 CREATE TABLE IF NOT EXISTS gateway_logs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   key_id      INTEGER,
@@ -389,7 +432,20 @@ if (!messageCols.includes('fleet_check_id')) {
 if (!messageCols.includes('mail2sms_email_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN mail2sms_email_id INTEGER');
 }
+if (!messageCols.includes('provider')) {
+  db.exec("ALTER TABLE messages ADD COLUMN provider TEXT NOT NULL DEFAULT 'internal'");
+}
+if (!messageCols.includes('provider_ref')) {
+  db.exec('ALTER TABLE messages ADD COLUMN provider_ref TEXT');
+}
+const frizbiCols = db.prepare('PRAGMA table_info(frizbi_settings)').all().map((c) => c.name);
+if (!frizbiCols.includes('callback_token')) {
+  db.exec('ALTER TABLE frizbi_settings ADD COLUMN callback_token TEXT');
+}
+db.prepare('INSERT OR IGNORE INTO frizbi_settings (id) VALUES (1)').run();
+db.prepare('INSERT OR IGNORE INTO gateway_settings (id) VALUES (1)').run();
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_provider ON messages(provider)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mail2sms_email_id ON messages(mail2sms_email_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');

@@ -7,11 +7,12 @@ const express = require('express');
 const multer = require('multer');
 const db = require('./db');
 const mail2sms = require('./mail2sms');
+const frizbi = require('./frizbi');
 
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.41';
+const APP_VERSION = process.env.APP_VERSION || '1.4.2';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -308,6 +309,179 @@ function setAdminPhone(phone) {
   return db.prepare('UPDATE accounts SET phone = ? WHERE login = ?').run(normalized, '');
 }
 
+// ---------- Répartition des envois entre passerelles internes ----------
+function getGatewaySettings() {
+  return db.prepare('SELECT * FROM gateway_settings WHERE id = 1').get() ||
+    { quota_cap: 180, quota_window_days: 30 };
+}
+
+/**
+ * Détermine quelle passerelle interne (téléphone) doit traiter l'envoi vers
+ * `recipient`, pour ne pas cumuler plus de `quota_cap` destinataires
+ * distincts sur une même ligne dans la fenêtre glissante (protection contre
+ * le blocage anti-spam opérateur, cf. limite contractuelle « SMS illimités »
+ * à ~200 destinataires distincts/mois chez SFR).
+ * - Si une passerelle en ligne a déjà été utilisée pour ce numéro dans la
+ *   fenêtre, on la réutilise : elle a déjà « consommé » ce destinataire, le
+ *   reprendre ne coûte rien de plus sur son quota.
+ * - Sinon, on choisit la passerelle en ligne la moins chargée, si elle a
+ *   encore de la marge sous le plafond.
+ * - Renvoie null si aucune passerelle en ligne n'a de marge disponible ;
+ *   l'appelant retombe alors sur la répartition de charge historique
+ *   (message non attribué, prenable par la première passerelle disponible).
+ */
+function assignGateway(recipient) {
+  const settings = getGatewaySettings();
+  const windowIso = new Date(Date.now() - settings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
+  const onlineCutoff = onlineCutoffIso();
+  const gateways = db.prepare(`
+    SELECT k.id,
+      (SELECT COUNT(DISTINCT m.recipient) FROM messages m
+        WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?) AS recentDistinct
+    FROM keys k
+    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ?
+  `).all(windowIso, onlineCutoff);
+  if (!gateways.length) return null;
+  const sticky = db.prepare(`
+    SELECT claimed_by FROM messages
+    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ?
+    ORDER BY id DESC LIMIT 1
+  `).get(recipient, windowIso);
+  if (sticky) {
+    const match = gateways.find((g) => g.id === sticky.claimed_by);
+    if (match) return match.id;
+  }
+  const eligible = gateways.filter((g) => g.recentDistinct < settings.quota_cap);
+  if (!eligible.length) return null;
+  eligible.sort((a, b) => a.recentDistinct - b.recentDistinct);
+  return eligible[0].id;
+}
+
+// ---------- Envoi de SMS externe (Frizbi) ----------
+function getFrizbiSettings() {
+  const s = db.prepare('SELECT * FROM frizbi_settings WHERE id = 1').get() ||
+    { mode: 'internal', both_threshold: 10, api_url: '', client_id: '', client_secret: '', sender_id: 'IVRY', callback_token: null };
+  if (!s.callback_token) {
+    s.callback_token = crypto.randomBytes(16).toString('hex');
+    db.prepare('UPDATE frizbi_settings SET callback_token = ? WHERE id = 1').run(s.callback_token);
+  }
+  return s;
+}
+
+// Statuts documentés par Frizbi (Frizbi_API_V2.3_Complet.md) : status_sent
+// veut dire « délivré » (pas juste « envoyé »). Les autres valeurs
+// (status_pending_0/status_pending/waiting/pending) veulent dire qu'on n'a
+// pas encore de résultat final -> on ne touche rien dans ce cas (retour null).
+function mapFrizbiStatus(raw) {
+  const s = String(raw || '').toLowerCase();
+  if (['status_sent', 'sent', 'delivered'].includes(s)) return 'delivered';
+  if (['status_error', 'status_sent_not_delivered', 'status_canceled', 'error', 'failed', 'canceled', 'cancelled'].includes(s)) return 'failed';
+  return null;
+}
+
+/**
+ * Interroge périodiquement /api/sms/status pour les envois Frizbi encore
+ * « sent » (accepté par Frizbi, résultat de livraison pas encore connu).
+ * La doc V2.3 ne montre pas le JSON exact renvoyé par cet endpoint : on
+ * gère à la fois un tableau (historique par contact) et un objet unique
+ * (statut agrégé pour tout le lot), et on journalise chaque appel dans
+ * frizbi_events pour permettre d'observer le format réel.
+ */
+async function pollFrizbiStatuses() {
+  const pending = db.prepare(
+    "SELECT DISTINCT provider_ref FROM messages WHERE provider = 'frizbi' AND status = 'sent' AND provider_ref IS NOT NULL"
+  ).all();
+  if (!pending.length) return;
+  const settings = getFrizbiSettings();
+  if (!settings.api_url || !settings.client_id || !settings.client_secret) return;
+  for (const { provider_ref } of pending) {
+    let data;
+    try {
+      data = await frizbi.frizbiStatus(settings, provider_ref);
+    } catch (err) {
+      console.error(`[FRIZBI] statut ${provider_ref} injoignable :`, err.message);
+      continue;
+    }
+    const nowIso = isoNow();
+    const entries = Array.isArray(data) ? data : (Array.isArray(data && data.history) ? data.history : [data]);
+    let anyApplied = false;
+    for (const entry of entries) {
+      if (!entry) continue;
+      const contactId = entry.customerSmsContactId || entry.customer_sms_contact_id;
+      const statusRaw = entry.status || entry.state;
+      const mapped = mapFrizbiStatus(statusRaw);
+      if (!mapped) continue;
+      const byContact = contactId != null && /^\d+$/.test(String(contactId));
+      const where = byContact
+        ? "id = ? AND provider = 'frizbi'"
+        : "provider_ref = ? AND provider = 'frizbi' AND status = 'sent'";
+      const param = byContact ? Number(contactId) : provider_ref;
+      if (mapped === 'delivered') {
+        db.prepare(`UPDATE messages SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?), updated_at = ? WHERE ${where}`).run(nowIso, nowIso, param);
+      } else {
+        db.prepare(`UPDATE messages SET status = 'failed', failed_at = COALESCE(failed_at, ?), error = ?, updated_at = ? WHERE ${where}`).run(nowIso, `Frizbi : ${statusRaw}`, nowIso, param);
+      }
+      anyApplied = true;
+    }
+    db.prepare(`
+      INSERT INTO frizbi_events (received_at, source, customer_sms_id, status_raw, payload, applied)
+      VALUES (?, 'poll', ?, ?, ?, ?)
+    `).run(
+      nowIso, provider_ref,
+      entries.map((e) => e && (e.status || e.state)).filter(Boolean).join(','),
+      JSON.stringify(data).slice(0, 4000),
+      anyApplied ? 1 : 0
+    );
+  }
+}
+setInterval(() => { pollFrizbiStatuses().catch((err) => console.error('[FRIZBI] poll error:', err)); }, 60 * 1000);
+
+// Décide, pour un envoi groupé de `count` destinataires, quel canal utiliser.
+// 'both' : Frizbi seulement au-delà du seuil configuré, sinon passerelles.
+function decideSmsProvider(count) {
+  const s = getFrizbiSettings();
+  if (s.mode === 'frizbi') return 'frizbi';
+  if (s.mode === 'both' && count > (s.both_threshold || 10)) return 'frizbi';
+  return 'internal';
+}
+
+/**
+ * Envoie via Frizbi un lot de messages déjà insérés (provider = 'frizbi')
+ * et met à jour leur statut selon le résultat. Regroupe par corps de
+ * message identique : un appel Frizbi ne porte qu'un seul texte, donc un
+ * envoi avec variables par contact peut donner plusieurs appels (un par
+ * variante), un envoi au texte commun n'en fait qu'un seul quel que soit
+ * le nombre de destinataires.
+ */
+async function dispatchFrizbiBatch(entries, { title } = {}) {
+  if (!entries.length) return;
+  const settings = getFrizbiSettings();
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!groups.has(entry.body)) groups.set(entry.body, []);
+    groups.get(entry.body).push(entry);
+  }
+  for (const [body, group] of groups) {
+    const nowIso = isoNow();
+    const ids = group.map((e) => e.messageId);
+    const placeholders = ids.map(() => '?').join(',');
+    try {
+      const result = await frizbi.frizbiSend(settings, {
+        title,
+        message: body,
+        contacts: group.map((e) => ({ id: e.messageId, mobile: e.recipient, firstName: e.firstName, lastName: e.lastName }))
+      });
+      db.prepare(
+        `UPDATE messages SET status = 'sent', provider_ref = ?, sent_at = ?, updated_at = ? WHERE id IN (${placeholders})`
+      ).run(result.customerSmsId, nowIso, nowIso, ...ids);
+    } catch (err) {
+      db.prepare(
+        `UPDATE messages SET status = 'failed', failed_at = ?, error = ?, updated_at = ? WHERE id IN (${placeholders})`
+      ).run(nowIso, String((err && err.message) || err).slice(0, 500), nowIso, ...ids);
+    }
+  }
+}
+
 // ---------- Anti-bruteforce sur la connexion console ----------
 // Suit les échecs consécutifs par IP + login tenté (en mémoire). Chaque échec
 // augmente le délai d'attente imposé avant la prochaine tentative, et les
@@ -585,7 +759,7 @@ apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle
 });
 
 // Envoi d'un SMS demandé par une application web (clé type "web")
-apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
+apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, async (req, res) => {
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
   const withAttachment = messageBodyWithAttachment(
@@ -599,15 +773,23 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, (req, res) => {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
   if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
+  const provider = decideSmsProvider(1);
+  const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, `API WEB : ${req.apiKey.label}`, createdAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, `API WEB : ${req.apiKey.label}`, createdAt, provider, claimedBy);
+  let finalStatus = 'pending';
+  if (provider === 'frizbi') {
+    await dispatchFrizbiBatch([{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: 'Ville d’Ivry' });
+    finalStatus = db.prepare('SELECT status FROM messages WHERE id = ?').get(info.lastInsertRowid).status;
+  }
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
     message: withAttachment.body,
-    status: 'pending',
+    status: finalStatus,
+    provider,
     createdAt,
     attachment: withAttachment.attachment
       ? { id: withAttachment.attachment.id, name: withAttachment.attachment.original_name, url: publicAttachmentUrl(req, withAttachment.attachment.token) }
@@ -678,6 +860,10 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
     // laisser les autres passerelles récupérer les leurs. Les messages en
     // attente depuis >= 1 intervalle sont prenables par le premier venu,
     // pour qu'aucun message ne soit oublié si une passerelle ne revient pas.
+    // Ceci ne s'applique qu'aux messages NON attribués à la création (cf.
+    // assignGateway) : c'est le pool historique/de secours quand aucune
+    // passerelle n'avait de marge disponible sous son quota au moment de
+    // l'envoi.
     const intervalMs = SYNC_INTERVAL_SEC * 1000;
     const claimState = db.prepare('SELECT * FROM claim_state WHERE id = 1').get();
     if (!claimState.round_started || Date.now() - Date.parse(claimState.round_started) >= intervalMs) {
@@ -687,7 +873,7 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
     }
 
     const pendingCount = db.prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE status = 'pending'"
+      "SELECT COUNT(*) AS c FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL"
     ).get().c;
 
     const activeCutoff = onlineCutoffIso();
@@ -708,16 +894,32 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
     const cutoff = new Date(now.getTime() - SENDING_STALE_MS).toISOString();
     const escalationCutoff = new Date(now.getTime() - ESCALATION_MS).toISOString();
     const stale = db.prepare(
-      "SELECT * FROM messages WHERE status = 'sending' AND claimed_at < ? ORDER BY id ASC LIMIT ?"
+      "SELECT * FROM messages WHERE status = 'sending' AND provider = 'internal' AND claimed_at < ? ORDER BY id ASC LIMIT ?"
     ).all(cutoff, CLAIM_LIMIT);
+    // Messages déjà attribués à MOI par le serveur à la création (cf.
+    // assignGateway) : je les prends sans limite de partage, ils ne sont
+    // prenables par personne d'autre tant que je suis en ligne.
+    const mine = db.prepare(
+      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by = ? ORDER BY id ASC LIMIT ?"
+    ).all(req.apiKey.id, CLAIM_LIMIT);
+    // Messages attribués à une passerelle qui semble hors-ligne : n'importe
+    // quelle passerelle en ligne peut les récupérer pour ne pas les perdre.
+    const orphaned = db.prepare(`
+      SELECT m.* FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+      WHERE m.status = 'pending' AND m.provider = 'internal' AND m.claimed_by IS NOT NULL
+        AND m.claimed_by <> ? AND (k.last_seen_at IS NULL OR k.last_seen_at <= ?)
+      ORDER BY m.id ASC LIMIT ?
+    `).all(req.apiKey.id, activeCutoff, CLAIM_LIMIT);
     const pending = db.prepare(
-      "SELECT * FROM messages WHERE status = 'pending' ORDER BY id ASC LIMIT ?"
+      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL ORDER BY id ASC LIMIT ?"
     ).all(CLAIM_LIMIT);
 
     const toClaim = [];
     let pendingClaimed = 0;
     const add = (m) => { if (toClaim.length < CLAIM_LIMIT) toClaim.push(m); };
     for (const m of stale) add(m);
+    for (const m of mine) add(m);
+    for (const m of orphaned) add(m);
     for (const m of pending) {
       if (toClaim.length >= CLAIM_LIMIT) break;
       if (m.created_at <= escalationCutoff) { add(m); pendingClaimed++; }
@@ -796,6 +998,44 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
     recordFleetResponse(message.sender, message.body, message.receivedAt);
   }
   res.json({ accepted });
+});
+
+// Callback temps réel Frizbi (statut d'envoi). À configurer côté Frizbi
+// (Admin > API) avec l'URL affichée dans la console (onglet SMS externe).
+// La doc V2.3 ne montre qu'un exemple d'URL (?customerSmsContactId=id),
+// sans détail des autres paramètres réellement envoyés : on accepte GET et
+// POST, on cherche un champ de statut sous plusieurs noms plausibles, et on
+// journalise systématiquement le payload brut dans frizbi_events pour
+// permettre d'observer et d'ajuster une fois le trafic réel disponible.
+apiApp.all('/api/v1/frizbi/callback', (req, res) => {
+  const params = { ...req.query, ...(req.body || {}) };
+  const settings = getFrizbiSettings();
+  const providedToken = params.token || req.get('x-frizbi-token');
+  if (settings.callback_token && providedToken !== settings.callback_token) {
+    return res.status(403).json({ error: 'Jeton invalide' });
+  }
+  const nowIso = isoNow();
+  const contactId = params.customerSmsContactId || params.customer_sms_contact_id || null;
+  const smsId = params.customerSmsId || params.customer_sms_id || null;
+  const statusRaw = params.status || params.state || params.smsStatus || params.deliveryStatus || null;
+  let messageId = null;
+  let applied = false;
+  if (contactId != null && /^\d+$/.test(String(contactId))) {
+    messageId = Number(contactId);
+    const mapped = mapFrizbiStatus(statusRaw);
+    if (mapped === 'delivered') {
+      db.prepare("UPDATE messages SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?), updated_at = ? WHERE id = ? AND provider = 'frizbi'").run(nowIso, nowIso, messageId);
+      applied = true;
+    } else if (mapped === 'failed') {
+      db.prepare("UPDATE messages SET status = 'failed', failed_at = COALESCE(failed_at, ?), error = ?, updated_at = ? WHERE id = ? AND provider = 'frizbi'").run(nowIso, `Frizbi : ${statusRaw}`, nowIso, messageId);
+      applied = true;
+    }
+  }
+  db.prepare(`
+    INSERT INTO frizbi_events (received_at, source, message_id, customer_sms_id, customer_sms_contact_id, status_raw, payload, applied)
+    VALUES (?, 'callback', ?, ?, ?, ?, ?, ?)
+  `).run(nowIso, messageId, smsId, contactId, statusRaw, JSON.stringify(params).slice(0, 4000), applied ? 1 : 0);
+  res.json({ ok: true });
 });
 
 // ---------- Interface web (port 3251) ----------
@@ -1082,6 +1322,8 @@ webApp.delete('/admin/api/keys/:id', requireAdmin, (req, res) => {
 
 webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
   const cutoff = onlineCutoffIso();
+  const gwSettings = getGatewaySettings();
+  const windowIso = new Date(Date.now() - gwSettings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
   const gateways = db.prepare(`
     SELECT
       k.id, k.label, k.device_id, k.app_version, k.last_seen_at, k.last_used_at,
@@ -1089,12 +1331,28 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sending')  AS sending,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sent')      AS sent,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'delivered') AS delivered,
-      (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'failed')    AS failed
+      (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'failed')    AS failed,
+      (SELECT COUNT(DISTINCT m.recipient) FROM messages m
+        WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?)         AS recentDistinctRecipients
     FROM keys k
     WHERE k.type = 'gateway'
     ORDER BY k.last_seen_at DESC
-  `).all().map((g) => ({ ...g, online: !!(g.last_seen_at && g.last_seen_at > cutoff) }));
+  `).all(windowIso).map((g) => ({ ...g, online: !!(g.last_seen_at && g.last_seen_at > cutoff), quotaCap: gwSettings.quota_cap }));
   res.json(gateways);
+});
+
+webApp.get('/admin/api/gateway-settings', requireAdmin, (_req, res) => {
+  res.json(getGatewaySettings());
+});
+
+webApp.post('/admin/api/gateway-settings', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const quotaCap = Math.max(1, parseInt(body.quotaCap, 10) || 180);
+  const quotaWindowDays = Math.max(1, parseInt(body.quotaWindowDays, 10) || 30);
+  db.prepare('UPDATE gateway_settings SET quota_cap = ?, quota_window_days = ? WHERE id = 1')
+    .run(quotaCap, quotaWindowDays);
+  logConsole(req, 'config quota passerelles', `cap=${quotaCap} fenêtre=${quotaWindowDays}j`);
+  res.json({ ok: true });
 });
 
 webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
@@ -1130,7 +1388,7 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
     m.sent_at,
     m.delivered_at,
     m.failed_at,
-    m.gateway_label,
+    m.provider === 'frizbi' ? 'Frizbi' : (m.gateway_label || ''),
     m.device_id,
     m.attachment_name,
     m.attachment_open_count || 0,
@@ -1237,7 +1495,7 @@ webApp.get('/admin/api/messages/counts', (req, res) => {
   res.json({ counts });
 });
 
-webApp.post('/admin/api/messages', (req, res) => {
+webApp.post('/admin/api/messages', async (req, res) => {
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
   const withAttachment = messageBodyWithAttachment(
@@ -1257,18 +1515,26 @@ webApp.post('/admin/api/messages', (req, res) => {
   const groupId = req.session.role === 'admin' ? (Number(req.body.groupId) || null) : req.session.groupId;
   const sched = scheduleInfo(req.body.scheduledAt);
   if (sched && sched.error) return res.status(400).json({ error: sched.error });
+  const provider = decideSmsProvider(1);
+  const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
   const status = sched ? 'scheduled' : 'pending';
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, scheduledAt);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, scheduledAt, provider, claimedBy);
+  let finalStatus = status;
+  if (!sched && provider === 'frizbi') {
+    await dispatchFrizbiBatch([{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: 'Ville d’Ivry' });
+    finalStatus = db.prepare('SELECT status FROM messages WHERE id = ?').get(info.lastInsertRowid).status;
+  }
   logConsole(req, 'envoi', null, 1);
   res.status(201).json({
     id: info.lastInsertRowid,
     recipient,
     message: withAttachment.body,
-    status,
+    status: finalStatus,
+    provider,
     createdAt,
     attachment: withAttachment.attachment
       ? { id: withAttachment.attachment.id, name: withAttachment.attachment.original_name, url: publicAttachmentUrl(req, withAttachment.attachment.token) }
@@ -1276,7 +1542,7 @@ webApp.post('/admin/api/messages', (req, res) => {
   });
 });
 
-webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
+webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
   const input = Array.isArray(req.body.messages) ? req.body.messages : [];
   const MAX_IMPORT = 5000;
   if (input.length === 0) return res.status(400).json({ error: 'Aucune ligne à importer' });
@@ -1308,15 +1574,21 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
   }
   const groupId = Number(req.body.groupId) || null;
   const createdAt = isoNow();
+  const provider = decideSmsProvider(toInsert.length);
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   let created = 0;
+  let unassignedCount = 0;
+  const dispatchEntries = [];
   if (toInsert.length) {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        insert.run(recipient, message, 'pending', 'console', 'Console', null, req.session.accountId, req.session.login, createdAt, groupId);
+        const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
+        if (provider === 'internal' && claimedBy == null) unassignedCount++;
+        const msgInfo = insert.run(recipient, message, 'pending', 'console', 'Console', null, req.session.accountId, req.session.login, createdAt, groupId, provider, claimedBy);
+        dispatchEntries.push({ messageId: msgInfo.lastInsertRowid, recipient, body: message });
         created++;
       }
       db.exec('COMMIT');
@@ -1325,8 +1597,16 @@ webApp.post('/admin/api/messages/import', requireAdmin, (req, res) => {
       throw err;
     }
   }
+  if (created > 0 && provider === 'frizbi') {
+    await dispatchFrizbiBatch(dispatchEntries, { title: 'Ville d’Ivry' });
+  }
   if (created > 0) logConsole(req, 'import', `${toInsert.length} ligne(s) lue(s)`, created);
-  res.status(201).json({ rows: input.length, duplicates, invalid, created });
+  res.status(201).json({
+    rows: input.length, duplicates, invalid, created,
+    quotaWarning: unassignedCount > 0
+      ? `${unassignedCount} destinataire(s) sans passerelle disponible sous le quota configuré.`
+      : null
+  });
 });
 
 webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
@@ -1357,6 +1637,86 @@ webApp.post('/admin/api/security/phone', requireAdmin, (req, res) => {
   res.json({ ok: true, adminPhone: getAdminPhone() });
 });
 
+// ---------- Configuration Frizbi (SMS externe) ----------
+webApp.get('/admin/api/frizbi-settings', requireAdmin, (_req, res) => {
+  const s = getFrizbiSettings();
+  res.json({ ...s, client_secret: s.client_secret ? '••••••••' : '' });
+});
+
+webApp.post('/admin/api/frizbi-settings', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  const mode = ['internal', 'frizbi', 'both'].includes(body.mode) ? body.mode : 'internal';
+  const bothThreshold = Math.max(1, parseInt(body.bothThreshold, 10) || 10);
+  const apiUrl = String(body.apiUrl || '').trim();
+  const clientId = String(body.clientId || '').trim();
+  const senderId = String(body.senderId || '').trim().slice(0, 11) || 'IVRY';
+  if ((mode === 'frizbi' || mode === 'both') && (!apiUrl || !clientId)) {
+    return res.status(400).json({ error: 'URL de l’API et Client ID requis pour activer Frizbi' });
+  }
+  const existing = db.prepare('SELECT client_secret FROM frizbi_settings WHERE id = 1').get();
+  const rawSecret = body.clientSecret;
+  const clientSecret = (rawSecret === '••••••••' || rawSecret === undefined) && existing
+    ? existing.client_secret
+    : String(rawSecret || '');
+  db.prepare(`
+    UPDATE frizbi_settings
+    SET mode = ?, both_threshold = ?, api_url = ?, client_id = ?, client_secret = ?, sender_id = ?, updated_at = ?
+    WHERE id = 1
+  `).run(mode, bothThreshold, apiUrl, clientId, clientSecret, senderId, isoNow());
+  logConsole(req, 'config Frizbi', `mode=${mode} seuil=${bothThreshold}`);
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/frizbi/test-connection', requireAdmin, async (req, res) => {
+  try {
+    const existing = db.prepare('SELECT client_secret FROM frizbi_settings WHERE id = 1').get();
+    const body = req.body || {};
+    const clientSecret = (body.clientSecret === '••••••••' || !body.clientSecret) && existing
+      ? existing.client_secret
+      : body.clientSecret;
+    const token = await frizbi.frizbiLogin({
+      api_url: String(body.apiUrl || '').trim(),
+      client_id: String(body.clientId || '').trim(),
+      client_secret: clientSecret
+    });
+    res.json({ success: !!token, message: 'Connexion à Frizbi réussie' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+webApp.post('/admin/api/frizbi/send-test', requireAdmin, async (req, res) => {
+  const mobile = normalizePhone(String((req.body || {}).mobile || ''));
+  if (!/^\+?[0-9]{4,15}$/.test(mobile)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  const settings = getFrizbiSettings();
+  if (!settings.api_url || !settings.client_id || !settings.client_secret) {
+    return res.status(400).json({ error: 'Paramètres Frizbi incomplets' });
+  }
+  try {
+    await frizbi.frizbiSend(settings, {
+      title: 'Test',
+      message: 'Ceci est un SMS de test envoyé depuis la passerelle SMS (Frizbi).',
+      contacts: [{ id: 'test', mobile, firstName: 'Test', lastName: '' }]
+    });
+    logConsole(req, 'test Frizbi', mobile);
+    res.json({ success: true, message: 'SMS de test envoyé avec succès' });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Journal des callbacks/interrogations de statut Frizbi reçus — permet
+// d'observer le format réel des données envoyées par Frizbi (non détaillé
+// dans la doc V2.3) et de vérifier que les statuts sont bien appliqués.
+webApp.get('/admin/api/frizbi/events', requireAdmin, (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const rows = db.prepare(`
+    SELECT e.*, m.recipient, m.status AS message_status
+    FROM frizbi_events e LEFT JOIN messages m ON m.id = e.message_id
+    ORDER BY e.id DESC LIMIT ?
+  `).all(limit);
+  res.json(rows);
+});
 
 // ---------- Mail → SMS (admin) ----------
 function mail2smsBoxFromBody(body, isCreate) {
@@ -2365,7 +2725,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
 // Envoi vers un carnet d'adresses : crée une « campagne » (une entrée
 // groupée dans le journal, nommée d'après le carnet) et un message par
 // contact sélectionné, rattaché à la campagne et au groupe du carnet.
-webApp.post('/admin/api/campaigns', (req, res) => {
+webApp.post('/admin/api/campaigns', async (req, res) => {
   const body = req.body || {};
   const bookId = Number(body.bookId);
   const excludeBookId = Number(body.excludeBookId) || 0;
@@ -2412,12 +2772,14 @@ webApp.post('/admin/api/campaigns', (req, res) => {
   if (blocked.length) {
     return res.status(400).json({ error: `Envoi impossible : ${blocked.map((contact) => contact.phone).join(', ')} est/sont blacklisté(s)` });
   }
+  const provider = decideSmsProvider(contacts.length);
   const status = sched ? 'scheduled' : 'pending';
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const groupId = book.group_id;
   let campaignId;
   const clonedAttachmentPaths = [];
+  const dispatchEntries = [];
   db.exec('BEGIN');
   try {
     const info = db.prepare(
@@ -2425,14 +2787,17 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
-      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
+    let unassignedCount = 0;
     for (const c of contacts) {
       const renderedMessage = renderContactBody(message, c);
       if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
         db.exec('ROLLBACK');
         return res.status(400).json({ error: `Message trop long pour ${c.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
       }
+      const claimedBy = provider === 'internal' ? assignGateway(c.phone) : null;
+      if (provider === 'internal' && claimedBy == null) unassignedCount++;
       let messageBody = renderedMessage;
       let attachmentId = null;
       if (withAttachment.attachment) {
@@ -2441,7 +2806,8 @@ webApp.post('/admin/api/campaigns', (req, res) => {
         attachmentId = copy.id;
         messageBody = `${renderedMessage}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
       }
-      insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, campaignId, scheduledAt);
+      const msgInfo = insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, campaignId, scheduledAt, provider, claimedBy);
+      dispatchEntries.push({ messageId: msgInfo.lastInsertRowid, recipient: c.phone, body: messageBody, firstName: c.first_name, lastName: c.last_name });
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -2449,8 +2815,16 @@ webApp.post('/admin/api/campaigns', (req, res) => {
     for (const filePath of clonedAttachmentPaths) fs.rmSync(filePath, { force: true });
     throw err;
   }
+  if (!sched && provider === 'frizbi') {
+    await dispatchFrizbiBatch(dispatchEntries, { title: book.name });
+  }
   logConsole(req, 'campagne', book.name, contacts.length);
-  res.status(201).json({ id: campaignId, bookName: book.name, count: contacts.length, status });
+  res.status(201).json({
+    id: campaignId, bookName: book.name, count: contacts.length, status, provider,
+    quotaWarning: unassignedCount > 0
+      ? `${unassignedCount} destinataire(s) sans passerelle disponible sous le quota configuré : mis en file sans garantie de répartition.`
+      : null
+  });
 });
 
 webApp.get('/admin/api/blacklist', (req, res) => {
@@ -2471,6 +2845,12 @@ webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
   res.json({ phone, blacklisted: false });
 });
 
+// NB : la vérification de flotte reste toujours en interne (passerelles),
+// jamais routée vers Frizbi, quel que soit le mode/seuil configuré. Ce
+// contrôle attend une RÉPONSE SMS du destinataire ; Frizbi envoie avec un
+// sender_id alphanumérique (ex. « IVRY »), qui ne peut recevoir aucune
+// réponse (limitation standard GSM, pas spécifique à Frizbi). Router ces
+// messages vers Frizbi casserait donc silencieusement le suivi des réponses.
 webApp.post('/admin/api/fleet-checks', (req, res) => {
   const body = req.body || {};
   const bookId = Number(body.bookId);
@@ -2514,22 +2894,25 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     `).run(book.group_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt);
     checkId = check.lastInsertRowid;
     const insertMessage = db.prepare(`
-      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id)
-      VALUES (?, ?, 'pending', 'console', 'Console', ?, ?, ?, ?, ?)
+      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id, claimed_by)
+      VALUES (?, ?, 'pending', 'console', 'Console', ?, ?, ?, ?, ?, ?)
     `);
     const insertItem = db.prepare(`
       INSERT INTO fleet_check_items
         (fleet_check_id, message_id, contact_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, state)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `);
+    let unassignedCount = 0;
     for (const contact of contacts) {
       const renderedMessage = renderContactBody(message, contact);
       if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
         db.exec('ROLLBACK');
         return res.status(400).json({ error: `Message trop long pour ${contact.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
       }
+      const claimedBy = assignGateway(contact.phone);
+      if (claimedBy == null) unassignedCount++;
       const msg = insertMessage.run(
-        contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id
+        contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id, claimedBy
       );
       insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity,
         contact.service, contact.direction, contact.imei, contact.puk, contact.line_status, contact.plan, contact.device_terminal, contact.secondary_line, contact.phone);
@@ -2540,7 +2923,12 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     throw err;
   }
   logConsole(req, 'verif flotte', book.name, contacts.length);
-  res.status(201).json({ id: checkId, bookName: book.name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt });
+  res.status(201).json({
+    id: checkId, bookName: book.name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt,
+    quotaWarning: unassignedCount > 0
+      ? `${unassignedCount} destinataire(s) sans passerelle disponible sous le quota configuré.`
+      : null
+  });
 });
 
 function fleetCheckVisible(req, id) {
@@ -2650,13 +3038,24 @@ webApp.listen(PORT_WEB, '0.0.0.0', () => {
 });
 
 // Envois différés : les messages "scheduled" dont l'heure est arrivée
-// passent en "pending" et sont récupérés par les passerelles.
+// passent en "pending" (récupérés par les passerelles) s'ils sont routés en
+// interne, ou sont directement envoyés via Frizbi s'ils sont routés externe
+// (Frizbi n'a pas de file d'attente : l'appel se fait au moment de l'envoi).
 setInterval(() => {
   try {
     const now = isoNow();
     db.prepare(
-      "UPDATE messages SET status = 'pending', updated_at = ? WHERE status = 'scheduled' AND scheduled_at <= ?"
+      "UPDATE messages SET status = 'pending', updated_at = ? WHERE status = 'scheduled' AND scheduled_at <= ? AND provider = 'internal'"
     ).run(now, now);
+    const dueFrizbi = db.prepare(
+      "SELECT id, recipient, body FROM messages WHERE status = 'scheduled' AND scheduled_at <= ? AND provider = 'frizbi'"
+    ).all(now);
+    if (dueFrizbi.length) {
+      dispatchFrizbiBatch(
+        dueFrizbi.map((m) => ({ messageId: m.id, recipient: m.recipient, body: m.body })),
+        { title: 'Ville d’Ivry' }
+      ).catch((err) => console.error('[FRIZBI] dispatch programmé error:', err));
+    }
   } catch (_) { /* ne bloque jamais */ }
 }, 10 * 1000);
 

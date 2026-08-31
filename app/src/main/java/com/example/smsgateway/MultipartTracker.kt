@@ -110,18 +110,18 @@ object MultipartTracker {
     }
 
     /**
-     * Confirmation de remise d'un segment. Renvoie "delivered" lorsque tous les
-     * segments sont remis, sinon null (ou null si l'envoi a déjà échoué).
+     * Confirmation de remise d'un segment. Un seul segment livré suffit à
+     * considérer le SMS entier comme "remis" : de nombreux opérateurs ne
+     * renvoient qu'un seul accusé de remise pour tout un message concaténé
+     * (pas un par segment), donc exiger la remise de TOUS les segments
+     * laissait des messages réellement livrés bloqués indéfiniment sur
+     * "envoyé". Les accusés suivants pour les autres segments du même
+     * message sont ignorés (déjà remonté).
      */
     fun onDelivered(context: Context, profileId: String, id: String, partIndex: Int, partTotal: Int): StatusReport? {
         val s = read(context, profileId, id)
-        if (s.sentTotal == 0 || s.sentFail > 0) return null
-        if (s.deliveredTotal == 0) s.deliveredTotal = partTotal
+        if (s.sentTotal == 0 || s.sentFail > 0 || s.deliveredDone) return null
         s.deliveredOk++
-        if (s.deliveredOk < s.deliveredTotal) {
-            write(context, profileId, id, s)
-            return null
-        }
         s.deliveredDone = true
         val report = StatusReport(profileId, id, "delivered", null, System.currentTimeMillis())
         write(context, profileId, id, s)

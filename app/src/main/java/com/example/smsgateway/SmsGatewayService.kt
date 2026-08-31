@@ -23,6 +23,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.random.Random
 
 /**
  * Service en avant-plan : toutes les [Config.getPollingIntervalMs],
@@ -116,7 +117,7 @@ class SmsGatewayService : Service() {
         if (next != null) {
             sendMessage(next)
             updateNotification()
-            handler.postDelayed(cycleRunnable, batchIntervalMs)
+            handler.postDelayed(cycleRunnable, jitteredInterval(batchIntervalMs))
             return
         }
 
@@ -276,6 +277,17 @@ class SmsGatewayService : Service() {
 
     private fun now(): Long = System.currentTimeMillis()
 
+    /**
+     * Ajoute une variation aléatoire de ±30% autour de l'intervalle de base
+     * entre deux envois, pour éviter une cadence parfaitement mécanique
+     * (qui augmente inutilement le risque d'être vue comme suspecte, en plus
+     * d'être moins réaliste qu'un envoi manuel).
+     */
+    private fun jitteredInterval(baseMs: Long): Long {
+        val spread = (baseMs * JITTER_RATIO).toLong()
+        return (baseMs - spread) + Random.nextLong(0, spread * 2 + 1)
+    }
+
     private fun startAsForeground() {
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
@@ -341,6 +353,7 @@ class SmsGatewayService : Service() {
         const val BATCH_INTERVAL_FAST_MS = 5_000L
         const val BATCH_INTERVAL_SLOW_MS = 10_000L
         const val BATCH_SLOW_THRESHOLD = 10
+        const val JITTER_RATIO = 0.3
         const val INCOMING_BATCH_LIMIT = 50
 
         @Volatile

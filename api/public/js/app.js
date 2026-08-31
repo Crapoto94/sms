@@ -14,6 +14,10 @@ const fmtDate = (iso) => {
 
 const badge = (label, cls) => `<span class="badge ${cls}">${label}</span>`;
 
+// Colonne « Passerelle » des messages : affiche « Frizbi » pour les SMS
+// routés vers l'API externe (pas de passerelle/téléphone associé).
+const gatewayCell = (m) => m.provider === 'frizbi' ? 'Frizbi' : (m.gateway_label || m.device_id || '—');
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c]));
@@ -49,7 +53,7 @@ async function openSmsHistory(title, url) {
           <td class="code">${esc(m.recipient)}</td>
           <td>${esc(m.body)}</td>
           <td>${stateOf(m.status)}</td>
-          <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+          <td>${esc(gatewayCell(m))}</td>
           <td class="muted">${esc(m.error || '')}</td>
         </tr>`).join('')}</tbody>
       </table>`
@@ -100,6 +104,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
     $('sync').classList.toggle('hidden', currentTab !== 'sync');
     $('mail2sms').classList.toggle('hidden', currentTab !== 'mail2sms');
+    $('frizbi').classList.toggle('hidden', currentTab !== 'frizbi');
     $('logs').classList.toggle('hidden', currentTab !== 'logs');
     $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
@@ -115,6 +120,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (currentTab === 'fleet') loadFleet();
     if (currentTab === 'sync') loadSync();
     if (currentTab === 'mail2sms') loadMail2Sms();
+    if (currentTab === 'frizbi') loadFrizbi();
     if (currentTab === 'logs') loadLogs();
     if (currentTab === 'journal') loadJournal();
     if (currentTab === 'accounts') loadAccounts();
@@ -237,11 +243,13 @@ async function loadGateways() {
     api('/admin/api/gateways'),
     api('/admin/api/stats')
   ]);
+  loadGwQuota();
   $('online').textContent = `${stats.gatewaysOnline} passerelle(s) en ligne`;
   updateOnlineBadge(stats.gatewaysOnline);
   $('gatewaysBody').innerHTML = gateways.length
     ? gateways.map((g) => {
         const state = g.online ? badge('En ligne', 'ok') : badge('Hors ligne', 'off');
+        const overQuota = g.recentDistinctRecipients >= g.quotaCap;
         return `<tr>
           <td>${esc(g.label || '—')}</td>
           <td class="code">${esc(g.device_id || '—')}</td>
@@ -251,11 +259,30 @@ async function loadGateways() {
           <td>${g.sent}</td>
           <td>${g.delivered}</td>
           <td>${g.failed}</td>
+          <td>${badge(`${g.recentDistinctRecipients} / ${g.quotaCap}`, overQuota ? 'failed' : 'off')}</td>
           <td>${state}</td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="9" class="muted">Aucune passerelle connectée.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Aucune passerelle connectée.</td></tr>';
 }
+
+async function loadGwQuota() {
+  const s = await api('/admin/api/gateway-settings');
+  $('gwQuotaCap').value = s.quota_cap || 180;
+  $('gwQuotaWindow').value = s.quota_window_days || 30;
+}
+
+$('btnSaveGwQuota').addEventListener('click', async () => {
+  try {
+    await api('/admin/api/gateway-settings', {
+      method: 'POST',
+      body: JSON.stringify({ quotaCap: $('gwQuotaCap').value, quotaWindowDays: $('gwQuotaWindow').value })
+    });
+    $('gwQuotaStatus').textContent = 'Enregistré ✓';
+    setTimeout(() => { $('gwQuotaStatus').textContent = ''; }, 2000);
+    loadGateways();
+  } catch (e) { $('gwQuotaStatus').textContent = `Erreur : ${e.message}`; }
+});
 
 // ---------- Messages ----------
 const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
@@ -316,7 +343,7 @@ function adminMessageRow(m) {
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${esc(m.body)}</td>
     <td>${stateOf(m.status)}</td>
-    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td>${esc(gatewayCell(m))}</td>
     <td>${esc(m.group_name || '—')}</td>
     <td>${messageAttachment(m)}</td>
     <td class="muted">${esc(m.error || '')}</td>
@@ -330,7 +357,7 @@ function campaignDetailRow(m) {
     <td>${messageOrigin(m)}</td>
     <td class="code">${esc(m.recipient)} ${recipientPastille(m.recipient)}</td>
     <td>${stateOf(m.status)}</td>
-    <td>${esc(m.gateway_label || m.device_id || '—')}</td>
+    <td>${esc(gatewayCell(m))}</td>
     <td>${esc(m.group_name || '—')}</td>
     <td>${messageAttachment(m)}</td>
     <td class="muted">${esc(m.error || '')}</td>
@@ -770,7 +797,7 @@ $('btnConfirmImport').addEventListener('click', async () => {
     });
     $('importModal').classList.add('hidden');
     loadMessages();
-    alert(`Import terminé : ${res.created} SMS créé(s), ${res.duplicates} doublon(s) ignoré(s), ${res.invalid.length} ligne(s) invalide(s).`);
+    alert(`Import terminé : ${res.created} SMS créé(s), ${res.duplicates} doublon(s) ignoré(s), ${res.invalid.length} ligne(s) invalide(s).${res.quotaWarning ? `\n\n⚠ ${res.quotaWarning}` : ''}`);
   } catch (e) {
     $('importError').textContent = e.message;
   }
@@ -1361,6 +1388,89 @@ $('btnSaveAdminPhone').addEventListener('click', async () => {
     $('adminPhoneStatus').textContent = 'Enregistré ✓';
     setTimeout(() => { $('adminPhoneStatus').textContent = ''; }, 2000);
   } catch (e) { alert(e.message); }
+});
+
+// ---------- SMS externe (Frizbi) ----------
+async function loadFrizbi() {
+  const s = await api('/admin/api/frizbi-settings');
+  $('frizbiMode').value = s.mode || 'internal';
+  $('frizbiThreshold').value = s.both_threshold || 10;
+  $('frizbiApiUrl').value = s.api_url || '';
+  $('frizbiSenderId').value = s.sender_id || '';
+  $('frizbiClientId').value = s.client_id || '';
+  $('frizbiClientSecret').value = s.client_secret || '';
+  $('frizbiCallbackPath').value = `/api/v1/frizbi/callback?token=${s.callback_token || ''}`;
+  $('frizbiStatus').textContent = '';
+  loadFrizbiEvents();
+}
+
+$('btnCopyFrizbiCallback').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(location.origin.replace(/:\d+$/, ':3250') + $('frizbiCallbackPath').value);
+  } catch {
+    $('frizbiCallbackPath').select();
+    document.execCommand('copy');
+  }
+});
+
+async function loadFrizbiEvents() {
+  const events = await api('/admin/api/frizbi/events');
+  $('frizbiEventsBody').innerHTML = events.length
+    ? events.map((e) => `<tr>
+        <td>${fmtDate(e.received_at)}</td>
+        <td>${esc(e.source)}</td>
+        <td>${e.message_id || '—'}</td>
+        <td>${esc(e.recipient || '—')}</td>
+        <td>${esc(e.status_raw || '—')}</td>
+        <td>${e.applied ? badge('Oui', 'ok') : badge('Non', 'off')}</td>
+        <td class="code" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.payload || '')}">${esc(e.payload || '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Aucun événement reçu pour l’instant.</td></tr>';
+}
+
+$('btnRefreshFrizbiEvents').addEventListener('click', loadFrizbiEvents);
+
+$('btnSaveFrizbi').addEventListener('click', async () => {
+  try {
+    await api('/admin/api/frizbi-settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: $('frizbiMode').value,
+        bothThreshold: $('frizbiThreshold').value,
+        apiUrl: $('frizbiApiUrl').value.trim(),
+        senderId: $('frizbiSenderId').value.trim(),
+        clientId: $('frizbiClientId').value.trim(),
+        clientSecret: $('frizbiClientSecret').value
+      })
+    });
+    $('frizbiStatus').textContent = 'Enregistré ✓';
+    setTimeout(() => { $('frizbiStatus').textContent = ''; }, 2000);
+  } catch (e) { $('frizbiStatus').textContent = `Erreur : ${e.message}`; }
+});
+
+$('btnTestFrizbiConnection').addEventListener('click', async () => {
+  $('frizbiStatus').textContent = 'Test en cours…';
+  try {
+    const res = await api('/admin/api/frizbi/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({
+        apiUrl: $('frizbiApiUrl').value.trim(),
+        clientId: $('frizbiClientId').value.trim(),
+        clientSecret: $('frizbiClientSecret').value
+      })
+    });
+    $('frizbiStatus').textContent = res.message || 'Connexion réussie ✓';
+  } catch (e) { $('frizbiStatus').textContent = `Erreur : ${e.message}`; }
+});
+
+$('btnSendFrizbiTest').addEventListener('click', async () => {
+  const mobile = ($('frizbiTestMobile').value || '').trim();
+  if (!mobile) return;
+  $('frizbiStatus').textContent = 'Envoi en cours…';
+  try {
+    const res = await api('/admin/api/frizbi/send-test', { method: 'POST', body: JSON.stringify({ mobile }) });
+    $('frizbiStatus').textContent = res.message || 'SMS de test envoyé ✓';
+  } catch (e) { $('frizbiStatus').textContent = `Erreur : ${e.message}`; }
 });
 
 async function fillGroupSelect(value) {
@@ -2251,7 +2361,7 @@ $('btnStartFleet').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ bookId, excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null, contactIds, message })
     });
-    alert(`Vérification #${result.id} lancée pour ${result.count} contact(s).`);
+    alert(`Vérification #${result.id} lancée pour ${result.count} contact(s).${result.quotaWarning ? `\n\n⚠ ${result.quotaWarning}` : ''}`);
     await loadFleetChecks();
     await openFleetCheck(result.id);
   } catch (error) {
