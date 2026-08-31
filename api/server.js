@@ -1146,7 +1146,10 @@ webApp.get('/admin/api/messages', (req, res) => {
   const status = String(req.query.status || '');
   const recipient = String(req.query.recipient || '').trim();
   const bookId = parseInt(req.query.bookId, 10);
-  const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
+  const search = String(req.query.search || '').trim();
+  const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
+  const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || req.query.limit || '25', 10) || 25, 1), 500);
+  const offset = (page - 1) * pageSize;
   const base = `
     SELECT m.*, k.label AS gateway_label, k.device_id AS device_id, g.name AS group_name,
       c.address_book_id AS campaign_book_id, ab.name AS campaign_book_name,
@@ -1170,6 +1173,10 @@ webApp.get('/admin/api/messages', (req, res) => {
     cond.push('m.recipient = ?');
     params.push(recipient);
   }
+  if (search) {
+    cond.push('m.recipient LIKE ?');
+    params.push(`%${search}%`);
+  }
   if (Number.isInteger(bookId)) {
     cond.push('m.campaign_id IN (SELECT id FROM campaigns WHERE address_book_id = ?)');
     params.push(bookId);
@@ -1179,9 +1186,10 @@ webApp.get('/admin/api/messages', (req, res) => {
     params.push(req.session.groupId);
   }
   const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
-  const rows = db.prepare(`${base} ${where} ORDER BY m.id DESC LIMIT ?`)
-    .all(...params, limit);
-  res.json(rows);
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM messages m ${where}`).get(...params).c;
+  const rows = db.prepare(`${base} ${where} ORDER BY m.id DESC LIMIT ? OFFSET ?`)
+    .all(...params, pageSize, offset);
+  res.json({ items: rows, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) });
 });
 
 // Comptage de SMS envoyés (par numéro et/ou par carnet). Scindé en deux

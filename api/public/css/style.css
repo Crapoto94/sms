@@ -607,6 +607,15 @@ tbody:empty::after { content: ""; }
 .hidden { display: none !important; }
 .hidden-col { display: none !important; }
 
+.mt8 { margin-top: 8px; }
+.pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+
 #fleetItemsHead input {
   width: 100%;
   min-width: 60px;

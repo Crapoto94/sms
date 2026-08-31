@@ -54,7 +54,8 @@ async function refreshOnlineBadge() {
 
 // ---------- Historique SMS d'un numéro / d'un carnet ----------
 async function openSmsHistory(title, url) {
-  const msgs = await api(url);
+  const data = await api(url);
+  const msgs = Array.isArray(data) ? data : (data.items || []);
   $('smsHistoryTitle').textContent = title + (msgs.length ? ` (${msgs.length})` : '');
   $('smsHistoryBody').innerHTML = msgs.length
     ? `<table>
@@ -1015,9 +1016,18 @@ function bindMessageActions() {
   });
 }
 
+let msgPage = 1;
+const MSG_PAGE_SIZE = 25;
+let msgTotal = 0;
+
 async function loadMessages() {
   const status = $('statusFilter').value;
-  const messages = await api(`/admin/api/messages?limit=100&status=${encodeURIComponent(status)}`);
+  const search = $('msgSearch').value.trim();
+  const q = new URLSearchParams({ page: msgPage, pageSize: MSG_PAGE_SIZE, status });
+  if (search) q.set('search', search);
+  const res = await api(`/admin/api/messages?${q.toString()}`);
+  const messages = res.items || [];
+  msgTotal = res.total || 0;
   recipientCounts = {};
   const phones = [...new Set(messages.map((m) => m.recipient))];
   if (phones.length) {
@@ -1031,9 +1041,30 @@ async function loadMessages() {
     : '<tr><td colspan="10" class="muted">Aucun message dans votre groupe.</td></tr>';
   bindCampaignToggles();
   bindMessageActions();
+  renderMsgPagination();
 }
 
-$('statusFilter').addEventListener('change', loadMessages);
+function renderMsgPagination() {
+  const totalPages = Math.max(1, Math.ceil(msgTotal / MSG_PAGE_SIZE));
+  const el = $('msgPagination');
+  const prev = `<button data-msgpage="prev" class="ghost" ${msgPage <= 1 ? 'disabled' : ''}>&laquo; Précédent</button>`;
+  const next = `<button data-msgpage="next" class="ghost" ${msgPage >= totalPages ? 'disabled' : ''}>Suivant &raquo;</button>`;
+  el.innerHTML = `${prev}<span class="muted" style="margin:0 10px">Page ${msgPage} / ${totalPages} — ${msgTotal} message(s)</span>${next}`;
+  el.querySelectorAll('[data-msgpage]').forEach((b) => {
+    b.addEventListener('click', () => {
+      if (b.dataset.msgpage === 'prev') msgPage = Math.max(1, msgPage - 1);
+      else msgPage = Math.min(totalPages, msgPage + 1);
+      loadMessages();
+    });
+  });
+}
+
+$('statusFilter').addEventListener('change', () => { msgPage = 1; loadMessages(); });
+let msgSearchTimer = null;
+$('msgSearch').addEventListener('input', () => {
+  clearTimeout(msgSearchTimer);
+  msgSearchTimer = setTimeout(() => { msgPage = 1; loadMessages(); }, 350);
+});
 
 // ---------- Carnets ----------
 let viewBookId = null;
@@ -1086,42 +1117,93 @@ async function openBook(bookId) {
 }
 
 async function loadContacts() {
-  const rows = await fetchAllBookContacts(viewBookId);
-  const phones = rows.map((c) => c.phone);
-  let counts = {};
-  try {
-    const r = await api(`/admin/api/messages/counts?recipients=${encodeURIComponent(phones.join(','))}`);
-    counts = r.counts || {};
-  } catch { /* pastilles vides si le comptage échoue */ }
-  $('contactsBody').innerHTML = rows.length
-    ? rows.map((c) => `<tr>
-        <td>${esc(c.first_name || '')}</td>
-        <td>${esc(c.last_name || '')}</td>
-         <td>${esc(c.entity || '')}</td>
-         <td>${esc(c.service || '')}</td>
-         <td>${esc(c.direction || '')}</td>
-         <td>${esc(c.imei || '')}</td>
-         <td>${esc(c.puk || '')}</td>
-         <td class="${c.line_status ? '' : 'hidden-col'}">${esc(c.line_status || '')}</td>
-         <td class="${c.plan ? '' : 'hidden-col'}">${esc(c.plan || '')}</td>
-         <td class="${c.device_terminal ? '' : 'hidden-col'}">${esc(c.device_terminal || '')}</td>
-         <td class="${c.secondary_line ? '' : 'hidden-col'}">${esc(c.secondary_line || '')}</td>
-         <td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${counts[c.phone] ? '' : ' empty'}">${counts[c.phone] || 0}</span></td>
-         <td>
-           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-clinestatus="${esc(c.line_status || '')}" data-cplan="${esc(c.plan || '')}" data-cdeviceterminal="${esc(c.device_terminal || '')}" data-csecondaryline="${esc(c.secondary_line || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
-           <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
+  allContacts = await fetchAllBookContacts(viewBookId);
+  contactCounts = {};
+  const phones = [...new Set(allContacts.map((c) => c.phone))];
+  if (phones.length) {
+    try {
+      const r = await api(`/admin/api/messages/counts?recipients=${encodeURIComponent(phones.join(','))}`);
+      contactCounts = r.counts || {};
+    } catch { /* pastilles vides si le comptage échoue */ }
+  }
+  contactPage = 1;
+  renderContactsHead();
+  renderContactRows();
+}
+
+const CONTACT_COLS = [
+  { key: 'first_name', label: 'Prénom' },
+  { key: 'last_name', label: 'Nom' },
+  { key: 'entity', label: 'Entité' },
+  { key: 'service', label: 'Service' },
+  { key: 'direction', label: 'Direction' },
+  { key: 'imei', label: 'IMEI' },
+  { key: 'puk', label: 'PUK' },
+  { key: 'line_status', label: 'Statut ligne' },
+  { key: 'plan', label: 'Forfait' },
+  { key: 'device_terminal', label: 'Terminal com.' },
+  { key: 'secondary_line', label: 'Ligne sec.' },
+  { key: 'phone', label: 'Téléphone' }
+];
+let allContacts = [];
+let contactVisibleCols = new Set(CONTACT_COLS.map((c) => c.key));
+let contactPage = 1;
+const CONTACT_PAGE_SIZE = 25;
+let contactCounts = {};
+
+function contactTextCells(c) {
+  return CONTACT_COLS
+    .filter((col) => contactVisibleCols.has(col.key) && c[col.key] != null && String(c[col.key]) !== '')
+    .map((col) => String(c[col.key]).toLowerCase())
+    .join(' ');
+}
+
+function renderContactColToggles() {
+  $('contactColToggles').innerHTML = `<span class="muted" style="margin-right:8px">Colonnes :</span>` + CONTACT_COLS.map((col) => {
+    const on = contactVisibleCols.has(col.key);
+    return `<label style="margin-right:10px;white-space:nowrap"><input type="checkbox" data-contactcol="${col.key}" ${on ? 'checked' : ''}>${esc(col.label)}</label>`;
+  }).join('');
+}
+
+function renderContactsHead() {
+  renderContactColToggles();
+  const visible = CONTACT_COLS.filter((c) => contactVisibleCols.has(c.key));
+  $('contactsHead').innerHTML = '<tr>' + visible.map((c) => `<th>${esc(c.label)}</th>`).join('') + '<th></th></tr>';
+}
+
+function renderContactPagination(filteredCount) {
+  const totalPages = Math.max(1, Math.ceil(filteredCount / CONTACT_PAGE_SIZE));
+  const el = $('contactPagination');
+  const prev = `<button data-cpage="prev" class="ghost" ${contactPage <= 1 ? 'disabled' : ''}>&laquo; Précédent</button>`;
+  const next = `<button data-cpage="next" class="ghost" ${contactPage >= totalPages ? 'disabled' : ''}>Suivant &raquo;</button>`;
+  el.innerHTML = `${prev}<span class="muted" style="margin:0 10px">Page ${contactPage} / ${totalPages} — ${filteredCount} contact(s)</span>${next}`;
+}
+
+function renderContactRows() {
+  const visible = CONTACT_COLS.filter((c) => contactVisibleCols.has(c.key));
+  const q = $('contactSearch').value.trim().toLowerCase();
+  const filtered = q ? allContacts.filter((c) => contactTextCells(c).includes(q)) : allContacts;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / CONTACT_PAGE_SIZE));
+  if (contactPage > totalPages) contactPage = totalPages;
+  const pageItems = filtered.slice((contactPage - 1) * CONTACT_PAGE_SIZE, contactPage * CONTACT_PAGE_SIZE);
+  $('contactsBody').innerHTML = pageItems.length
+    ? pageItems.map((c) => {
+        let tds = '';
+        for (const col of visible) {
+          if (col.key === 'phone') {
+            tds += `<td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${contactCounts[c.phone] ? '' : ' empty'}">${contactCounts[c.phone] || 0}</span></td>`;
+          } else {
+            tds += `<td>${esc(c[col.key] || '')}</td>`;
+          }
+        }
+        return `<tr>${tds}<td>
+          <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-clinestatus="${esc(c.line_status || '')}" data-cplan="${esc(c.plan || '')}" data-cdeviceterminal="${esc(c.device_terminal || '')}" data-csecondaryline="${esc(c.secondary_line || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
+          <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
           <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
-        </td>
-      </tr>`).join('')
-    : '<tr><td colspan="13" class="muted">Aucun contact.</td></tr>';
-  const hideColLine = !rows.some((c) => c.line_status);
-  const hideColPlan = !rows.some((c) => c.plan);
-  const hideColTerm = !rows.some((c) => c.device_terminal);
-  const hideColSec = !rows.some((c) => c.secondary_line);
-  document.querySelectorAll('.col-line').forEach((el) => el.classList.toggle('hidden-col', hideColLine));
-  document.querySelectorAll('.col-plan').forEach((el) => el.classList.toggle('hidden-col', hideColPlan));
-  document.querySelectorAll('.col-term').forEach((el) => el.classList.toggle('hidden-col', hideColTerm));
-  document.querySelectorAll('.col-sec').forEach((el) => el.classList.toggle('hidden-col', hideColSec));
+        </td></tr>`;
+      }).join('')
+    : `<tr><td colspan="${visible.length + 1}" class="muted">Aucun contact.</td></tr>`;
+  renderContactPagination(filtered.length);
   document.querySelectorAll('[data-editcontact]').forEach((b) => {
     b.addEventListener('click', () => openContactModal(Number(b.dataset.editcontact), b.dataset));
   });
@@ -1149,6 +1231,30 @@ async function loadContacts() {
     });
   });
 }
+
+$('contactColToggles').addEventListener('change', (event) => {
+  const cb = event.target.closest('[data-contactcol]');
+  if (!cb) return;
+  if (cb.checked) contactVisibleCols.add(cb.dataset.contactcol);
+  else contactVisibleCols.delete(cb.dataset.contactcol);
+  renderContactsHead();
+  renderContactRows();
+});
+
+let contactSearchTimer = null;
+$('contactSearch').addEventListener('input', () => {
+  clearTimeout(contactSearchTimer);
+  contactSearchTimer = setTimeout(() => { contactPage = 1; renderContactRows(); }, 300);
+});
+
+$('contactPagination').addEventListener('click', (event) => {
+  const b = event.target.closest('[data-cpage]');
+  if (!b) return;
+  const totalPages = Math.max(1, Math.ceil(allContacts.length / CONTACT_PAGE_SIZE));
+  if (b.dataset.cpage === 'prev') contactPage = Math.max(1, contactPage - 1);
+  else contactPage = Math.min(totalPages, contactPage + 1);
+  renderContactRows();
+});
 
 $('btnBackBooks').addEventListener('click', () => {
   $('bookContacts').classList.add('hidden');

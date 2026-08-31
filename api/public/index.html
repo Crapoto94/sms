@@ -82,6 +82,7 @@
           <option value="failed">Échec</option>
           <option value="cancelled">Annulé</option>
         </select>
+        <input id="msgSearch" type="search" placeholder="Rechercher un numéro…" style="max-width:220px">
       </div>
       <div class="table-wrap">
         <table id="messagesSentTable">
@@ -90,6 +91,7 @@
           </thead>
           <tbody id="messagesBody"></tbody>
         </table>
+        <div id="msgPagination" class="pagination mt8"></div>
         <table id="messagesReceivedTable" class="hidden">
           <thead>
             <tr><th>Date</th><th>Expéditeur</th><th>Message</th><th>Passerelle</th><th>Appareil</th></tr>
@@ -121,12 +123,15 @@
             <button id="btnBackBooks" class="ghost">← Retour</button>
           </div>
         </div>
+        <div class="row mt8" style="align-items:center;flex-wrap:wrap;gap:12px">
+          <input id="contactSearch" type="search" placeholder="Rechercher (numéro, nom, …)" style="max-width:280px">
+          <span id="contactColToggles" style="display:flex;flex-wrap:wrap;align-items:center"></span>
+        </div>
         <div class="table-wrap"><table>
-          <thead>
-            <tr><th>Prénom</th><th>Nom</th><th>Entité</th><th>Service</th><th>Direction</th><th>IMEI</th><th>PUK</th><th class="col-line">Statut ligne</th><th class="col-plan">Forfait</th><th class="col-term">Terminal com.</th><th class="col-sec">Ligne sec.</th><th>Téléphone</th><th></th></tr>
-          </thead>
+          <thead id="contactsHead"></thead>
           <tbody id="contactsBody"></tbody>
         </table></div>
+        <div id="contactPagination" class="pagination mt8"></div>
       </div>
     </section>
 
