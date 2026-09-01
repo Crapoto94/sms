@@ -252,9 +252,12 @@ async function loadGateways() {
     ? gateways.map((g) => {
         const state = g.online ? badge('En ligne', 'ok') : badge('Hors ligne', 'off');
         const overQuota = g.recentDistinctRecipients >= g.quotaCap;
+        const simCount = g.sim_count || 1;
+        const lines = simCount > 1 ? badge(`${simCount} lignes`, 'ok') : '1';
         return `<tr>
           <td>${esc(g.label || '—')}</td>
           <td class="code">${esc(g.device_id || '—')}</td>
+          <td>${lines}</td>
           <td>${esc(g.app_version || '—')}</td>
           <td>${fmtDate(g.last_seen_at)}</td>
           <td>${g.sending}</td>
@@ -265,7 +268,7 @@ async function loadGateways() {
           <td>${state}</td>
         </tr>`;
       }).join('')
-    : '<tr><td colspan="10" class="muted">Aucune passerelle connectée.</td></tr>';
+    : '<tr><td colspan="11" class="muted">Aucune passerelle connectée.</td></tr>';
 }
 
 async function loadGwQuota() {

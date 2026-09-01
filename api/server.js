@@ -1438,7 +1438,7 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
   const windowIso = new Date(Date.now() - gwSettings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
   const gateways = db.prepare(`
     SELECT
-      k.id, k.label, k.device_id, k.app_version, k.last_seen_at, k.last_used_at,
+      k.id, k.label, k.device_id, k.app_version, k.last_seen_at, k.last_used_at, k.sim_count,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id) AS claimed,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sending')  AS sending,
       (SELECT COUNT(*) FROM messages m WHERE m.claimed_by = k.id AND m.status = 'sent')      AS sent,
