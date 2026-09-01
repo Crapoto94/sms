@@ -169,6 +169,8 @@ function updateComposerMode() {
   $('contactVariables').classList.toggle('hidden', !book);
   $('messagePreview').classList.toggle('hidden', !book || !contacts.length);
   updateComposerCount();
+  if (book) scheduleCampaignPreview();
+  else $('campaignPreview').classList.add('hidden');
 }
 
 function insertVariable(target, variable) {
@@ -377,6 +379,7 @@ async function loadRecipients() {
   if (!contacts.length) {
     list.innerHTML = '<div class="contact-list-empty muted">' + (id ? 'Ce carnet ne contient aucun contact.' : 'Choisissez un carnet pour afficher les contacts.') + '</div>';
     $('messagePreview').classList.add('hidden');
+    $('campaignPreview').classList.add('hidden');
     updateComposerCount();
     return;
   }
@@ -402,6 +405,76 @@ async function loadRecipients() {
   $('messagePreview').classList.remove('hidden');
   updateMessagePreview();
   updateComposerCount();
+  refreshCampaignPreview();
+}
+
+// ---------- Répartition et temps d'envoi estimés (campagne, avant lancement) ----------
+let campaignPreviewTimer = null;
+function scheduleCampaignPreview() {
+  clearTimeout(campaignPreviewTimer);
+  campaignPreviewTimer = setTimeout(refreshCampaignPreview, 400);
+}
+
+async function refreshCampaignPreview() {
+  if (composerMode !== 'book') {
+    $('campaignPreview').classList.add('hidden');
+    return;
+  }
+  const bookId = Number($('bookSelect').value || 0);
+  const contactIds = [...selectedContacts];
+  if (!bookId || !contactIds.length) {
+    $('campaignPreview').classList.add('hidden');
+    return;
+  }
+  const [excludeEventType, excludeEventId] = ($('campaignExcludeEventSelect').value || '').split(':');
+  let data;
+  try {
+    data = await api('/admin/api/send-preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        bookId, contactIds,
+        excludeBookId: Number($('excludeBookSelect').value || 0) || null,
+        excludeEventType: excludeEventType || null,
+        excludeEventId: excludeEventId || null,
+        excludeEventState: $('campaignExcludeEventState').value || null
+      })
+    });
+  } catch (_e) {
+    $('campaignPreview').classList.add('hidden');
+    return;
+  }
+  renderSendPreview(data, 'campaignPreviewBody', 'campaignPreviewSummary');
+  $('campaignPreview').classList.remove('hidden');
+}
+
+// Rendu partagé campagne/flotte du tableau de répartition + résumé du temps
+// estimé, à partir de la réponse de /admin/api/send-preview.
+function renderSendPreview(data, bodyId, summaryId) {
+  if (!data.gateways.length) {
+    $(bodyId).innerHTML = '<tr><td colspan="4" class="muted">Aucune passerelle en ligne.</td></tr>';
+    $(summaryId).textContent = data.totalPhones
+      ? `${data.totalPhones} destinataire(s) resteraient non attribués (aucune passerelle en ligne).`
+      : '';
+    return;
+  }
+  const rows = [];
+  data.gateways.forEach((g) => {
+    if (!g.assigned) return;
+    if (g.lines.length <= 1) {
+      rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>—</td><td>${g.assigned}</td><td>${fmtDuration(g.estimatedSeconds)}</td></tr>`);
+    } else {
+      g.lines.forEach((line) => {
+        rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>Ligne ${line.index}</td><td>${line.count}</td><td>${fmtDuration(line.estimatedSeconds)}</td></tr>`);
+      });
+    }
+  });
+  $(bodyId).innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">Aucun message attribué.</td></tr>';
+  const busiest = data.gateways.reduce((max, g) => (!max || g.estimatedSeconds > max.estimatedSeconds ? g : max), null);
+  let summary = `Temps total estimé : ~${fmtDuration(data.estimatedTotalSeconds)}`;
+  if (busiest && busiest.assigned) summary += ` (limité par « ${esc(busiest.label || ('#' + busiest.id))} », ${busiest.assigned} message(s))`;
+  if (data.unassigned) summary += ` — ⚠ ${data.unassigned} destinataire(s) sans passerelle disponible sous le quota`;
+  if (data.blacklistedCount) summary += ` — ${data.blacklistedCount} numéro(s) blacklisté(s) ignoré(s)`;
+  $(summaryId).textContent = summary;
 }
 
 function renderPreviewMessage(template, contact) {
@@ -441,6 +514,7 @@ $('recipientList').addEventListener('change', (e) => {
   if (cb.checked) selectedContacts.add(id);
   else selectedContacts.delete(id);
   updateComposerCount();
+  scheduleCampaignPreview();
 });
 
 $('btnToggleAll').addEventListener('click', () => {
@@ -453,6 +527,7 @@ $('btnToggleAll').addEventListener('click', () => {
     cb.checked = selectedContacts.has(Number(cb.dataset.id));
   });
   updateComposerCount();
+  scheduleCampaignPreview();
 });
 
 function updateComposerCount() {
@@ -867,31 +942,7 @@ async function refreshFleetPreview() {
 
 function renderFleetPreview(data) {
   $('fleetPreview').classList.remove('hidden');
-  if (!data.gateways.length) {
-    $('fleetPreviewBody').innerHTML = '<tr><td colspan="4" class="muted">Aucune passerelle en ligne.</td></tr>';
-    $('fleetPreviewSummary').textContent = data.totalPhones
-      ? `${data.totalPhones} destinataire(s) resteraient non attribués (aucune passerelle en ligne).`
-      : '';
-    return;
-  }
-  const rows = [];
-  data.gateways.forEach((g) => {
-    if (!g.assigned) return;
-    if (g.lines.length <= 1) {
-      rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>—</td><td>${g.assigned}</td><td>${fmtDuration(g.estimatedSeconds)}</td></tr>`);
-    } else {
-      g.lines.forEach((line) => {
-        rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>Ligne ${line.index}</td><td>${line.count}</td><td>${fmtDuration(line.estimatedSeconds)}</td></tr>`);
-      });
-    }
-  });
-  $('fleetPreviewBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">Aucun message attribué.</td></tr>';
-  const busiest = data.gateways.reduce((max, g) => (!max || g.estimatedSeconds > max.estimatedSeconds ? g : max), null);
-  let summary = `Temps total estimé : ~${fmtDuration(data.estimatedTotalSeconds)}`;
-  if (busiest && busiest.assigned) summary += ` (limité par « ${esc(busiest.label || ('#' + busiest.id))} », ${busiest.assigned} message(s))`;
-  if (data.unassigned) summary += ` — ⚠ ${data.unassigned} destinataire(s) sans passerelle disponible sous le quota`;
-  if (data.blacklistedCount) summary += ` — ${data.blacklistedCount} numéro(s) blacklisté(s) ignoré(s)`;
-  $('fleetPreviewSummary').textContent = summary;
+  renderSendPreview(data, 'fleetPreviewBody', 'fleetPreviewSummary');
 }
 
 function updateFleetCount(_unused, eventInfo) {
