@@ -18,6 +18,7 @@
       <button class="tab" data-tab="gateways">Passerelles</button>
       <button class="tab active" data-tab="messages">Messages</button>
       <button class="tab" data-tab="books">Carnets</button>
+      <button class="tab" data-tab="campaigns">Campagnes</button>
       <button class="tab" data-tab="fleet">Vérification flotte</button>
       <button class="tab" data-tab="sync">Synchro carnets</button>
       <button class="tab" data-tab="mail2sms">Mail → SMS</button>
@@ -150,6 +151,29 @@
       </div>
     </section>
 
+    <section id="campaigns" class="panel hidden">
+      <div class="row">
+        <h2>Campagnes</h2>
+        <span class="muted">Envois groupés vers un carnet d'adresses.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Nom</th><th>Date</th><th>Carnet</th><th>Total</th><th>Envoyés</th><th>Remis</th><th>Échecs</th><th>Annulés</th><th></th></tr></thead>
+          <tbody id="campaignsBody"></tbody>
+        </table>
+      </div>
+      <div id="campaignDetail" class="hidden" style="margin-top:20px">
+        <div class="row"><h3 id="campaignDetailTitle"></h3></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Destinataire</th><th>Statut</th><th>Passerelle</th><th>Envoyé le</th><th>Remis le</th><th>Erreur</th></tr></thead>
+            <tbody id="campaignItemsBody"></tbody>
+          </table>
+        </div>
+        <div id="campaignPagination" class="pagination mt8"></div>
+      </div>
+    </section>
+
     <section id="fleet" class="panel hidden">
       <div class="row">
         <h2>Vérification de flotte</h2>
@@ -157,10 +181,18 @@
       </div>
       <div class="composer">
         <div>
+          <label for="fleetName">Nom de la vérification (facultatif)</label>
+          <input id="fleetName" placeholder="Ex : Astreinte — vague 2" style="margin-bottom:10px">
           <label for="fleetBookSelect">Carnet d'adresses</label>
           <select id="fleetBookSelect"><option value="">—</option></select>
           <label for="fleetExcludeBookSelect" style="margin-top:10px">Mais pas dans le carnet</label>
           <select id="fleetExcludeBookSelect"><option value="">— Aucun numéro exclu —</option></select>
+          <label for="fleetTargetEventSelect" style="margin-top:10px">Cibler les destinataires d'un envoi précédent (facultatif)</label>
+          <select id="fleetTargetEventSelect"><option value="">— Tout le carnet —</option></select>
+          <select id="fleetTargetEventState" class="hidden"></select>
+          <label for="fleetExcludeEventSelect" style="margin-top:10px">Mais pas dans cet envoi précédent</label>
+          <select id="fleetExcludeEventSelect"><option value="">— Aucune exclusion —</option></select>
+          <select id="fleetExcludeEventState" class="hidden"></select>
           <div id="fleetContactList" class="recipients" style="margin-top:10px">
             <div class="contact-list-empty muted">Choisissez un carnet.</div>
           </div>
@@ -179,7 +211,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Remis</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>Nom</th><th>Date</th><th>Carnet</th><th>Total</th><th>Remis</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
           <tbody id="fleetChecksBody"></tbody>
         </table>
       </div>

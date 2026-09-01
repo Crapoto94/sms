@@ -101,6 +101,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('gateways').classList.toggle('hidden', currentTab !== 'gateways');
     $('messages').classList.toggle('hidden', currentTab !== 'messages');
     $('books').classList.toggle('hidden', currentTab !== 'books');
+    $('campaigns').classList.toggle('hidden', currentTab !== 'campaigns');
     $('fleet').classList.toggle('hidden', currentTab !== 'fleet');
     $('sync').classList.toggle('hidden', currentTab !== 'sync');
     $('mail2sms').classList.toggle('hidden', currentTab !== 'mail2sms');
@@ -117,6 +118,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
       else loadIncoming();
     }
     if (currentTab === 'books') loadBooks();
+    if (currentTab === 'campaigns') loadCampaigns();
     if (currentTab === 'fleet') loadFleet();
     if (currentTab === 'sync') loadSync();
     if (currentTab === 'mail2sms') loadMail2Sms();
@@ -1764,7 +1766,7 @@ function renderContactRows() {
         let tds = '';
         for (const col of visible) {
           if (col.key === 'phone') {
-            tds += `<td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${contactCounts[c.phone] ? '' : ' empty'}">${contactCounts[c.phone] || 0}</span></td>`;
+            tds += `<td class="code">${esc(c.phone)} ${c.blacklisted ? '<span class="badge failed">Blacklisté</span>' : ''}${c.mass_excluded ? ' <span class="badge off">Exclu par défaut</span>' : ''} <span data-recipient="${esc(c.phone)}" class="sms-pastille${contactCounts[c.phone] ? '' : ' empty'}">${contactCounts[c.phone] || 0}</span></td>`;
           } else {
             tds += `<td>${esc(c[col.key] || '')}</td>`;
           }
@@ -1772,6 +1774,7 @@ function renderContactRows() {
         return `<tr>${tds}<td>
           <button data-editcontact="${c.id}" data-cname="${esc(c.first_name || '')}" data-clast="${esc(c.last_name || '')}" data-centity="${esc(c.entity || '')}" data-cservice="${esc(c.service || '')}" data-cdirection="${esc(c.direction || '')}" data-cimei="${esc(c.imei || '')}" data-cpuk="${esc(c.puk || '')}" data-clinestatus="${esc(c.line_status || '')}" data-cplan="${esc(c.plan || '')}" data-cdeviceterminal="${esc(c.device_terminal || '')}" data-csecondaryline="${esc(c.secondary_line || '')}" data-cphone="${esc(c.phone)}" class="ghost">Éditer</button>
           <button data-blacklist-phone="${esc(c.phone)}" class="ghost">${c.blacklisted ? 'Remettre normal' : 'Blacklister'}</button>
+          <button data-massexcl-phone="${esc(c.phone)}" class="ghost">${c.mass_excluded ? 'Réinclure' : 'Exclure des envois en masse'}</button>
           <button data-delcontact="${c.id}" class="ghost">Supprimer</button>
         </td></tr>`;
       }).join('')
@@ -1794,6 +1797,17 @@ function renderContactRows() {
       await api(b.textContent === 'Blacklister' ? '/admin/api/blacklist' : `/admin/api/blacklist/${encodeURIComponent(phone)}`, {
         method: b.textContent === 'Blacklister' ? 'POST' : 'DELETE',
         ...(b.textContent === 'Blacklister' ? { body: JSON.stringify({ phone }) } : {})
+      });
+      loadContacts();
+    });
+  });
+  document.querySelectorAll('[data-massexcl-phone]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const phone = b.dataset.massexclPhone;
+      const excluding = b.textContent.trim() === 'Exclure des envois en masse';
+      await api(excluding ? '/admin/api/mass-exclusions' : `/admin/api/mass-exclusions/${encodeURIComponent(phone)}`, {
+        method: excluding ? 'POST' : 'DELETE',
+        ...(excluding ? { body: JSON.stringify({ phone }) } : {})
       });
       loadContacts();
     });
@@ -2123,6 +2137,133 @@ async function excludedPhonesFor(selectId) {
   return new Set(rows.map((contact) => contact.phone));
 }
 
+// ---------- Ciblage/exclusion par envoi précédent (campagne ou vérification
+// de flotte) ----------
+const CAMPAIGN_STATE_OPTIONS = [
+  ['pending', 'En attente'], ['scheduled', 'Programmé'], ['sending', 'En cours d\'envoi'],
+  ['sent', 'Envoyé'], ['delivered', 'Remis'], ['failed', 'Échec'], ['cancelled', 'Annulé']
+];
+const FLEET_STATE_OPTIONS = [
+  ['pending', 'En attente'], ['sent', 'Envoyé'], ['delivered', 'Remis'],
+  ['replied', 'Répondu'], ['no_response', 'Sans réponse'], ['failed', 'Échec']
+];
+
+let pastEventsCache = null;
+async function loadPastEvents(force) {
+  if (pastEventsCache && !force) return pastEventsCache;
+  const [campaigns, fleets] = await Promise.all([
+    api('/admin/api/campaigns').catch(() => []),
+    api('/admin/api/fleet-checks').catch(() => [])
+  ]);
+  pastEventsCache = [
+    ...campaigns.map((c) => ({ type: 'campaign', id: c.id, label: `[Campagne] ${c.name || ('#' + c.id)} — ${c.book_name || '?'} (${c.total || 0})` })),
+    ...fleets.map((f) => ({ type: 'fleet', id: f.id, label: `[Vérif. flotte] ${f.name || ('#' + f.id)} — ${f.book_name || '?'} (${f.total || 0})` }))
+  ];
+  return pastEventsCache;
+}
+
+function stateOptionsFor(type) {
+  return (type === 'fleet' ? FLEET_STATE_OPTIONS : CAMPAIGN_STATE_OPTIONS)
+    .map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+}
+
+async function fillEventSelect(selectId, placeholder) {
+  const select = $(selectId);
+  if (!select) return;
+  const previous = select.value;
+  const events = await loadPastEvents();
+  select.innerHTML = `<option value="">${esc(placeholder)}</option>` +
+    events.map((e) => `<option value="${e.type}:${e.id}">${esc(e.label)}</option>`).join('');
+  if (events.some((e) => `${e.type}:${e.id}` === previous)) select.value = previous;
+}
+
+function wireEventStatePair(selectId, stateId, onChange) {
+  const eventSelect = $(selectId);
+  const stateSelect = $(stateId);
+  if (!eventSelect || !stateSelect) return;
+  eventSelect.addEventListener('change', () => {
+    const value = eventSelect.value;
+    if (!value) {
+      stateSelect.classList.add('hidden');
+      stateSelect.innerHTML = '';
+    } else {
+      const [type] = value.split(':');
+      stateSelect.innerHTML = '<option value="">Tous états</option>' + stateOptionsFor(type);
+      stateSelect.classList.remove('hidden');
+    }
+    onChange();
+  });
+  stateSelect.addEventListener('change', onChange);
+}
+
+async function eventPhonesFor(selectId, stateId) {
+  const select = $(selectId);
+  if (!select || !select.value) return new Set();
+  const [type, id] = select.value.split(':');
+  const state = $(stateId).value || '';
+  const endpoint = type === 'fleet' ? `/admin/api/fleet-checks/${id}/recipients` : `/admin/api/campaigns/${id}/recipients`;
+  const res = await api(`${endpoint}${state ? `?state=${encodeURIComponent(state)}` : ''}`);
+  return new Set(res.recipients.map((r) => r.phone));
+}
+
+// ---------- Campagnes ----------
+let campaignDetailId = null;
+let campaignPage = 1;
+const CAMPAIGN_PAGE_SIZE = 25;
+
+async function loadCampaigns() {
+  const campaigns = await api('/admin/api/campaigns');
+  $('campaignsBody').innerHTML = campaigns.length
+    ? campaigns.map((c) => `<tr>
+        <td>${c.id}</td><td>${esc(c.name || '—')}</td><td>${fmtDate(c.created_at)}</td><td>${esc(c.book_name || '—')}</td>
+        <td>${c.total || 0}</td><td>${c.sent || 0}</td><td>${c.delivered || 0}</td><td>${c.failed || 0}</td><td>${c.cancelled || 0}</td>
+        <td><button class="ghost" data-campaign-open="${c.id}">Détails</button>
+        <button class="ghost" data-campaign-rename="${c.id}" data-campaign-name="${esc(c.name || '')}">Renommer</button>
+        <button class="ghost" data-campaign-delete="${c.id}">Supprimer</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="10" class="muted">Aucune campagne lancée.</td></tr>';
+  document.querySelectorAll('[data-campaign-open]').forEach((b) => {
+    b.addEventListener('click', () => openCampaign(Number(b.dataset.campaignOpen)));
+  });
+  document.querySelectorAll('[data-campaign-rename]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const name = prompt('Nom de la campagne :', b.dataset.campaignName || '');
+      if (name === null) return;
+      await api(`/admin/api/campaigns/${b.dataset.campaignRename}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+      loadCampaigns();
+    });
+  });
+  document.querySelectorAll('[data-campaign-delete]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      if (!confirm('Supprimer définitivement cette campagne de la liste ?')) return;
+      await api(`/admin/api/campaigns/${b.dataset.campaignDelete}`, { method: 'DELETE' });
+      loadCampaigns();
+    });
+  });
+}
+
+async function openCampaign(id, page) {
+  campaignDetailId = id;
+  campaignPage = page || 1;
+  const data = await api(`/admin/api/campaigns/${id}?page=${campaignPage}&pageSize=${CAMPAIGN_PAGE_SIZE}`);
+  $('campaignDetailTitle').textContent = `Campagne #${id}${data.campaign.name ? ' — ' + data.campaign.name : ''} (${data.total} destinataire(s))`;
+  $('campaignDetail').classList.remove('hidden');
+  $('campaignItemsBody').innerHTML = data.messages.length
+    ? data.messages.map((m) => `<tr>
+        <td>${m.id}</td><td class="code">${esc(m.recipient)}</td><td>${stateOf(m.status)}</td>
+        <td>${esc(m.provider === 'frizbi' ? 'Frizbi' : (m.gateway_label || '—'))}</td>
+        <td>${fmtDate(m.sent_at)}</td><td>${fmtDate(m.delivered_at)}</td><td>${esc(m.error || '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">Aucun message.</td></tr>';
+  const totalPages = Math.max(1, Math.ceil(data.total / CAMPAIGN_PAGE_SIZE));
+  const prev = `<button class="ghost" data-campaign-page="${campaignPage - 1}" ${campaignPage <= 1 ? 'disabled' : ''}>&laquo; Précédent</button>`;
+  const next = `<button class="ghost" data-campaign-page="${campaignPage + 1}" ${campaignPage >= totalPages ? 'disabled' : ''}>Suivant &raquo;</button>`;
+  $('campaignPagination').innerHTML = `${prev}<span class="muted" style="margin:0 10px">Page ${campaignPage} / ${totalPages} — ${data.total} message(s)</span>${next}`;
+  document.querySelectorAll('[data-campaign-page]').forEach((b) => {
+    b.addEventListener('click', () => openCampaign(id, Number(b.dataset.campaignPage)));
+  });
+}
+
 async function loadFleet() {
   const booksList = await api('/admin/api/address-books');
   fleetBooks = booksList;
@@ -2133,9 +2274,16 @@ async function loadFleet() {
   select.value = booksList.some((book) => String(book.id) === previous)
     ? previous : (booksList.length ? String(booksList[0].id) : '');
   fillFleetExcludeBookSelect();
+  await Promise.all([
+    fillEventSelect('fleetTargetEventSelect', '— Tout le carnet —'),
+    fillEventSelect('fleetExcludeEventSelect', '— Aucune exclusion —')
+  ]);
   await loadFleetContacts();
   await loadFleetChecks();
 }
+
+wireEventStatePair('fleetTargetEventSelect', 'fleetTargetEventState', () => loadFleetContacts());
+wireEventStatePair('fleetExcludeEventSelect', 'fleetExcludeEventState', () => loadFleetContacts());
 
 function fillFleetExcludeBookSelect() {
   const select = $('fleetExcludeBookSelect');
@@ -2161,18 +2309,26 @@ async function fetchAllBookContacts(bookId) {
 
 async function loadFleetContacts() {
   const bookId = Number($('fleetBookSelect').value || 0);
-  const [bookContacts, excludedPhones] = bookId
-    ? await Promise.all([fetchAllBookContacts(bookId), excludedPhonesFor('fleetExcludeBookSelect')])
-    : [[], new Set()];
+  const [bookContacts, excludedByBook, excludedByEvent, targetPhones] = bookId
+    ? await Promise.all([
+        fetchAllBookContacts(bookId),
+        excludedPhonesFor('fleetExcludeBookSelect'),
+        eventPhonesFor('fleetExcludeEventSelect', 'fleetExcludeEventState'),
+        eventPhonesFor('fleetTargetEventSelect', 'fleetTargetEventState')
+      ])
+    : [[], new Set(), new Set(), new Set()];
   fleetContacts = bookContacts;
-  const isExcluded = (contact) => excludedPhones.has(contact.phone);
-  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact) && !contact.recent_checked).map((contact) => contact.id));
+  const hasTarget = $('fleetTargetEventSelect').value !== '';
+  const isExcluded = (contact) => excludedByBook.has(contact.phone) || excludedByEvent.has(contact.phone);
+  const isTargeted = (contact) => !hasTarget || targetPhones.has(contact.phone);
+  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact) && !contact.recent_checked && !contact.mass_excluded && isTargeted(contact)).map((contact) => contact.id));
   const skipped = fleetContacts.filter((c) => c.recent_checked).length;
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
-        const checked = contact.blacklisted || isExcluded(contact) ? 'disabled' : (contact.recent_checked ? '' : 'checked');
-        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : ''}</span></label>`;
+        const targeted = isTargeted(contact);
+        const checked = contact.blacklisted || isExcluded(contact) ? 'disabled' : (contact.recent_checked || contact.mass_excluded || !targeted ? '' : 'checked');
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : contact.mass_excluded ? ' · <span class="badge off">Exclu par défaut</span>' : !targeted ? ' · <span class="badge off">Hors cible</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
   updateFleetCount(skipped);
@@ -2206,13 +2362,30 @@ async function loadFleetChecks() {
   const checks = await api('/admin/api/fleet-checks');
   $('fleetChecksBody').innerHTML = checks.length
     ? checks.map((check) => `<tr>
-        <td>${check.id}</td><td>${fmtDate(check.created_at)}</td><td>${esc(check.book_name || '—')}</td>
+        <td>${check.id}</td><td>${esc(check.name || '—')}</td><td>${fmtDate(check.created_at)}</td><td>${esc(check.book_name || '—')}</td>
         <td>${check.total || 0}</td><td>${check.delivered || 0}</td><td>${check.replied || 0}</td><td>${check.no_response || 0}</td><td>${check.failed || 0}</td>
-        <td><button class="ghost" data-fleet-open="${check.id}">Détails</button></td>
+        <td><button class="ghost" data-fleet-open="${check.id}">Détails</button>
+        <button class="ghost" data-fleet-rename="${check.id}" data-fleet-name="${esc(check.name || '')}">Renommer</button>
+        <button class="ghost" data-fleet-delete="${check.id}">Supprimer</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="9" class="muted">Aucune vérification lancée.</td></tr>';
+    : '<tr><td colspan="10" class="muted">Aucune vérification lancée.</td></tr>';
   document.querySelectorAll('[data-fleet-open]').forEach((button) => {
     button.addEventListener('click', () => openFleetCheck(Number(button.dataset.fleetOpen)));
+  });
+  document.querySelectorAll('[data-fleet-rename]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const name = prompt('Nom de la vérification :', button.dataset.fleetName || '');
+      if (name === null) return;
+      await api(`/admin/api/fleet-checks/${button.dataset.fleetRename}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+      loadFleetChecks();
+    });
+  });
+  document.querySelectorAll('[data-fleet-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!confirm('Supprimer définitivement cette vérification de la liste ?')) return;
+      await api(`/admin/api/fleet-checks/${button.dataset.fleetDelete}`, { method: 'DELETE' });
+      loadFleetChecks();
+    });
   });
 }
 
@@ -2308,14 +2481,33 @@ function renderFleetRows() {
   $('fleetDetailCount').textContent = `${filtered.length} / ${fleetItems.length} ligne(s)`;
 }
 
+// Préférences d'affichage (colonnes visibles, filtres de colonnes, filtre de
+// statut) persistées dans le navigateur : elles s'appliquent à toute nouvelle
+// vérification de flotte ouverte, pas seulement à celle en cours.
+const FLEET_PREFS_KEY = 'sms-fleet-prefs';
+function loadFleetPrefs() {
+  try {
+    const raw = localStorage.getItem(FLEET_PREFS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveFleetPrefs() {
+  try {
+    localStorage.setItem(FLEET_PREFS_KEY, JSON.stringify({
+      visibleCols: [...fleetVisibleCols], colFilters: fleetColFilters, statusFilter: fleetStatusFilter
+    }));
+  } catch { /* stockage indisponible (navigation privée, quota) : sans conséquence */ }
+}
+
 async function openFleetCheck(id) {
   const data = await api(`/admin/api/fleet-checks/${id}`);
   fleetCheckId = id;
   fleetItems = data.items;
-  fleetStatusFilter = 'all';
-  fleetColFilters = {};
-  fleetVisibleCols = new Set(FLEET_COLS.map((c) => c.key));
-  $('fleetStatusFilter').value = 'all';
+  const prefs = loadFleetPrefs();
+  fleetStatusFilter = (prefs && prefs.statusFilter) || 'all';
+  fleetColFilters = (prefs && prefs.colFilters) || {};
+  fleetVisibleCols = new Set(prefs && prefs.visibleCols && prefs.visibleCols.length ? prefs.visibleCols : FLEET_COLS.map((c) => c.key));
+  $('fleetStatusFilter').value = fleetStatusFilter;
   $('fleetDetailTitle').textContent = `Vérification #${id}`;
   $('fleetDetail').classList.remove('hidden');
   renderFleetHead();
@@ -2324,6 +2516,7 @@ async function openFleetCheck(id) {
 
 $('fleetStatusFilter').addEventListener('change', () => {
   fleetStatusFilter = $('fleetStatusFilter').value;
+  saveFleetPrefs();
   renderFleetRows();
 });
 
@@ -2332,6 +2525,7 @@ $('fleetColToggles').addEventListener('change', (event) => {
   if (!cb) return;
   if (cb.checked) fleetVisibleCols.add(cb.dataset.fleetcol);
   else fleetVisibleCols.delete(cb.dataset.fleetcol);
+  saveFleetPrefs();
   renderFleetHead();
   renderFleetRows();
 });
@@ -2340,6 +2534,7 @@ $('fleetItemsHead').addEventListener('input', (event) => {
   const input = event.target.closest('[data-colfilter]');
   if (!input) return;
   fleetColFilters[input.dataset.colfilter] = input.value;
+  saveFleetPrefs();
   renderFleetRows();
 });
 
@@ -2357,9 +2552,16 @@ $('btnStartFleet').addEventListener('click', async () => {
     return;
   }
   try {
+    const [excludeEventType, excludeEventId] = ($('fleetExcludeEventSelect').value || '').split(':');
     const result = await api('/admin/api/fleet-checks', {
       method: 'POST',
-      body: JSON.stringify({ bookId, excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null, contactIds, message })
+      body: JSON.stringify({
+        bookId, excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null, contactIds, message,
+        name: $('fleetName').value.trim() || null,
+        excludeEventType: excludeEventType || null,
+        excludeEventId: excludeEventId || null,
+        excludeEventState: $('fleetExcludeEventState').value || null
+      })
     });
     alert(`Vérification #${result.id} lancée pour ${result.count} contact(s).${result.quotaWarning ? `\n\n⚠ ${result.quotaWarning}` : ''}`);
     await loadFleetChecks();

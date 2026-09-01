@@ -214,6 +214,35 @@ function isBlacklisted(phone) {
   return Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE phone = ?').get(phone));
 }
 
+function isMassExcluded(phone) {
+  return Boolean(db.prepare('SELECT 1 FROM mass_exclusions WHERE phone = ?').get(phone));
+}
+
+// Résout l'ensemble des numéros correspondant à un envoi passé (campagne ou
+// vérification de flotte), éventuellement filtré par état — utilisé pour
+// cibler ou exclure les destinataires d'un envoi précédent lors de la
+// composition d'un nouveau. Renvoie null si l'événement n'existe pas ou
+// n'est pas visible pour la session (accès refusé).
+function resolveEventPhones(req, eventType, eventId, state) {
+  if (eventType === 'campaign') {
+    const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ? AND deleted_at IS NULL').get(eventId);
+    if (!campaign || (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId)) return null;
+    const rows = state
+      ? db.prepare('SELECT recipient AS phone FROM messages WHERE campaign_id = ? AND status = ?').all(eventId, state)
+      : db.prepare('SELECT recipient AS phone FROM messages WHERE campaign_id = ?').all(eventId);
+    return new Set(rows.map((r) => r.phone));
+  }
+  if (eventType === 'fleet') {
+    const check = db.prepare('SELECT * FROM fleet_checks WHERE id = ? AND deleted_at IS NULL').get(eventId);
+    if (!check || (req.session.role !== 'admin' && check.group_id !== req.session.groupId)) return null;
+    const rows = state
+      ? db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ? AND state = ?').all(eventId, state)
+      : db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ?').all(eventId);
+    return new Set(rows.map((r) => r.phone));
+  }
+  return null;
+}
+
 const FLEET_RESPONSE_HOURS = 72;
 
 function updateFleetItemForMessage(messageId, status, at, error) {
@@ -2548,8 +2577,11 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   }
   const rows = db.prepare(`
     SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.line_status, c.plan, c.device_terminal, c.secondary_line, c.phone, c.created_at,
-      CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted
-    FROM contacts c LEFT JOIN blacklist_numbers b ON b.phone = c.phone
+      CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted,
+      CASE WHEN x.phone IS NULL THEN 0 ELSE 1 END AS mass_excluded
+    FROM contacts c
+    LEFT JOIN blacklist_numbers b ON b.phone = c.phone
+    LEFT JOIN mass_exclusions x ON x.phone = c.phone
     WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ? OFFSET ?
   `).all(checked.book.id, pageSize, offset);
   rows.forEach((row) => { row.recent_checked = recentPhones.has(row.phone) ? 1 : 0; });
@@ -2753,6 +2785,12 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
     }
     excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
   }
+  if (body.excludeEventType && body.excludeEventId) {
+    const eventPhones = resolveEventPhones(req, body.excludeEventType, Number(body.excludeEventId), String(body.excludeEventState || '') || null);
+    if (eventPhones === null) return res.status(404).json({ error: 'Envoi précédent (à exclure) introuvable' });
+    eventPhones.forEach((phone) => excludedPhones.add(phone));
+  }
+  const name = String(body.name || '').trim().slice(0, 120) || null;
   if (contactIds.length === 0) return res.status(400).json({ error: 'Sélectionnez au moins un destinataire' });
   if (!message) return res.status(400).json({ error: 'Message vide' });
   if (message.length > MAX_MESSAGE_LENGTH) {
@@ -2780,16 +2818,16 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
   let campaignId;
   const clonedAttachmentPaths = [];
   const dispatchEntries = [];
+  let unassignedCount = 0;
   db.exec('BEGIN');
   try {
     const info = db.prepare(
-      'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt);
+      'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at, name) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt, name);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
       'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
-    let unassignedCount = 0;
     for (const c of contacts) {
       const renderedMessage = renderContactBody(message, c);
       if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
@@ -2820,11 +2858,82 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
   }
   logConsole(req, 'campagne', book.name, contacts.length);
   res.status(201).json({
-    id: campaignId, bookName: book.name, count: contacts.length, status, provider,
+    id: campaignId, bookName: book.name, name, count: contacts.length, status, provider,
     quotaWarning: unassignedCount > 0
       ? `${unassignedCount} destinataire(s) sans passerelle disponible sous le quota configuré : mis en file sans garantie de répartition.`
       : null
   });
+});
+
+webApp.get('/admin/api/campaigns', (req, res) => {
+  const campaigns = db.prepare(`
+    SELECT c.*, ab.name AS book_name, acc.login AS creator_login,
+      COUNT(m.id) AS total,
+      SUM(CASE WHEN m.status = 'sent' THEN 1 ELSE 0 END) AS sent,
+      SUM(CASE WHEN m.status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+      SUM(CASE WHEN m.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+      SUM(CASE WHEN m.status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
+    FROM campaigns c
+    LEFT JOIN address_books ab ON ab.id = c.address_book_id
+    LEFT JOIN accounts acc ON acc.id = c.created_by
+    LEFT JOIN messages m ON m.campaign_id = c.id
+    WHERE c.deleted_at IS NULL ${req.session.role === 'admin' ? '' : 'AND c.group_id = ?'}
+    GROUP BY c.id ORDER BY c.id DESC
+  `).all(...(req.session.role === 'admin' ? [] : [req.session.groupId]));
+  res.json(campaigns);
+});
+
+function campaignVisible(req, id) {
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ? AND deleted_at IS NULL').get(Number(id));
+  if (!campaign) return null;
+  if (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId) return null;
+  return campaign;
+}
+
+// Détail paginé d'une campagne : ses messages, page par page (contrairement
+// à la vérification de flotte, dont le détail reste chargé en une fois).
+webApp.get('/admin/api/campaigns/:id', (req, res) => {
+  const campaign = campaignVisible(req, req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '25', 10) || 25, 1), 500);
+  const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
+  const offset = (page - 1) * pageSize;
+  const total = db.prepare('SELECT COUNT(*) c FROM messages WHERE campaign_id = ?').get(campaign.id).c;
+  const messages = db.prepare(`
+    SELECT m.*, k.label AS gateway_label
+    FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
+    WHERE m.campaign_id = ? ORDER BY m.id ASC LIMIT ? OFFSET ?
+  `).all(campaign.id, pageSize, offset);
+  const bookRow = db.prepare('SELECT name FROM address_books WHERE id = ?').get(campaign.address_book_id);
+  res.json({ campaign: { ...campaign, book_name: bookRow ? bookRow.name : null }, messages, total, page, pageSize });
+});
+
+// Liste légère (numéro + statut) pour cibler ou exclure les destinataires
+// d'une campagne précédente lors de la composition d'un nouvel envoi.
+webApp.get('/admin/api/campaigns/:id/recipients', (req, res) => {
+  const campaign = campaignVisible(req, req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  const state = String(req.query.state || '').trim();
+  const rows = state
+    ? db.prepare('SELECT recipient AS phone, status FROM messages WHERE campaign_id = ? AND status = ?').all(campaign.id, state)
+    : db.prepare('SELECT recipient AS phone, status FROM messages WHERE campaign_id = ?').all(campaign.id);
+  res.json({ recipients: rows });
+});
+
+webApp.patch('/admin/api/campaigns/:id', (req, res) => {
+  const campaign = campaignVisible(req, req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  const name = String((req.body || {}).name || '').trim().slice(0, 120) || null;
+  db.prepare('UPDATE campaigns SET name = ? WHERE id = ?').run(name, campaign.id);
+  res.json({ ok: true, id: campaign.id, name });
+});
+
+webApp.delete('/admin/api/campaigns/:id', (req, res) => {
+  const campaign = campaignVisible(req, req.params.id);
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  db.prepare('UPDATE campaigns SET deleted_at = ? WHERE id = ?').run(isoNow(), campaign.id);
+  logConsole(req, 'suppression campagne', `#${campaign.id}`);
+  res.json({ ok: true });
 });
 
 webApp.get('/admin/api/blacklist', (req, res) => {
@@ -2843,6 +2952,28 @@ webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
   const phone = normalizePhone(req.params.phone);
   db.prepare('DELETE FROM blacklist_numbers WHERE phone = ?').run(phone);
   res.json({ phone, blacklisted: false });
+});
+
+// Numéros exclus par défaut des envois en masse (campagnes, vérifications de
+// flotte) : contrairement à la liste noire, ce n'est pas un blocage, juste
+// une pré-décoche dans les listes de destinataires — l'opérateur peut
+// réinclure le numéro pour un envoi ponctuel.
+webApp.get('/admin/api/mass-exclusions', (req, res) => {
+  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM mass_exclusions ORDER BY phone ASC').all());
+});
+
+webApp.post('/admin/api/mass-exclusions', (req, res) => {
+  const phone = normalizePhone((req.body || {}).phone || '');
+  if (!/^\+?[0-9]{4,15}$/.test(phone)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
+  db.prepare('INSERT OR IGNORE INTO mass_exclusions (phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?)')
+    .run(phone, isoNow(), req.session.accountId, req.session.login);
+  res.status(201).json({ phone, massExcluded: true });
+});
+
+webApp.delete('/admin/api/mass-exclusions/:phone', (req, res) => {
+  const phone = normalizePhone(req.params.phone);
+  db.prepare('DELETE FROM mass_exclusions WHERE phone = ?').run(phone);
+  res.json({ phone, massExcluded: false });
 });
 
 // NB : la vérification de flotte reste toujours en interne (passerelles),
@@ -2874,6 +3005,12 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
     }
     excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
   }
+  if (body.excludeEventType && body.excludeEventId) {
+    const eventPhones = resolveEventPhones(req, body.excludeEventType, Number(body.excludeEventId), String(body.excludeEventState || '') || null);
+    if (eventPhones === null) return res.status(404).json({ error: 'Envoi précédent (à exclure) introuvable' });
+    eventPhones.forEach((phone) => excludedPhones.add(phone));
+  }
+  const name = String(body.name || '').trim().slice(0, 120) || null;
   const contactWhere = contactIds.length
     ? `AND id IN (${contactIds.map(() => '?').join(',')})`
     : '';
@@ -2886,12 +3023,13 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   }
   const createdAt = isoNow();
   let checkId;
+  let unassignedCount = 0;
   db.exec('BEGIN');
   try {
     const check = db.prepare(`
-      INSERT INTO fleet_checks (group_id, address_book_id, message, created_by, created_by_label, response_hours, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(book.group_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt);
+      INSERT INTO fleet_checks (group_id, address_book_id, message, created_by, created_by_label, response_hours, created_at, name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(book.group_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt, name);
     checkId = check.lastInsertRowid;
     const insertMessage = db.prepare(`
       INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id, claimed_by)
@@ -2902,7 +3040,6 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
         (fleet_check_id, message_id, contact_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, state)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     `);
-    let unassignedCount = 0;
     for (const contact of contacts) {
       const renderedMessage = renderContactBody(message, contact);
       if (renderedMessage.length > MAX_MESSAGE_LENGTH) {
@@ -2924,7 +3061,7 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   }
   logConsole(req, 'verif flotte', book.name, contacts.length);
   res.status(201).json({
-    id: checkId, bookName: book.name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt,
+    id: checkId, bookName: book.name, name, count: contacts.length, responseHours: FLEET_RESPONSE_HOURS, createdAt,
     quotaWarning: unassignedCount > 0
       ? `${unassignedCount} destinataire(s) sans passerelle disponible sous le quota configuré.`
       : null
@@ -2950,7 +3087,7 @@ webApp.get('/admin/api/fleet-checks', (req, res) => {
     FROM fleet_checks f
     LEFT JOIN address_books ab ON ab.id = f.address_book_id
     LEFT JOIN fleet_check_items i ON i.fleet_check_id = f.id
-    ${req.session.role === 'admin' ? '' : 'WHERE f.group_id = ?'}
+    WHERE f.deleted_at IS NULL ${req.session.role === 'admin' ? '' : 'AND f.group_id = ?'}
     GROUP BY f.id ORDER BY f.id DESC
   `).all(...(req.session.role === 'admin' ? [] : [req.session.groupId]));
   res.json(checks);
@@ -2966,6 +3103,34 @@ webApp.get('/admin/api/fleet-checks/:id', (req, res) => {
     WHERE i.fleet_check_id = ? ORDER BY i.id ASC
   `).all(check.id);
   res.json({ check, items });
+});
+
+// Liste légère (numéro + état) pour cibler ou exclure les destinataires
+// d'une vérification précédente lors de la composition d'un nouvel envoi.
+webApp.get('/admin/api/fleet-checks/:id/recipients', (req, res) => {
+  const check = fleetCheckVisible(req, req.params.id);
+  if (!check) return res.status(404).json({ error: 'Vérification introuvable' });
+  const state = String(req.query.state || '').trim();
+  const rows = state
+    ? db.prepare('SELECT phone, state FROM fleet_check_items WHERE fleet_check_id = ? AND state = ?').all(check.id, state)
+    : db.prepare('SELECT phone, state FROM fleet_check_items WHERE fleet_check_id = ?').all(check.id);
+  res.json({ recipients: rows });
+});
+
+webApp.patch('/admin/api/fleet-checks/:id', (req, res) => {
+  const check = fleetCheckVisible(req, req.params.id);
+  if (!check) return res.status(404).json({ error: 'Vérification introuvable' });
+  const name = String((req.body || {}).name || '').trim().slice(0, 120) || null;
+  db.prepare('UPDATE fleet_checks SET name = ? WHERE id = ?').run(name, check.id);
+  res.json({ ok: true, id: check.id, name });
+});
+
+webApp.delete('/admin/api/fleet-checks/:id', (req, res) => {
+  const check = fleetCheckVisible(req, req.params.id);
+  if (!check) return res.status(404).json({ error: 'Vérification introuvable' });
+  db.prepare('UPDATE fleet_checks SET deleted_at = ? WHERE id = ?').run(isoNow(), check.id);
+  logConsole(req, 'suppression vérification flotte', `#${check.id}`);
+  res.json({ ok: true });
 });
 
 webApp.get('/admin/api/fleet-checks/:id/export', (req, res) => {

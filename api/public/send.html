@@ -60,6 +60,8 @@
             </details>
           </div>
           <div id="bookRecipient" class="hidden">
+            <label for="campaignName">Nom de la campagne (facultatif)</label>
+            <input id="campaignName" placeholder="Ex : Info travaux — secteur nord" style="margin-bottom:10px">
             <div class="row">
               <label for="bookSelect" style="margin:0">Carnet d'adresses</label>
               <button id="btnToggleAll" class="ghost">Tout cocher</button>
@@ -67,6 +69,12 @@
             <select id="bookSelect"><option value="">—</option></select>
             <label for="excludeBookSelect" style="margin-top:10px">Mais pas dans le carnet</label>
             <select id="excludeBookSelect"><option value="">— Aucun numéro exclu —</option></select>
+            <label for="campaignTargetEventSelect" style="margin-top:10px">Cibler les destinataires d'un envoi précédent (facultatif)</label>
+            <select id="campaignTargetEventSelect"><option value="">— Tout le carnet —</option></select>
+            <select id="campaignTargetEventState" class="hidden"></select>
+            <label for="campaignExcludeEventSelect" style="margin-top:10px">Mais pas dans cet envoi précédent</label>
+            <select id="campaignExcludeEventSelect"><option value="">— Aucune exclusion —</option></select>
+            <select id="campaignExcludeEventState" class="hidden"></select>
             <div id="recipientList" class="recipients" style="margin-top:10px">
               <div class="contact-list-empty muted">Choisissez un carnet pour afficher les contacts.</div>
             </div>
@@ -157,10 +165,18 @@
       </div>
       <div class="composer">
         <div>
+          <label for="fleetName">Nom de la vérification (facultatif)</label>
+          <input id="fleetName" placeholder="Ex : Astreinte — vague 2" style="margin-bottom:10px">
           <label for="fleetBookSelect">Carnet d'adresses</label>
           <select id="fleetBookSelect"><option value="">—</option></select>
           <label for="fleetExcludeBookSelect" style="margin-top:10px">Mais pas dans le carnet</label>
           <select id="fleetExcludeBookSelect"><option value="">— Aucun numéro exclu —</option></select>
+          <label for="fleetTargetEventSelect" style="margin-top:10px">Cibler les destinataires d'un envoi précédent (facultatif)</label>
+          <select id="fleetTargetEventSelect"><option value="">— Tout le carnet —</option></select>
+          <select id="fleetTargetEventState" class="hidden"></select>
+          <label for="fleetExcludeEventSelect" style="margin-top:10px">Mais pas dans cet envoi précédent</label>
+          <select id="fleetExcludeEventSelect"><option value="">— Aucune exclusion —</option></select>
+          <select id="fleetExcludeEventState" class="hidden"></select>
           <div id="fleetContactList" class="recipients" style="margin-top:10px">
             <div class="contact-list-empty muted">Choisissez un carnet.</div>
           </div>
@@ -179,7 +195,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>ID</th><th>Date</th><th>Carnet</th><th>Total</th><th>Remis</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>Nom</th><th>Date</th><th>Carnet</th><th>Total</th><th>Remis</th><th>Réponses</th><th>Sans réponse</th><th>Échecs</th><th></th></tr></thead>
           <tbody id="fleetChecksBody"></tbody>
         </table>
       </div>

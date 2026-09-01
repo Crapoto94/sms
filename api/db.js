@@ -468,6 +468,36 @@ for (const column of ['line_status', 'plan', 'device_terminal', 'secondary_line'
   if (!fleetItemNewCols.includes(column)) db.exec(`ALTER TABLE fleet_check_items ADD COLUMN ${column} TEXT`);
 }
 
+const campaignCols = db.prepare('PRAGMA table_info(campaigns)').all().map((c) => c.name);
+if (!campaignCols.includes('name')) {
+  db.exec('ALTER TABLE campaigns ADD COLUMN name TEXT');
+}
+const fleetCheckCols = db.prepare('PRAGMA table_info(fleet_checks)').all().map((c) => c.name);
+if (!fleetCheckCols.includes('name')) {
+  db.exec('ALTER TABLE fleet_checks ADD COLUMN name TEXT');
+}
+if (!fleetCheckCols.includes('deleted_at')) {
+  db.exec('ALTER TABLE fleet_checks ADD COLUMN deleted_at TEXT');
+}
+if (!campaignCols.includes('deleted_at')) {
+  db.exec('ALTER TABLE campaigns ADD COLUMN deleted_at TEXT');
+}
+
+// Numéros exclus par défaut des envois en masse (campagnes et vérifications
+// de flotte) : contrairement à la liste noire, ce n'est pas un blocage —
+// l'opérateur peut réinclure le numéro pour un envoi précis. Indexé sur le
+// numéro seul (comme la liste noire) pour survivre à un réimport CSV du
+// carnet, même en mode « écraser ».
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mass_exclusions (
+    phone            TEXT PRIMARY KEY,
+    created_at       TEXT NOT NULL,
+    created_by       INTEGER,
+    created_by_label TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_mass_exclusions_phone ON mass_exclusions(phone);
+`);
+
 const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
 if (!attachmentCols.includes('expires_at')) {
   db.exec('ALTER TABLE attachments ADD COLUMN expires_at TEXT');
