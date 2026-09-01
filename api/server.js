@@ -2570,7 +2570,7 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || req.query.limit || '500', 10) || 500, 1), 2000);
   const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
   const offset = (page - 1) * pageSize;
-  const latestCheck = db.prepare('SELECT id FROM fleet_checks WHERE address_book_id = ? ORDER BY id DESC LIMIT 1').get(checked.book.id);
+  const latestCheck = db.prepare('SELECT id FROM fleet_checks WHERE address_book_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(checked.book.id);
   let recentPhones = new Set();
   if (latestCheck) {
     recentPhones = new Set(db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ?').all(latestCheck.id).map((r) => r.phone));

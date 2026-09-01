@@ -799,13 +799,23 @@ async function loadFleetContacts() {
   const hasTarget = $('fleetTargetEventSelect').value !== '';
   const isExcluded = (contact) => excludedByBook.has(contact.phone) || excludedByEvent.has(contact.phone);
   const isTargeted = (contact) => !hasTarget || targetPhones.has(contact.phone);
-  fleetSelected = new Set(fleetContacts.filter((contact) => !contact.blacklisted && !isExcluded(contact) && !contact.recent_checked && !contact.mass_excluded && isTargeted(contact)).map((contact) => contact.id));
-  const skipped = fleetContacts.filter((c) => c.recent_checked).length;
+  // Cibler un envoi précédent est un choix explicite : il prime sur les
+  // décoches par défaut (déjà vérifié / exclu par défaut), sinon cibler un
+  // envoi qui est aussi « le dernier passage sur ce carnet » décochait tout
+  // le monde malgré la cible choisie.
+  fleetSelected = new Set(fleetContacts.filter((contact) => {
+    if (contact.blacklisted || isExcluded(contact)) return false;
+    if (hasTarget) return isTargeted(contact);
+    return !contact.recent_checked && !contact.mass_excluded;
+  }).map((contact) => contact.id));
+  const skipped = hasTarget ? 0 : fleetContacts.filter((c) => c.recent_checked).length;
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
         const targeted = isTargeted(contact);
-        const checked = contact.blacklisted || isExcluded(contact) ? 'disabled' : (contact.recent_checked || contact.mass_excluded || !targeted ? '' : 'checked');
+        const checked = contact.blacklisted || isExcluded(contact)
+          ? 'disabled'
+          : hasTarget ? (targeted ? 'checked' : '') : (contact.recent_checked || contact.mass_excluded ? '' : 'checked');
         return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : contact.mass_excluded ? ' · <span class="badge off">Exclu par défaut</span>' : !targeted ? ' · <span class="badge off">Hors cible</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
