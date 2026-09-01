@@ -18,6 +18,8 @@ class SmsResultReceiver : BroadcastReceiver() {
         val profileId = intent.getStringExtra(Config.EXTRA_PROFILE_ID).orEmpty()
         val partIndex = intent.getIntExtra(Config.EXTRA_PART_INDEX, 0)
         val partTotal = intent.getIntExtra(Config.EXTRA_PART_TOTAL, 1)
+        val simSlot = if (intent.hasExtra(Config.EXTRA_SIM_SLOT)) intent.getIntExtra(Config.EXTRA_SIM_SLOT, 0) else null
+        val simNumber = intent.getStringExtra(Config.EXTRA_SIM_NUMBER)
 
         val report: StatusReport? = when (intent.action) {
             Config.SMS_SENT_ACTION -> {
@@ -30,7 +32,7 @@ class SmsResultReceiver : BroadcastReceiver() {
                     SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio éteinte"
                     else -> "Erreur $resultCode"
                 }
-                MultipartTracker.onSent(context, profileId, messageId, partIndex, partTotal, ok, error)
+                MultipartTracker.onSent(context, profileId, messageId, partIndex, partTotal, ok, error, simSlot, simNumber)
             }
             Config.SMS_DELIVERED_ACTION -> {
                 if (resultCode != Activity.RESULT_OK) return

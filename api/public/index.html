@@ -60,10 +60,11 @@
         Chaque passerelle en ligne reçoit en priorité les envois vers les numéros qu'elle a déjà contactés récemment,
         puis se voit attribuer les nouveaux numéros par ordre de charge croissante, dans la limite du quota ci-dessous
         (protection contre le blocage anti-spam opérateur — les forfaits mobile grand public limitent en général les
-        SMS illimités à ~200 destinataires distincts par mois).
+        SMS illimités à ~200 destinataires distincts par mois). Le quota s'applique par <strong>ligne</strong> : une
+        passerelle à 2 SIM a deux fois la capacité d'une passerelle mono-SIM.
       </p>
       <div class="row">
-        <label for="gwQuotaCap">Quota par passerelle (destinataires distincts)</label>
+        <label for="gwQuotaCap">Quota par ligne (destinataires distincts)</label>
         <input id="gwQuotaCap" type="number" min="1" value="180" style="max-width:100px">
         <label for="gwQuotaWindow">Fenêtre glissante (jours)</label>
         <input id="gwQuotaWindow" type="number" min="1" value="30" style="max-width:100px">

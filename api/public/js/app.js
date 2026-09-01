@@ -241,9 +241,10 @@ async function refreshOnlineBadge() {
 }
 
 async function loadGateways() {
-  const [gateways, stats] = await Promise.all([
+  const [gateways, stats, gatewayLines] = await Promise.all([
     api('/admin/api/gateways'),
-    api('/admin/api/stats')
+    api('/admin/api/stats'),
+    api('/admin/api/gateway-lines')
   ]);
   loadGwQuota();
   $('online').textContent = `${stats.gatewaysOnline} passerelle(s) en ligne`;
@@ -253,7 +254,7 @@ async function loadGateways() {
         const state = g.online ? badge('En ligne', 'ok') : badge('Hors ligne', 'off');
         const overQuota = g.recentDistinctRecipients >= g.quotaCap;
         const simCount = g.sim_count || 1;
-        const lines = simCount > 1 ? badge(`${simCount} lignes`, 'ok') : '1';
+        const lines = renderGatewayLinesCell(simCount, gatewayLines[g.id] || []);
         return `<tr>
           <td>${esc(g.label || '—')}</td>
           <td class="code">${esc(g.device_id || '—')}</td>
@@ -269,6 +270,22 @@ async function loadGateways() {
         </tr>`;
       }).join('')
     : '<tr><td colspan="11" class="muted">Aucune passerelle connectée.</td></tr>';
+}
+
+// Cellule « Lignes » de l'onglet Passerelles : nombre de SIM, avec un détail
+// dépliable (numéro si connu, messages envoyés/remis/échoués) dès qu'on a au
+// moins une remontée par ligne — même sur une passerelle mono-SIM, ça permet
+// de voir le numéro utilisé.
+function renderGatewayLinesCell(simCount, lines) {
+  if (!lines.length) {
+    return simCount > 1 ? badge(`${simCount} lignes`, 'ok') : '1';
+  }
+  const rows = lines.map((l) => {
+    const label = l.sim_number ? esc(l.sim_number) : `Ligne ${l.sim_slot + 1}`;
+    return `<div style="white-space:nowrap">${label} — ${l.total} envoyé(s), ${l.delivered} remis, ${l.failed} échec(s)</div>`;
+  }).join('');
+  const summary = simCount > 1 ? `${simCount} lignes` : '1 ligne';
+  return `<details><summary>${esc(summary)}</summary>${rows}</details>`;
 }
 
 async function loadGwQuota() {

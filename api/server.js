@@ -12,7 +12,7 @@ const frizbi = require('./frizbi');
 const PORT_API = parseInt(process.env.PORT_API || '3250', 10);
 const PORT_WEB = parseInt(process.env.PORT_WEB || '3251', 10);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
-const APP_VERSION = process.env.APP_VERSION || '1.4.3';
+const APP_VERSION = process.env.APP_VERSION || '1.4.4';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const SENDING_STALE_MS = 10 * 60 * 1000;
 const CLAIM_LIMIT = 25;
@@ -364,7 +364,7 @@ function assignGateway(recipient) {
   const windowIso = new Date(Date.now() - settings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
   const onlineCutoff = onlineCutoffIso();
   const gateways = db.prepare(`
-    SELECT k.id,
+    SELECT k.id, k.sim_count,
       (SELECT COUNT(DISTINCT m.recipient) FROM messages m
         WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?) AS recentDistinct
     FROM keys k
@@ -380,7 +380,9 @@ function assignGateway(recipient) {
     const match = gateways.find((g) => g.id === sticky.claimed_by);
     if (match) return match.id;
   }
-  const eligible = gateways.filter((g) => g.recentDistinct < settings.quota_cap);
+  // Le quota s'applique par LIGNE, pas par téléphone : une passerelle à N
+  // SIM a N fois la capacité (chaque SIM a son propre quota opérateur).
+  const eligible = gateways.filter((g) => g.recentDistinct < settings.quota_cap * (g.sim_count || 1));
   if (!eligible.length) return null;
   eligible.sort((a, b) => a.recentDistinct - b.recentDistinct);
   return eligible[0].id;
@@ -424,7 +426,9 @@ function simulateAssignment(phones) {
       gatewayId = sticky.claimed_by;
       isNewDistinct = false; // déjà compté dans recentDistinct
     } else {
-      const eligible = gateways.filter((g) => simulated.get(g.id) < settings.quota_cap);
+      // Le quota s'applique par LIGNE, pas par téléphone : une passerelle à
+      // N SIM a N fois la capacité.
+      const eligible = gateways.filter((g) => simulated.get(g.id) < settings.quota_cap * (g.sim_count || 1));
       if (!eligible.length) { unassigned++; continue; }
       eligible.sort((a, b) => simulated.get(a.id) - simulated.get(b.id));
       gatewayId = eligible[0].id;
@@ -941,6 +945,8 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       delivered_at = CASE WHEN ? = 'delivered' THEN ? ELSE delivered_at END,
       failed_at    = CASE WHEN ? = 'failed'    THEN ? ELSE failed_at END,
       error        = ?,
+      sim_slot     = CASE WHEN ? IS NOT NULL THEN ? ELSE sim_slot END,
+      sim_number   = CASE WHEN ? IS NOT NULL THEN ? ELSE sim_number END,
       updated_at   = ?
     WHERE id = ? AND status <> 'cancelled'
   `);
@@ -953,12 +959,17 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       const status = String(r.status || '').toLowerCase();
       if (!Number.isInteger(id) || !['sent', 'delivered', 'failed'].includes(status)) continue;
       const error = r.error ? String(r.error).slice(0, 500) : null;
+      const simSlot = Number.isInteger(r.simSlot) ? r.simSlot : null;
+      const simNumber = r.simNumber ? String(r.simNumber).slice(0, 32) : null;
       const info = updateStatus.run(
         status,
         status, nowIso,
         status, nowIso,
         status, nowIso,
-        error, nowIso, id
+        error,
+        simSlot, simSlot,
+        simNumber, simNumber,
+        nowIso, id
       );
        if (info.changes > 0) {
          reportAccepted.push(id);
@@ -1449,8 +1460,36 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
     FROM keys k
     WHERE k.type = 'gateway'
     ORDER BY k.last_seen_at DESC
-  `).all(windowIso).map((g) => ({ ...g, online: !!(g.last_seen_at && g.last_seen_at > cutoff), quotaCap: gwSettings.quota_cap }));
+  `).all(windowIso).map((g) => ({
+    ...g,
+    online: !!(g.last_seen_at && g.last_seen_at > cutoff),
+    // Quota effectif : une passerelle à N lignes a N fois la capacité de
+    // base, puisque chaque SIM a son propre quota opérateur.
+    quotaCap: gwSettings.quota_cap * (g.sim_count || 1)
+  }));
   res.json(gateways);
+});
+
+// Détail par ligne (SIM) de chaque passerelle multi-SIM : numéro si l'APK a
+// pu le lire, et nombre de messages envoyés/remis/échoués sur cette ligne.
+webApp.get('/admin/api/gateway-lines', requireAdmin, (_req, res) => {
+  const rows = db.prepare(`
+    SELECT claimed_by AS gateway_id, sim_slot,
+      MAX(sim_number) AS sim_number,
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END)      AS sent,
+      SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)    AS failed
+    FROM messages
+    WHERE claimed_by IS NOT NULL AND sim_slot IS NOT NULL
+    GROUP BY claimed_by, sim_slot
+    ORDER BY claimed_by ASC, sim_slot ASC
+  `).all();
+  const byGateway = {};
+  for (const r of rows) {
+    (byGateway[r.gateway_id] = byGateway[r.gateway_id] || []).push(r);
+  }
+  res.json(byGateway);
 });
 
 webApp.get('/admin/api/gateway-settings', requireAdmin, (_req, res) => {

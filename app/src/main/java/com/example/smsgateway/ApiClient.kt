@@ -65,6 +65,8 @@ class ApiClient(private val context: Context) {
                 put("id", r.messageId)
                 put("status", r.status)
                 r.error?.let { put("error", it) }
+                r.simSlot?.let { put("simSlot", it) }
+                r.simNumber?.let { put("simNumber", it) }
             })
         }
         val payload = JSONObject().apply {

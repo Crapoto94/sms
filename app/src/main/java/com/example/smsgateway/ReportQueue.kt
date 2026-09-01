@@ -7,7 +7,9 @@ data class StatusReport(
     val messageId: String,
     val status: String,
     val error: String?,
-    val reportedAt: Long
+    val reportedAt: Long,
+    val simSlot: Int? = null,
+    val simNumber: String? = null
 )
 
 /**

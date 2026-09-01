@@ -24,6 +24,10 @@ object SmsSender {
     // conséquence puisque seule l'alternance relative compte).
     private val simRoundRobin = AtomicInteger(0)
 
+    /** SIM choisie pour un envoi : gestionnaire à utiliser, emplacement (slot,
+     * pour distinguer les lignes d'un même téléphone) et numéro si lisible. */
+    data class ChosenSim(val manager: SmsManager, val slot: Int, val number: String?)
+
     fun isDefaultSmsApp(context: Context): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             return context.getSystemService(RoleManager::class.java)
@@ -58,6 +62,26 @@ object SmsSender {
     fun activeSimCount(context: Context): Int = activeSubscriptions(context)?.size?.coerceAtLeast(1) ?: 1
 
     /**
+     * Numéro d'une SIM, si l'opérateur et Android le laissent lire (beaucoup
+     * de cartes ne remontent rien du tout, même avec la permission accordée :
+     * c'est une limite fréquente, pas un bug). Tente l'API moderne
+     * (Android 13+) puis l'ancienne propriété en repli.
+     */
+    @Suppress("DEPRECATION")
+    private fun subscriptionNumber(context: Context, sub: android.telephony.SubscriptionInfo): String? {
+        val number = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                SubscriptionManager.from(context)?.getPhoneNumber(sub.subscriptionId)
+            } else {
+                sub.number
+            }
+        } catch (_: Exception) {
+            null
+        }
+        return number?.takeIf { it.isNotBlank() }
+    }
+
+    /**
      * SIM utilisée pour le prochain envoi. Sur un téléphone mono-SIM (ou si
      * la permission READ_PHONE_STATE n'est pas accordée), c'est simplement la
      * SIM par défaut du téléphone. Sur un téléphone multi-SIM, on alterne
@@ -66,13 +90,22 @@ object SmsSender {
      * saturer une seule ligne.
      */
     @Suppress("DEPRECATION")
-    private fun pickSmsManager(context: Context): SmsManager {
+    private fun pickSim(context: Context): ChosenSim {
         val subs = activeSubscriptions(context)
-        if (subs == null || subs.size < 2) {
-            return SmsManager.getDefault()
+        if (subs.isNullOrEmpty()) {
+            return ChosenSim(SmsManager.getDefault(), 0, null)
+        }
+        if (subs.size < 2) {
+            val sub = subs[0]
+            return ChosenSim(SmsManager.getDefault(), sub.simSlotIndex, subscriptionNumber(context, sub))
         }
         val index = simRoundRobin.getAndIncrement().mod(subs.size)
-        return SmsManager.getSmsManagerForSubscriptionId(subs[index].subscriptionId)
+        val sub = subs[index]
+        return ChosenSim(
+            SmsManager.getSmsManagerForSubscriptionId(sub.subscriptionId),
+            sub.simSlotIndex,
+            subscriptionNumber(context, sub)
+        )
     }
 
     /**
@@ -82,24 +115,24 @@ object SmsSender {
      * (multipart) ; les confirmations sont agrégées par [MultipartTracker].
      */
     fun send(context: Context, message: OutgoingMessage) {
-        val smsManager = pickSmsManager(context)
-        val parts = smsManager.divideMessage(message.body)
+        val sim = pickSim(context)
+        val parts = sim.manager.divideMessage(message.body)
         if (parts.size <= 1) {
-            smsManager.sendTextMessage(
+            sim.manager.sendTextMessage(
                 message.recipient,
                 null,
                 message.body,
-                createPendingIntent(context, message, Config.SMS_SENT_ACTION, 0, 1),
-                createPendingIntent(context, message, Config.SMS_DELIVERED_ACTION, 0, 1)
+                createPendingIntent(context, message, Config.SMS_SENT_ACTION, 0, 1, sim),
+                createPendingIntent(context, message, Config.SMS_DELIVERED_ACTION, 0, 1, sim)
             )
         } else {
             val sentIntents = ArrayList(parts.mapIndexed { i, _ ->
-                createPendingIntent(context, message, Config.SMS_SENT_ACTION, i, parts.size)
+                createPendingIntent(context, message, Config.SMS_SENT_ACTION, i, parts.size, sim)
             })
             val deliveredIntents = ArrayList(parts.mapIndexed { i, _ ->
-                createPendingIntent(context, message, Config.SMS_DELIVERED_ACTION, i, parts.size)
+                createPendingIntent(context, message, Config.SMS_DELIVERED_ACTION, i, parts.size, sim)
             })
-            smsManager.sendMultipartTextMessage(
+            sim.manager.sendMultipartTextMessage(
                 message.recipient,
                 null,
                 parts,
@@ -114,7 +147,8 @@ object SmsSender {
         message: OutgoingMessage,
         action: String,
         partIndex: Int,
-        partTotal: Int
+        partTotal: Int,
+        sim: ChosenSim
     ): PendingIntent {
         val intent = Intent(context, SmsResultReceiver::class.java).apply {
             setAction(action)
@@ -123,6 +157,8 @@ object SmsSender {
             putExtra(Config.EXTRA_RECIPIENT, message.recipient)
             putExtra(Config.EXTRA_PART_INDEX, partIndex)
             putExtra(Config.EXTRA_PART_TOTAL, partTotal)
+            putExtra(Config.EXTRA_SIM_SLOT, sim.slot)
+            sim.number?.let { putExtra(Config.EXTRA_SIM_NUMBER, it) }
         }
         val requestCode = REQUEST_CODE_SEED + requestCounter.incrementAndGet() + partIndex
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE

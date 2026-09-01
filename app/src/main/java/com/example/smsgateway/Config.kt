@@ -22,6 +22,8 @@ object Config {
     const val EXTRA_RECIPIENT = "recipient"
     const val EXTRA_PART_INDEX = "part_index"
     const val EXTRA_PART_TOTAL = "part_total"
+    const val EXTRA_SIM_SLOT = "sim_slot"
+    const val EXTRA_SIM_NUMBER = "sim_number"
 
     fun getDeviceId(context: Context): String {
         val prefs = prefs(context)

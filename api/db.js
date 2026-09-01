@@ -445,6 +445,16 @@ if (!messageCols.includes('provider')) {
 if (!messageCols.includes('provider_ref')) {
   db.exec('ALTER TABLE messages ADD COLUMN provider_ref TEXT');
 }
+if (!messageCols.includes('sim_slot')) {
+  // Emplacement (0, 1, ...) de la carte SIM ayant réellement envoyé le
+  // message, remonté par l'APK — permet de détailler l'envoi par ligne sur
+  // un téléphone multi-SIM. Null si l'APK ne le remonte pas (versions
+  // antérieures) ou si le message n'a pas encore été traité.
+  db.exec('ALTER TABLE messages ADD COLUMN sim_slot INTEGER');
+}
+if (!messageCols.includes('sim_number')) {
+  db.exec('ALTER TABLE messages ADD COLUMN sim_number TEXT');
+}
 const frizbiCols = db.prepare('PRAGMA table_info(frizbi_settings)').all().map((c) => c.name);
 if (!frizbiCols.includes('callback_token')) {
   db.exec('ALTER TABLE frizbi_settings ADD COLUMN callback_token TEXT');

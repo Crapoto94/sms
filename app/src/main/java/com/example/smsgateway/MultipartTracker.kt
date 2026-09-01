@@ -23,6 +23,8 @@ object MultipartTracker {
         var firstError: String? = null
         var sentDone: Boolean = false
         var deliveredDone: Boolean = false
+        var simSlot: Int? = null
+        var simNumber: String? = null
 
         fun toJson(): String = JSONObject().apply {
             put("sentOk", sentOk)
@@ -33,6 +35,8 @@ object MultipartTracker {
             put("firstError", firstError)
             put("sentDone", sentDone)
             put("deliveredDone", deliveredDone)
+            put("simSlot", simSlot)
+            put("simNumber", simNumber)
         }.toString()
 
         companion object {
@@ -47,6 +51,8 @@ object MultipartTracker {
                     firstError = o.optString("firstError").takeIf { it.isNotEmpty() }
                     sentDone = o.optBoolean("sentDone")
                     deliveredDone = o.optBoolean("deliveredDone")
+                    simSlot = if (o.has("simSlot") && !o.isNull("simSlot")) o.optInt("simSlot") else null
+                    simNumber = o.optString("simNumber").takeIf { it.isNotEmpty() }
                 }
             }
         }
@@ -85,10 +91,18 @@ object MultipartTracker {
         partIndex: Int,
         partTotal: Int,
         ok: Boolean,
-        error: String?
+        error: String?,
+        simSlot: Int? = null,
+        simNumber: String? = null
     ): StatusReport? {
         val s = read(context, profileId, id)
         if (s.sentTotal == 0) s.sentTotal = partTotal
+        // La SIM est la même pour tous les segments d'un même message : on la
+        // fixe au premier segment reçu.
+        if (s.simSlot == null) {
+            s.simSlot = simSlot
+            s.simNumber = simNumber
+        }
         if (ok) {
             s.sentOk++
         } else {
@@ -101,9 +115,9 @@ object MultipartTracker {
         }
         s.sentDone = true
         val report = if (s.sentFail > 0) {
-            StatusReport(profileId, id, "failed", s.firstError, System.currentTimeMillis())
+            StatusReport(profileId, id, "failed", s.firstError, System.currentTimeMillis(), s.simSlot, s.simNumber)
         } else {
-            StatusReport(profileId, id, "sent", null, System.currentTimeMillis())
+            StatusReport(profileId, id, "sent", null, System.currentTimeMillis(), s.simSlot, s.simNumber)
         }
         write(context, profileId, id, s)
         return report
@@ -123,7 +137,7 @@ object MultipartTracker {
         if (s.sentTotal == 0 || s.sentFail > 0 || s.deliveredDone) return null
         s.deliveredOk++
         s.deliveredDone = true
-        val report = StatusReport(profileId, id, "delivered", null, System.currentTimeMillis())
+        val report = StatusReport(profileId, id, "delivered", null, System.currentTimeMillis(), s.simSlot, s.simNumber)
         write(context, profileId, id, s)
         return report
     }
