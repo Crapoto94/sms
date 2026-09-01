@@ -799,32 +799,29 @@ async function loadFleetContacts() {
   const hasTarget = $('fleetTargetEventSelect').value !== '';
   const isExcluded = (contact) => excludedByBook.has(contact.phone) || excludedByEvent.has(contact.phone);
   const isTargeted = (contact) => !hasTarget || targetPhones.has(contact.phone);
-  // Cibler un envoi précédent est un choix explicite : il prime sur les
-  // décoches par défaut (déjà vérifié / exclu par défaut), sinon cibler un
-  // envoi qui est aussi « le dernier passage sur ce carnet » décochait tout
-  // le monde malgré la cible choisie.
+  // Cibler un envoi précédent est un choix explicite : il prime sur la
+  // décoche par défaut (exclu par défaut).
   fleetSelected = new Set(fleetContacts.filter((contact) => {
     if (contact.blacklisted || isExcluded(contact)) return false;
     if (hasTarget) return isTargeted(contact);
-    return !contact.recent_checked && !contact.mass_excluded;
+    return !contact.mass_excluded;
   }).map((contact) => contact.id));
-  const skipped = hasTarget ? 0 : fleetContacts.filter((c) => c.recent_checked).length;
   $('fleetContactList').innerHTML = fleetContacts.length
     ? fleetContacts.map((contact) => {
         const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.entity || contact.phone;
         const targeted = isTargeted(contact);
         const checked = contact.blacklisted || isExcluded(contact)
           ? 'disabled'
-          : hasTarget ? (targeted ? 'checked' : '') : (contact.recent_checked || contact.mass_excluded ? '' : 'checked');
-        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : contact.mass_excluded ? ' · <span class="badge off">Exclu par défaut</span>' : !targeted ? ' · <span class="badge off">Hors cible</span>' : ''}</span></label>`;
+          : hasTarget ? (targeted ? 'checked' : '') : (contact.mass_excluded ? '' : 'checked');
+        return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.mass_excluded ? ' · <span class="badge off">Exclu par défaut</span>' : !targeted ? ' · <span class="badge off">Hors cible</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
-  updateFleetCount(skipped, { hasTarget, targetCount: targetPhones.size, excludeEventCount: excludedByEvent.size });
+  updateFleetCount(0, { hasTarget, targetCount: targetPhones.size, excludeEventCount: excludedByEvent.size });
 }
 
-function updateFleetCount(skipped, eventInfo) {
+function updateFleetCount(_unused, eventInfo) {
   const list = fleetContacts.filter((c) => !c.blacklisted);
-  let text = `${fleetSelected.size} / ${list.length} contact(s) sélectionné(s)${skipped ? ` (${skipped} déjà vérifié(s), décoché(s) par défaut)` : ''}`;
+  let text = `${fleetSelected.size} / ${list.length} contact(s) sélectionné(s)`;
   if (eventInfo && eventInfo.hasTarget) {
     text += ` — envoi ciblé : ${eventInfo.targetCount} numéro(s) au total`;
   }

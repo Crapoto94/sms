@@ -2570,11 +2570,6 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
   const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || req.query.limit || '500', 10) || 500, 1), 2000);
   const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
   const offset = (page - 1) * pageSize;
-  const latestCheck = db.prepare('SELECT id FROM fleet_checks WHERE address_book_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(checked.book.id);
-  let recentPhones = new Set();
-  if (latestCheck) {
-    recentPhones = new Set(db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ?').all(latestCheck.id).map((r) => r.phone));
-  }
   const rows = db.prepare(`
     SELECT c.id, c.first_name, c.last_name, c.entity, c.service, c.direction, c.imei, c.puk, c.line_status, c.plan, c.device_terminal, c.secondary_line, c.phone, c.created_at,
       CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted,
@@ -2584,7 +2579,6 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
     LEFT JOIN mass_exclusions x ON x.phone = c.phone
     WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ? OFFSET ?
   `).all(checked.book.id, pageSize, offset);
-  rows.forEach((row) => { row.recent_checked = recentPhones.has(row.phone) ? 1 : 0; });
   const total = db.prepare('SELECT COUNT(*) c FROM contacts WHERE address_book_id = ?').get(checked.book.id).c;
   res.set('X-Total-Count', total);
   res.set('X-Page-Size', pageSize);
