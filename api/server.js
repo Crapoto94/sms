@@ -386,6 +386,87 @@ function assignGateway(recipient) {
   return eligible[0].id;
 }
 
+/**
+ * Simule l'attribution de `phones` aux passerelles internes en ligne, sans
+ * rien écrire en base — reproduit la logique d'assignGateway (fidélité,
+ * quota, répartition par charge croissante) mais en enchaînant les
+ * décisions en mémoire pour tout le lot, comme le ferait l'envoi réel
+ * message après message.
+ */
+function simulateAssignment(phones) {
+  const settings = getGatewaySettings();
+  const windowIso = new Date(Date.now() - settings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
+  const onlineCutoff = onlineCutoffIso();
+  const gateways = db.prepare(`
+    SELECT k.id, k.label, k.sim_count,
+      (SELECT COUNT(DISTINCT m.recipient) FROM messages m
+        WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?) AS recentDistinct
+    FROM keys k
+    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ?
+  `).all(windowIso, onlineCutoff);
+
+  const simulated = new Map(gateways.map((g) => [g.id, g.recentDistinct]));
+  const assignedCount = new Map(gateways.map((g) => [g.id, 0]));
+  let unassigned = 0;
+
+  const stickyStmt = db.prepare(`
+    SELECT claimed_by FROM messages
+    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ?
+    ORDER BY id DESC LIMIT 1
+  `);
+
+  for (const phone of phones) {
+    if (!gateways.length) { unassigned++; continue; }
+    const sticky = stickyStmt.get(phone, windowIso);
+    let gatewayId;
+    let isNewDistinct = true;
+    if (sticky && gateways.some((g) => g.id === sticky.claimed_by)) {
+      gatewayId = sticky.claimed_by;
+      isNewDistinct = false; // déjà compté dans recentDistinct
+    } else {
+      const eligible = gateways.filter((g) => simulated.get(g.id) < settings.quota_cap);
+      if (!eligible.length) { unassigned++; continue; }
+      eligible.sort((a, b) => simulated.get(a.id) - simulated.get(b.id));
+      gatewayId = eligible[0].id;
+    }
+    assignedCount.set(gatewayId, assignedCount.get(gatewayId) + 1);
+    if (isNewDistinct) simulated.set(gatewayId, simulated.get(gatewayId) + 1);
+  }
+
+  return {
+    gateways: gateways.map((g) => ({
+      id: g.id, label: g.label, simCount: g.sim_count || 1,
+      assigned: assignedCount.get(g.id) || 0,
+      quotaBefore: g.recentDistinct, quotaAfter: simulated.get(g.id)
+    })),
+    unassigned
+  };
+}
+
+// Estimation du temps d'envoi pour N messages sur UNE passerelle : l'envoi y
+// est séquentiel (un seul flux par téléphone, quel que soit son nombre de
+// SIM — l'alternance de ligne ne change que le quota, pas le débit), avec
+// un intervalle moyen de 5s (lots >= 10, cf. BATCH_INTERVAL_FAST_MS côté
+// APK) ou 10s (lots < 10, BATCH_INTERVAL_SLOW_MS), +/-30% de temps d'attente
+// aléatoire, donc en moyenne égal à la valeur de base.
+function estimateSendSeconds(count) {
+  if (count <= 0) return 0;
+  const perMessageSec = count >= 10 ? 5 : 10;
+  return count * perMessageSec;
+}
+
+// Répartition estimée d'un compte de messages entre les lignes (SIM) d'une
+// même passerelle : l'APK alterne 50/50, donc un partage égal (à 1 près) est
+// l'estimation la plus fidèle sans remontée précise par SIM.
+function splitByLines(assigned, simCount) {
+  const n = Math.max(1, simCount || 1);
+  const lines = [];
+  for (let i = 0; i < n; i++) {
+    lines.push(Math.floor(assigned / n) + (i < assigned % n ? 1 : 0));
+  }
+  return lines;
+}
+
 // ---------- Envoi de SMS externe (Frizbi) ----------
 function getFrizbiSettings() {
   const s = db.prepare('SELECT * FROM frizbi_settings WHERE id = 1').get() ||
@@ -849,6 +930,7 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
   const body = req.body || {};
   const deviceId = String(body.deviceId || req.apiKey.device_id || '').trim();
   const appVersion = String(body.appVersion || '').trim().slice(0, 32);
+  const simCount = Math.min(Math.max(parseInt(body.simCount, 10) || 0, 0), 4);
   const reports = Array.isArray(body.reports) ? body.reports : [];
 
   const reportAccepted = [];
@@ -968,9 +1050,10 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
         last_seen_at = ?,
         last_used_at = ?,
         device_id = CASE WHEN ? <> '' THEN ? ELSE device_id END,
-        app_version = CASE WHEN ? <> '' THEN ? ELSE app_version END
+        app_version = CASE WHEN ? <> '' THEN ? ELSE app_version END,
+        sim_count = CASE WHEN ? > 0 THEN ? ELSE sim_count END
       WHERE id = ?
-    `).run(nowIso, nowIso, deviceId, deviceId, appVersion, appVersion, req.apiKey.id);
+    `).run(nowIso, nowIso, deviceId, deviceId, appVersion, appVersion, simCount, simCount, req.apiKey.id);
 
     claimed = toClaim;
     db.exec('COMMIT');
@@ -2968,6 +3051,67 @@ webApp.delete('/admin/api/mass-exclusions/:phone', (req, res) => {
   const phone = normalizePhone(req.params.phone);
   db.prepare('DELETE FROM mass_exclusions WHERE phone = ?').run(phone);
   res.json({ phone, massExcluded: false });
+});
+
+// Prévisualisation avant envoi (campagne ou vérification de flotte) :
+// résout les mêmes filtres (carnet, exclusion carnet, exclusion par envoi
+// précédent) que la création réelle, puis simule la répartition par
+// passerelle/ligne et le temps d'envoi estimé — sans rien écrire en base.
+webApp.post('/admin/api/send-preview', (req, res) => {
+  const body = req.body || {};
+  const bookId = Number(body.bookId);
+  const excludeBookId = Number(body.excludeBookId) || 0;
+  const contactIds = Array.isArray(body.contactIds) ? body.contactIds.map(Number).filter(Number.isInteger) : [];
+  if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
+  if (!book || (req.session.role !== 'admin' && book.group_id !== req.session.groupId)) {
+    return res.status(404).json({ error: 'Carnet introuvable' });
+  }
+  let excludedPhones = new Set();
+  if (excludeBookId) {
+    const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
+    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+      return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
+    }
+    excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((r) => r.phone));
+  }
+  if (body.excludeEventType && body.excludeEventId) {
+    const eventPhones = resolveEventPhones(req, body.excludeEventType, Number(body.excludeEventId), String(body.excludeEventState || '') || null);
+    if (eventPhones === null) return res.status(404).json({ error: 'Envoi précédent (à exclure) introuvable' });
+    eventPhones.forEach((phone) => excludedPhones.add(phone));
+  }
+  const contactWhere = contactIds.length ? `AND id IN (${contactIds.map(() => '?').join(',')})` : '';
+  const allContacts = db.prepare(`SELECT phone FROM contacts WHERE address_book_id = ? ${contactWhere}`)
+    .all(bookId, ...contactIds);
+  const nonExcluded = allContacts.filter((c) => !excludedPhones.has(c.phone));
+  const blacklistedCount = nonExcluded.filter((c) => isBlacklisted(c.phone)).length;
+  const phones = nonExcluded.filter((c) => !isBlacklisted(c.phone)).map((c) => c.phone);
+
+  const sim = simulateAssignment(phones);
+  const gwSettings = getGatewaySettings();
+  const gateways = sim.gateways.map((g) => {
+    const lineCounts = splitByLines(g.assigned, g.simCount);
+    return {
+      id: g.id,
+      label: g.label,
+      simCount: g.simCount,
+      assigned: g.assigned,
+      quotaBefore: g.quotaBefore,
+      quotaAfter: g.quotaAfter,
+      lines: lineCounts.map((count, i) => ({ index: i + 1, count, estimatedSeconds: estimateSendSeconds(count) })),
+      estimatedSeconds: estimateSendSeconds(g.assigned)
+    };
+  });
+  const estimatedTotalSeconds = gateways.length ? Math.max(...gateways.map((g) => g.estimatedSeconds)) : 0;
+  res.json({
+    totalPhones: phones.length,
+    blacklistedCount,
+    unassigned: sim.unassigned,
+    gateways,
+    estimatedTotalSeconds,
+    quotaCap: gwSettings.quota_cap,
+    quotaWindowDays: gwSettings.quota_window_days
+  });
 });
 
 // NB : la vérification de flotte reste toujours en interne (passerelles),

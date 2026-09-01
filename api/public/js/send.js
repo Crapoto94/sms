@@ -817,6 +817,81 @@ async function loadFleetContacts() {
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
   updateFleetCount(0, { hasTarget, targetCount: targetPhones.size, excludeEventCount: excludedByEvent.size });
+  refreshFleetPreview();
+}
+
+// ---------- Répartition et temps d'envoi estimés (avant lancement) ----------
+let fleetPreviewTimer = null;
+function scheduleFleetPreview() {
+  clearTimeout(fleetPreviewTimer);
+  fleetPreviewTimer = setTimeout(refreshFleetPreview, 400);
+}
+
+function fmtDuration(totalSeconds) {
+  if (totalSeconds <= 0) return '0 s';
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds % 60);
+  if (m === 0) return `${s} s`;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  if (h === 0) return `${mm} min${s ? ` ${s} s` : ''}`;
+  return `${h} h ${mm} min`;
+}
+
+async function refreshFleetPreview() {
+  const bookId = Number($('fleetBookSelect').value || 0);
+  const contactIds = [...fleetSelected];
+  if (!bookId || !contactIds.length) {
+    $('fleetPreview').classList.add('hidden');
+    return;
+  }
+  const [excludeEventType, excludeEventId] = ($('fleetExcludeEventSelect').value || '').split(':');
+  let data;
+  try {
+    data = await api('/admin/api/send-preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        bookId, contactIds,
+        excludeBookId: Number($('fleetExcludeBookSelect').value || 0) || null,
+        excludeEventType: excludeEventType || null,
+        excludeEventId: excludeEventId || null,
+        excludeEventState: $('fleetExcludeEventState').value || null
+      })
+    });
+  } catch (_e) {
+    $('fleetPreview').classList.add('hidden');
+    return;
+  }
+  renderFleetPreview(data);
+}
+
+function renderFleetPreview(data) {
+  $('fleetPreview').classList.remove('hidden');
+  if (!data.gateways.length) {
+    $('fleetPreviewBody').innerHTML = '<tr><td colspan="4" class="muted">Aucune passerelle en ligne.</td></tr>';
+    $('fleetPreviewSummary').textContent = data.totalPhones
+      ? `${data.totalPhones} destinataire(s) resteraient non attribués (aucune passerelle en ligne).`
+      : '';
+    return;
+  }
+  const rows = [];
+  data.gateways.forEach((g) => {
+    if (!g.assigned) return;
+    if (g.lines.length <= 1) {
+      rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>—</td><td>${g.assigned}</td><td>${fmtDuration(g.estimatedSeconds)}</td></tr>`);
+    } else {
+      g.lines.forEach((line) => {
+        rows.push(`<tr><td>${esc(g.label || ('#' + g.id))}</td><td>Ligne ${line.index}</td><td>${line.count}</td><td>${fmtDuration(line.estimatedSeconds)}</td></tr>`);
+      });
+    }
+  });
+  $('fleetPreviewBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">Aucun message attribué.</td></tr>';
+  const busiest = data.gateways.reduce((max, g) => (!max || g.estimatedSeconds > max.estimatedSeconds ? g : max), null);
+  let summary = `Temps total estimé : ~${fmtDuration(data.estimatedTotalSeconds)}`;
+  if (busiest && busiest.assigned) summary += ` (limité par « ${esc(busiest.label || ('#' + busiest.id))} », ${busiest.assigned} message(s))`;
+  if (data.unassigned) summary += ` — ⚠ ${data.unassigned} destinataire(s) sans passerelle disponible sous le quota`;
+  if (data.blacklistedCount) summary += ` — ${data.blacklistedCount} numéro(s) blacklisté(s) ignoré(s)`;
+  $('fleetPreviewSummary').textContent = summary;
 }
 
 function updateFleetCount(_unused, eventInfo) {
@@ -842,6 +917,7 @@ $('fleetContactList').addEventListener('change', (event) => {
   const id = Number(checkbox.dataset.fleetContact);
   if (checkbox.checked) fleetSelected.add(id); else fleetSelected.delete(id);
   updateFleetCount();
+  scheduleFleetPreview();
 });
 
 function fleetState(state) {

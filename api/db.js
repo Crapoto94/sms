@@ -398,6 +398,13 @@ const keyCols = db.prepare('PRAGMA table_info(keys)').all().map((c) => c.name);
 if (!keyCols.includes('app_version')) {
   db.exec('ALTER TABLE keys ADD COLUMN app_version TEXT');
 }
+if (!keyCols.includes('sim_count')) {
+  // Nombre de lignes (cartes SIM) actives sur le téléphone, remonté par
+  // l'APK à chaque sondage. Sert à estimer la répartition par ligne avant
+  // de lancer un envoi en masse (1 par défaut si l'APK ne le remonte pas
+  // encore, ou sur une version antérieure).
+  db.exec('ALTER TABLE keys ADD COLUMN sim_count INTEGER NOT NULL DEFAULT 1');
+}
 const messageCols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
 if (!messageCols.includes('group_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN group_id INTEGER');

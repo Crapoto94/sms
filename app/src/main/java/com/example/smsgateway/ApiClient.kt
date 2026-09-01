@@ -70,6 +70,7 @@ class ApiClient(private val context: Context) {
         val payload = JSONObject().apply {
             put("deviceId", Config.getDeviceId(context))
             put("appVersion", BuildConfig.VERSION_NAME)
+            put("simCount", SmsSender.activeSimCount(context))
             put("reports", reportsJson)
         }
         val body = payload.toString().toRequestBody(JSON_MEDIA_TYPE)

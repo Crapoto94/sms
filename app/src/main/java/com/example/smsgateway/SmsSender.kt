@@ -36,6 +36,27 @@ object SmsSender {
     fun manualDefaultSmsIntent(): Intent =
         Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS)
 
+    /** Liste des SIM actives, ou null si indisponible (permission refusée, mono-SIM non lisible, etc.). */
+    private fun activeSubscriptions(context: Context): List<android.telephony.SubscriptionInfo>? {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return null
+        }
+        return try {
+            SubscriptionManager.from(context)?.activeSubscriptionInfoList
+        } catch (_: SecurityException) {
+            null
+        }
+    }
+
+    /**
+     * Nombre de lignes actives sur ce téléphone (1 si mono-SIM, permission
+     * refusée, ou lecture impossible). Remonté au serveur à chaque sondage
+     * pour qu'il puisse estimer la répartition des envois par ligne.
+     */
+    fun activeSimCount(context: Context): Int = activeSubscriptions(context)?.size?.coerceAtLeast(1) ?: 1
+
     /**
      * SIM utilisée pour le prochain envoi. Sur un téléphone mono-SIM (ou si
      * la permission READ_PHONE_STATE n'est pas accordée), c'est simplement la
@@ -46,16 +67,7 @@ object SmsSender {
      */
     @Suppress("DEPRECATION")
     private fun pickSmsManager(context: Context): SmsManager {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            return SmsManager.getDefault()
-        }
-        val subs = try {
-            SubscriptionManager.from(context)?.activeSubscriptionInfoList
-        } catch (_: SecurityException) {
-            null
-        }
+        val subs = activeSubscriptions(context)
         if (subs == null || subs.size < 2) {
             return SmsManager.getDefault()
         }
