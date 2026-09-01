@@ -149,6 +149,7 @@ $('btnBackHome').addEventListener('click', () => { location.href = homeUrl(); })
 let selectedContacts = new Set();
 let loadedBookId = null;
 let loadedRecipientsKey = null;
+let campaignEventInfo = { hasTarget: false, targetCount: 0, excludeEventCount: 0 };
 let composerBookId = null;
 let composerMode = 'single';
 let singleRecipients = [];
@@ -303,7 +304,17 @@ async function loadComposer() {
   await loadRecipients();
 }
 
-wireEventStatePair('campaignTargetEventSelect', 'campaignTargetEventState', () => loadRecipients());
+// Choisir un envoi précédent à cibler sélectionne aussi son carnet d'origine
+// automatiquement (les destinataires appartiennent forcément à ce carnet).
+async function onCampaignTargetChange() {
+  const event = await findPastEvent($('campaignTargetEventSelect').value);
+  if (event && event.bookId && String($('bookSelect').value) !== String(event.bookId)) {
+    $('bookSelect').value = String(event.bookId);
+    fillExcludeBookSelect('excludeBookSelect', $('bookSelect').value);
+  }
+  await loadRecipients();
+}
+wireEventStatePair('campaignTargetEventSelect', 'campaignTargetEventState', onCampaignTargetChange);
 wireEventStatePair('campaignExcludeEventSelect', 'campaignExcludeEventState', () => loadRecipients());
 
 function fillSingleBookSelect() {
@@ -348,6 +359,7 @@ async function loadRecipients() {
   const hasTarget = $('campaignTargetEventSelect').value !== '';
   const isExcluded = (contact) => excludedByBook.has(contact.phone) || excludedByEvent.has(contact.phone);
   const isTargeted = (contact) => !hasTarget || targetPhones.has(contact.phone);
+  campaignEventInfo = { hasTarget, targetCount: targetPhones.size, excludeEventCount: excludedByEvent.size };
   const recipientsKey = [
     id, $('campaignTargetEventSelect').value, $('campaignTargetEventState').value,
     $('campaignExcludeEventSelect').value, $('campaignExcludeEventState').value
@@ -450,7 +462,10 @@ function updateComposerCount() {
     $('composerCount').textContent = `${singleRecipients.length} destinataire(s) · ${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
   } else {
     const checked = document.querySelectorAll('#recipientList input:checked').length;
-    $('composerCount').textContent = `${checked} destinataire(s) · ${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
+    let text = `${checked} destinataire(s) · ${s.length}/1000 caractères · ${segs > 1 ? segs + ' segments' : '1 segment'}`;
+    if (campaignEventInfo.hasTarget) text += ` — envoi ciblé : ${campaignEventInfo.targetCount} numéro(s) au total`;
+    if (campaignEventInfo.excludeEventCount) text += ` — ${campaignEventInfo.excludeEventCount} numéro(s) exclu(s) par l'envoi précédent sélectionné`;
+    $('composerCount').textContent = text;
   }
   $('btnToggleAll').textContent = contacts.length > 0 && contacts.every((c) => selectedContacts.has(c.id))
     ? 'Tout décocher' : 'Tout cocher';
@@ -647,10 +662,17 @@ async function loadPastEvents(force) {
     api('/admin/api/fleet-checks').catch(() => [])
   ]);
   pastEventsCache = [
-    ...campaigns.map((c) => ({ type: 'campaign', id: c.id, label: `[Campagne] ${c.name || ('#' + c.id)} — ${c.book_name || '?'} (${c.total || 0})` })),
-    ...fleets.map((f) => ({ type: 'fleet', id: f.id, label: `[Vérif. flotte] ${f.name || ('#' + f.id)} — ${f.book_name || '?'} (${f.total || 0})` }))
+    ...campaigns.map((c) => ({ type: 'campaign', id: c.id, bookId: c.address_book_id, total: c.total || 0, label: `[Campagne] ${c.name || ('#' + c.id)} — ${c.book_name || '?'} (${c.total || 0})` })),
+    ...fleets.map((f) => ({ type: 'fleet', id: f.id, bookId: f.address_book_id, total: f.total || 0, label: `[Vérif. flotte] ${f.name || ('#' + f.id)} — ${f.book_name || '?'} (${f.total || 0})` }))
   ];
   return pastEventsCache;
+}
+
+async function findPastEvent(value) {
+  if (!value) return null;
+  const [type, id] = value.split(':');
+  const events = await loadPastEvents();
+  return events.find((e) => e.type === type && String(e.id) === id) || null;
 }
 
 function stateOptionsFor(type) {
@@ -726,7 +748,19 @@ async function loadFleet() {
   await loadFleetChecks();
 }
 
-wireEventStatePair('fleetTargetEventSelect', 'fleetTargetEventState', () => loadFleetContacts());
+// Choisir un envoi précédent à cibler sélectionne aussi son carnet d'origine
+// automatiquement (les destinataires appartiennent forcément à ce carnet) :
+// sans ça, rien ne s'affiche si le carnet en cours diffère (ou si aucun
+// n'est encore choisi).
+async function onFleetTargetChange() {
+  const event = await findPastEvent($('fleetTargetEventSelect').value);
+  if (event && event.bookId && String($('fleetBookSelect').value) !== String(event.bookId)) {
+    $('fleetBookSelect').value = String(event.bookId);
+    fillFleetExcludeBookSelect();
+  }
+  await loadFleetContacts();
+}
+wireEventStatePair('fleetTargetEventSelect', 'fleetTargetEventState', onFleetTargetChange);
 wireEventStatePair('fleetExcludeEventSelect', 'fleetExcludeEventState', () => loadFleetContacts());
 
 function fillFleetExcludeBookSelect() {
@@ -775,12 +809,19 @@ async function loadFleetContacts() {
         return `<label class="contact-row"><input type="checkbox" data-fleet-contact="${contact.id}" ${checked}><span class="who"><b>${esc(name)}</b><br><span class="phone">${esc(contact.phone)}</span>${contact.blacklisted ? ' · <span class="badge failed">Blacklisté</span>' : isExcluded(contact) ? ' · <span class="badge off">Exclu</span>' : contact.recent_checked ? ' · <span class="badge off">Déjà vérifié</span>' : contact.mass_excluded ? ' · <span class="badge off">Exclu par défaut</span>' : !targeted ? ' · <span class="badge off">Hors cible</span>' : ''}</span></label>`;
       }).join('')
     : '<div class="contact-list-empty muted">Ce carnet ne contient aucun contact.</div>';
-  updateFleetCount(skipped);
+  updateFleetCount(skipped, { hasTarget, targetCount: targetPhones.size, excludeEventCount: excludedByEvent.size });
 }
 
-function updateFleetCount(skipped) {
+function updateFleetCount(skipped, eventInfo) {
   const list = fleetContacts.filter((c) => !c.blacklisted);
-  $('fleetCount').textContent = `${fleetSelected.size} / ${list.length} contact(s) sélectionné(s)${skipped ? ` (${skipped} déjà vérifié(s), décoché(s) par défaut)` : ''}`;
+  let text = `${fleetSelected.size} / ${list.length} contact(s) sélectionné(s)${skipped ? ` (${skipped} déjà vérifié(s), décoché(s) par défaut)` : ''}`;
+  if (eventInfo && eventInfo.hasTarget) {
+    text += ` — envoi ciblé : ${eventInfo.targetCount} numéro(s) au total`;
+  }
+  if (eventInfo && eventInfo.excludeEventCount) {
+    text += ` — ${eventInfo.excludeEventCount} numéro(s) exclu(s) par l'envoi précédent sélectionné`;
+  }
+  $('fleetCount').textContent = text;
 }
 
 $('fleetBookSelect').addEventListener('change', async () => {
