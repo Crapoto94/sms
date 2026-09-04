@@ -37,6 +37,8 @@ class SmsDeliveredReceiver : BroadcastReceiver() {
         }
         try {
             context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
+            val threadId = MessageStore.threadIdFor(context, first.originatingAddress.orEmpty())
+            MessageNotifications.notifyIncoming(context, threadId, first.originatingAddress.orEmpty(), body)
         } catch (e: Exception) {
             SmsLog.add(
                 context,

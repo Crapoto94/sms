@@ -44,6 +44,13 @@ class SmsResultReceiver : BroadcastReceiver() {
         if (report == null) return
 
         SmsGatewayService.noteReported(report.profileId, report.messageId)
+        // Envoi "normal" (onglet Messages) : l'historique vit dans le fournisseur
+        // SMS du téléphone, pas dans le journal passerelle, et ne doit jamais
+        // être remonté à l'API comme un envoi de la passerelle.
+        if (report.profileId == Config.LOCAL_PROFILE_ID) {
+            MessageStore.markSendResult(context, messageId, report.status == "delivered" || report.status == "sent")
+            return
+        }
         SmsLog.add(
             context,
             SmsLog.Entry(

@@ -25,6 +25,11 @@ object Config {
     const val EXTRA_SIM_SLOT = "sim_slot"
     const val EXTRA_SIM_NUMBER = "sim_number"
 
+    // profileId réservé aux envois "normaux" (onglet Messages, hors passerelle) :
+    // SmsResultReceiver s'en sert pour ne pas journaliser/remonter ces envois
+    // à l'API comme s'il s'agissait de messages de la passerelle.
+    const val LOCAL_PROFILE_ID = "local"
+
     fun getDeviceId(context: Context): String {
         val prefs = prefs(context)
         prefs.getString(KEY_DEVICE_ID, null)?.let { return it }

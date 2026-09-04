@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/navMessages"
+        android:icon="@drawable/ic_nav_messages"
+        android:title="@string/nav_messages" />
+    <item
+        android:id="@+id/navPasserelle"
+        android:icon="@drawable/ic_nav_passerelle"
+        android:title="@string/nav_passerelle" />
+</menu>

@@ -1,29 +1,27 @@
 package com.example.smsgateway
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.BaseAdapter
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
 import com.example.smsgateway.databinding.ActivityMainBinding
 
+/**
+ * Point d'entrée unique de l'appli : héberge deux onglets via la barre de
+ * navigation du bas — "Messages" (SMS normaux, affiché par défaut, pour
+ * qu'un utilisateur voie une appli SMS classique) et "Passerelle" (l'ancien
+ * écran principal, inchangé). L'utilisateur ne voit la passerelle que s'il
+ * ouvre cet onglet explicitement.
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var defaultSmsPromptDone = false
-
-    private val apiRows = mutableMapOf<String, View>()
-    private var updatingToggle = false
-    @Volatile private var statusGeneration = 0
 
     private val smsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -39,43 +37,42 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        binding.textVersion.text = getString(R.string.version_format, BuildConfig.VERSION_NAME)
-
-        binding.btnOpenSettings.setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
+        binding.bottomNav.setOnItemSelectedListener { item ->
+            val fragment: Fragment = when (item.itemId) {
+                R.id.navPasserelle -> PasserelleFragment()
+                else -> MessagesFragment()
+            }
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.fragmentContainer, fragment)
+                .commit()
+            true
         }
-        binding.btnClearLogs.setOnClickListener {
-            SmsLog.clear(this)
-            refresh()
+
+        if (savedInstanceState == null) {
+            // Onglet par défaut : Messages, pour qu'au lancement l'appli se
+            // comporte comme une appli SMS ordinaire, sans rien montrer de la
+            // passerelle tant que l'utilisateur n'ouvre pas cet onglet.
+            // (setSelectedItemId ne redéclenche pas le listener si l'item est
+            // déjà sélectionné par défaut : on commit explicitement.)
+            supportFragmentManager.beginTransaction()
+                .replace(R.id.fragmentContainer, MessagesFragment())
+                .commit()
+        }
+
+        // Un lien smsto:/EXTRA_TEXT (ComposeSmsActivity) ou une réponse rapide
+        // (HeadlessSmsSendService) peuvent aussi cibler directement l'onglet
+        // Messages avec un destinataire déjà connu.
+        intent?.getStringExtra(ConversationActivity.EXTRA_ADDRESS)?.let { address ->
+            startActivity(
+                android.content.Intent(this, ConversationActivity::class.java)
+                    .putExtra(ConversationActivity.EXTRA_ADDRESS, address)
+                    .putExtra(ConversationActivity.EXTRA_PREFILL_BODY, intent.getStringExtra(ConversationActivity.EXTRA_PREFILL_BODY))
+            )
         }
     }
 
     override fun onResume() {
         super.onResume()
-        SmsLog.load(this)
-        refresh()
-        refreshApis()
-        binding.textLastSync.text = if (Config.getLastSyncAt(this) > 0) {
-            getString(
-                R.string.last_sync_label,
-                java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                    .format(java.util.Date(Config.getLastSyncAt(this)))
-            )
-        } else {
-            getString(R.string.last_sync_never)
-        }
-        val incoming = Config.getLastIncomingSms(this)
-        binding.textLastIncoming.text = if (incoming != null) {
-            getString(
-                R.string.last_incoming_label,
-                incoming.sender,
-                java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                    .format(java.util.Date(incoming.timestamp)),
-                incoming.body
-            )
-        } else {
-            getString(R.string.last_incoming_never)
-        }
         if (!defaultSmsPromptDone && !SmsSender.isDefaultSmsApp(this)) {
             defaultSmsPromptDone = true
             ensureSmsPermissionsAndOpen()
@@ -88,7 +85,8 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.RECEIVE_MMS,
             Manifest.permission.RECEIVE_WAP_PUSH,
-            Manifest.permission.READ_PHONE_STATE
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.READ_CONTACTS
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             needed.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -105,104 +103,5 @@ class MainActivity : AppCompatActivity() {
 
     private fun openDefaultSmsSettings() {
         startActivity(SmsSender.manualDefaultSmsIntent())
-    }
-
-    /**
-     * Affiche une carte par API configurée : nom, URL, état (joignable ou non)
-     * et un toggle pour l'activer / la désactiver dans la passerelle.
-     */
-    private fun refreshApis() {
-        val profiles = Config.getApiProfiles(this)
-        binding.apiContainer.removeAllViews()
-        apiRows.clear()
-        if (profiles.isEmpty()) {
-            binding.apiContainer.visibility = View.GONE
-            return
-        }
-        binding.apiContainer.visibility = View.VISIBLE
-        for (profile in profiles) {
-            val row = LayoutInflater.from(this).inflate(R.layout.item_api, binding.apiContainer, false)
-            row.findViewById<TextView>(R.id.apiLabel).text = profile.label
-            row.findViewById<TextView>(R.id.apiUrl).text = profile.url
-            val status = row.findViewById<TextView>(R.id.apiStatus).apply {
-                text = getString(R.string.api_status_checking)
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.api_status_checking))
-            }
-            val toggle = row.findViewById<android.widget.CompoundButton>(R.id.apiToggle)
-            updatingToggle = true
-            toggle.isChecked = profile.enabled
-            updatingToggle = false
-            toggle.setOnCheckedChangeListener { _, checked ->
-                if (updatingToggle) return@setOnCheckedChangeListener
-                setProfileEnabled(profile.id, checked)
-                row.findViewById<TextView>(R.id.apiStatus).setTextColor(
-                    ContextCompat.getColor(this@MainActivity, R.color.api_status_checking)
-                )
-            }
-            binding.apiContainer.addView(row)
-            apiRows[profile.id] = row
-        }
-        refreshApiStatuses()
-    }
-
-    private fun setProfileEnabled(profileId: String, enabled: Boolean) {
-        val profiles = Config.getApiProfiles(this).map {
-            if (it.id == profileId) it.copy(enabled = enabled) else it
-        }
-        Config.setApiProfiles(this, profiles)
-        SmsGatewayService.requestFlush(this)
-    }
-
-    /** Interroge /health de chaque API en arrière-plan et affiche l'état. */
-    private fun refreshApiStatuses() {
-        val profiles = Config.getApiProfiles(this)
-        if (profiles.isEmpty()) return
-        val generation = ++statusGeneration
-        Thread {
-            val api = ApiClient(this)
-            for (profile in profiles) {
-                val ok = try { api.checkHealth(profile) } catch (_: Exception) { false }
-                if (generation != statusGeneration) return@Thread
-                runOnUiThread {
-                    apiRows[profile.id]?.findViewById<TextView>(R.id.apiStatus)?.let { status ->
-                        status.text = getString(
-                            if (ok) R.string.api_status_ok else R.string.api_status_down
-                        )
-                        status.setTextColor(
-                            ContextCompat.getColor(
-                                this@MainActivity,
-                                if (ok) R.color.api_status_ok else R.color.api_status_down
-                            )
-                        )
-                    }
-                }
-            }
-        }.start()
-    }
-
-    private fun refresh() {
-        val entries = SmsLog.all()
-        binding.textEmpty.visibility = if (entries.isEmpty()) View.VISIBLE else View.GONE
-        binding.listLogs.adapter = LogAdapter(entries)
-    }
-
-    private inner class LogAdapter(private val entries: List<SmsLog.Entry>) : BaseAdapter() {
-
-        override fun getCount(): Int = entries.size
-        override fun getItem(position: Int): SmsLog.Entry = entries[position]
-        override fun getItemId(position: Int): Long = position.toLong()
-
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-            val view = convertView ?: LayoutInflater.from(this@MainActivity)
-                .inflate(R.layout.item_log, parent, false)
-            val entry = entries[position]
-            val statusText = entry.status?.let { " [$it]" } ?: ""
-            view.findViewById<TextView>(R.id.logTitle).text =
-                "${SmsLog.formatTime(entry.timestamp)} • ${entry.type}$statusText"
-            view.findViewById<TextView>(R.id.logSubtitle).text =
-                "${entry.recipient} — id ${entry.messageId}"
-            view.findViewById<TextView>(R.id.logDetail).text = entry.detail ?: entry.body
-            return view
-        }
     }
 }
