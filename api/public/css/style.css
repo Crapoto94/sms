@@ -148,6 +148,75 @@ body.light {
   --shadow-lg: 0 28px 60px -24px rgba(16, 24, 40, 0.3);
 }
 
+/* Thème système : si l'utilisateur n'a jamais choisi explicitement (aucune
+   classe .light/.dark posée par le script de la page), on suit la
+   préférence du système plutôt que d'imposer le sombre par défaut. Un choix
+   explicite (classe .light ci-dessus, ou .dark ci-dessous) garde toujours
+   la main sur la préférence système. */
+@media (prefers-color-scheme: light) {
+  body:not(.dark) {
+    color-scheme: light;
+
+    --bg: #f7f8fa;
+    --bg-soft: #f1f3f6;
+    --panel: #ffffff;
+    --panel-2: #fbfcfd;
+    --elevated: #ffffff;
+
+    --border: #e7e9ee;
+    --border-soft: #dfe2e8;
+    --border-strong: #c9ced7;
+
+    --text: #14161b;
+    --text-2: #3b414c;
+    --label: #4c525d;
+    --muted: #6c7280;
+
+    --accent: #3350d8;
+    --accent-hover: #2a44be;
+    --accent-quiet: rgba(51, 80, 216, 0.08);
+    --accent-line: rgba(51, 80, 216, 0.28);
+    --accent-fg: #ffffff;
+
+    --input-bg: #ffffff;
+    --input-border: #d8dce3;
+    --hover: #f6f7f9;
+    --ghost-hover: #f0f2f5;
+    --overlay: rgba(17, 20, 26, 0.38);
+    --ring: rgba(51, 80, 216, 0.22);
+
+    --error: #d02525;
+    --summary: #1d4ed8;
+
+    --tone-neutral-bg: #f1f3f6;
+    --tone-neutral-fg: #4c525d;
+    --tone-neutral-line: #e1e4ea;
+    --tone-info-bg: #eef2ff;
+    --tone-info-fg: #2f42b0;
+    --tone-info-line: #dbe1fb;
+    --tone-ok-bg: #ecfdf3;
+    --tone-ok-fg: #0a6b40;
+    --tone-ok-line: #cdefdc;
+    --tone-warn-bg: #fff8ec;
+    --tone-warn-fg: #93500b;
+    --tone-warn-line: #f7e3c2;
+    --tone-danger-bg: #fef2f2;
+    --tone-danger-fg: #b3261e;
+    --tone-danger-line: #f8d9d7;
+    --tone-violet-bg: #f4f2ff;
+    --tone-violet-fg: #5330b8;
+    --tone-violet-line: #e4defb;
+
+    --campaign-bg: #f8f9fc;
+    --campaign-hover: #f1f4fa;
+    --campaign-detail: #ffffff;
+
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+    --shadow-md: 0 10px 24px -14px rgba(16, 24, 40, 0.28);
+    --shadow-lg: 0 28px 60px -24px rgba(16, 24, 40, 0.3);
+  }
+}
+
 /* ---------- 2. Base ---------- */
 
 html { -webkit-text-size-adjust: 100%; }
@@ -257,6 +326,130 @@ header {
 
 .header-brand .muted { font-size: 11.5px; letter-spacing: 0.02em; }
 
+/* ---------- 3b. Coquille latérale (tableau de bord principal) ----------
+   Utilisée par index.html (beaucoup d'onglets, groupés en catégories) ;
+   send.html garde la barre du haut (peu d'onglets), inchangée ci-dessus. */
+
+.app-shell {
+  display: flex;
+  align-items: flex-start;
+  min-height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 252px;
+  flex: none;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  padding: 18px 14px;
+  gap: 18px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.sidebar .header-brand { padding: 2px 8px; }
+
+/* Spécificité .nav.nav-sidebar (deux classes) : gagne sur .nav { flex-wrap:
+   wrap } déclaré plus bas dans la feuille (même spécificité sinon, l'ordre
+   déciderait en faveur de .nav). */
+.nav.nav-sidebar {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 16px;
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 0;
+  align-items: stretch;
+  overflow-y: auto;
+}
+
+.nav-group { display: flex; flex-direction: column; gap: 1px; }
+
+.nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 10px 3px;
+}
+
+.nav-sidebar .tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-start;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+}
+.nav-sidebar .tab svg { width: 16px; height: 16px; flex: none; opacity: 0.7; }
+.nav-sidebar .tab:hover svg { opacity: 0.9; }
+.nav-sidebar .tab.active {
+  background: var(--accent-quiet);
+  color: var(--text);
+  border: 1px solid var(--accent-line);
+  box-shadow: none;
+  padding: 8px 10px;
+}
+.nav-sidebar .tab.active svg { opacity: 1; color: var(--accent); }
+
+.header-actions.sidebar-actions {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  margin-left: 0;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-actions .muted { font-size: 11.5px; text-align: center; }
+
+.main-scroll {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+@media (max-width: 980px) {
+  .app-shell { flex-direction: column; min-height: 0; }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+  }
+  .nav.nav-sidebar {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 4px;
+    width: 100%;
+  }
+  .nav-group { flex-direction: row; gap: 4px; }
+  .nav-group-label { display: none; }
+  .nav-sidebar .tab { white-space: nowrap; width: auto; }
+  .header-actions.sidebar-actions {
+    flex-direction: row;
+    margin-left: auto;
+    border-top: none;
+    padding-top: 0;
+    width: auto;
+  }
+  .header-actions.sidebar-actions button,
+  .header-actions.sidebar-actions a { white-space: nowrap; }
+  .main-scroll { height: auto; overflow: visible; }
+}
+
 .nav {
   display: flex;
   gap: 2px;
@@ -333,6 +526,8 @@ main {
   cursor: pointer;
   transition: color 0.15s ease, background-color 0.15s ease;
 }
+.tab svg { width: 15px; height: 15px; vertical-align: -3px; margin-right: 6px; opacity: 0.75; }
+.tab.active svg { opacity: 1; }
 .tab:hover { background: var(--ghost-hover); color: var(--text); }
 .tab.active {
   background: var(--panel);

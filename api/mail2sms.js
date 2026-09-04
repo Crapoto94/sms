@@ -63,8 +63,8 @@ function normalizePhone(input) {
   return s;
 }
 
-const isBlacklisted = (phone) =>
-  Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE phone = ?').get(phone));
+const isBlacklisted = (tenantId, phone) =>
+  Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE tenant_id = ? AND phone = ?').get(tenantId, phone));
 
 const attachmentPublicUrl = (token) => {
   const base = String(process.env.PUBLIC_BASE_URL || `http://localhost:${PORT_API}`).replace(/\/$/, '');
@@ -137,25 +137,25 @@ function parseBody(body) {
   return { phones: [...phones], bookNames: [...bookNames], leftover };
 }
 
-function findBookId(name) {
-  const exact = db.prepare('SELECT id FROM address_books WHERE name = ? COLLATE NOCASE LIMIT 1')
-    .get(String(name || '').trim());
+function findBookId(tenantId, name) {
+  const exact = db.prepare('SELECT id FROM address_books WHERE tenant_id = ? AND name = ? COLLATE NOCASE LIMIT 1')
+    .get(tenantId, String(name || '').trim());
   if (exact) return exact.id;
   return null;
 }
 
-function resolveRecipients(body) {
+function resolveRecipients(tenantId, body) {
   const { phones, bookNames, leftover } = parseBody(body);
   const resolved = new Set(phones);
 
   const names = [...bookNames];
   for (const line of leftover) {
-    const id = findBookId(line);
+    const id = findBookId(tenantId, line);
     if (id != null) names.push(line);
   }
 
   for (const name of names) {
-    const bookId = findBookId(name);
+    const bookId = findBookId(tenantId, name);
     if (bookId == null) continue;
     const rows = db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(bookId);
     for (const row of rows) {
@@ -164,12 +164,12 @@ function resolveRecipients(body) {
     }
   }
 
-  const recipients = [...resolved].filter((p) => !isBlacklisted(p));
+  const recipients = [...resolved].filter((p) => !isBlacklisted(tenantId, p));
   return { recipients, resolved: resolved.size };
 }
 
 // --- Pièces jointes ---------------------------------------------------------
-function storeAttachment(attachment) {
+function storeAttachment(tenantId, attachment) {
   if (!attachment || !attachment.content || !attachment.content.length) return null;
   if (attachment.content.length > MAX_ATTACHMENT_SIZE) return null;
   const storedName = crypto.randomBytes(12).toString('base64url');
@@ -178,14 +178,15 @@ function storeAttachment(attachment) {
   const now = isoNow();
   const info = db.prepare(`
     INSERT INTO attachments
-      (token, original_name, stored_name, mime_type, size, owner_key_id, owner_account_id, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
+      (token, original_name, stored_name, mime_type, size, owner_key_id, owner_account_id, tenant_id, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)
   `).run(
     storedName,
     readableFilename(attachment.filename || 'piece-jointe'),
     storedName,
     attachment.contentType || 'application/octet-stream',
     attachment.content.length,
+    tenantId,
     now
   );
   return {
@@ -525,7 +526,7 @@ async function processMail(box, message) {
     return 'error';
   }
 
-  const { recipients, resolved } = resolveRecipients(parsed.text || '');
+  const { recipients, resolved } = resolveRecipients(box.tenant_id, parsed.text || '');
   if (recipients.length === 0) {
     recordError(resolved === 0
       ? 'Aucun destinataire trouvé : indiquez des numéros de téléphone et/ou un nom de carnet d\'adresses dans le corps de l\'e-mail.'
@@ -538,15 +539,15 @@ async function processMail(box, message) {
     .slice(0, MAX_ATTACHMENTS_PER_MAIL);
   const stored = [];
   for (const a of attachments) {
-    const storedOne = storeAttachment(a);
+    const storedOne = storeAttachment(box.tenant_id, a);
     if (storedOne) stored.push(storedOne);
   }
 
   const emailBody = bodyWithAttachments(subject, stored);
   const insertMessage = db.prepare(`
     INSERT INTO messages
-      (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at, mail2sms_email_id)
-    VALUES (?, ?, 'pending', 'mail2sms', ?, ?, ?, ?, ?)
+      (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at, mail2sms_email_id, tenant_id)
+    VALUES (?, ?, 'pending', 'mail2sms', ?, ?, ?, ?, ?, ?)
   `);
 
   let inserted = 0;
@@ -568,7 +569,8 @@ async function processMail(box, message) {
         stored.length === 1 ? stored[0].id : null,
         `Mail → SMS (${box.name})`,
         now,
-        emailRowId
+        emailRowId,
+        box.tenant_id
       );
       inserted++;
     }
@@ -919,6 +921,10 @@ async function scanAll() {
   try {
     const boxes = db.prepare('SELECT * FROM mail2sms_boxes WHERE active = 1').all();
     for (const box of boxes) {
+      // Fonctionnalité payante : une boîte reste en base si le tenant est
+      // rétrogradé, mais son relevé automatique s'arrête (créer/modifier une
+      // boîte redonne le contrôle une fois la fonctionnalité réactivée).
+      if (!db.tenantHasFeature(box.tenant_id, 'mail2sms')) continue;
       const intervalMs = (Number(box.scan_interval_sec) || 60) * 1000;
       if (box.last_scan_at && Date.now() - Date.parse(box.last_scan_at) < intervalMs) continue;
       const existing = scanJobs.get(box.id);

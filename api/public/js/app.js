@@ -26,13 +26,29 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
 function initTheme() {
   const btn = $('btnTheme');
   if (!btn) return;
+  // Sans choix explicite mémorisé, on suit la préférence système (gérée en
+  // CSS, cf. @media (prefers-color-scheme: light) dans style.css) plutôt
+  // que d'imposer le sombre par défaut.
+  const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  const effectiveLight = () => {
+    const stored = localStorage.getItem('sms-theme');
+    if (stored === 'light') return true;
+    if (stored === 'dark') return false;
+    return mql ? mql.matches : false;
+  };
   const apply = (light) => {
     document.body.classList.toggle('light', light);
+    document.body.classList.toggle('dark', !light);
     btn.textContent = light ? 'Mode sombre' : 'Mode clair';
   };
-  apply(localStorage.getItem('sms-theme') === 'light');
+  const stored = localStorage.getItem('sms-theme');
+  if (stored === 'light' || stored === 'dark') {
+    apply(stored === 'light');
+  } else {
+    btn.textContent = effectiveLight() ? 'Mode sombre' : 'Mode clair';
+  }
   btn.addEventListener('click', () => {
-    const light = !document.body.classList.contains('light');
+    const light = !effectiveLight();
     localStorage.setItem('sms-theme', light ? 'light' : 'dark');
     apply(light);
   });
@@ -110,6 +126,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     $('journal').classList.toggle('hidden', currentTab !== 'journal');
     $('accounts').classList.toggle('hidden', currentTab !== 'accounts');
     $('groups').classList.toggle('hidden', currentTab !== 'groups');
+    $('tenants').classList.toggle('hidden', currentTab !== 'tenants');
     $('help').classList.toggle('hidden', currentTab !== 'help');
     if (currentTab === 'keys') loadKeys();
     if (currentTab === 'gateways') loadGateways();
@@ -127,6 +144,7 @@ document.querySelectorAll('.tab').forEach((btn) => {
     if (currentTab === 'journal') loadJournal();
     if (currentTab === 'accounts') loadAccounts();
     if (currentTab === 'groups') loadGroups();
+    if (currentTab === 'tenants') loadTenants();
   });
 });
 
@@ -137,6 +155,10 @@ async function loadCurrentUser() {
     const s = await api('/admin/api/session');
     $('currentUser').textContent = s.isAdmin ? `Connecté en tant qu'admin` : `Connecté en tant que « ${s.login} »`;
     $('appVersion').textContent = `v${s.version}`;
+    if (s.role === 'super_admin') {
+      $('tabTenants').hidden = false;
+      $('securitySection').hidden = false;
+    }
   } catch { /* la redirection 401 gère le reste */ }
 }
 
@@ -1647,6 +1669,49 @@ $('btnSaveGroup').addEventListener('click', async () => {
     $('groupModalError').textContent = e.message;
   }
 });
+
+// ---------- Tenants (super-admin) ----------
+const TOGGLABLE_FEATURES = [
+  { key: 'mail2sms', label: 'Mail → SMS' },
+  { key: 'attachment_read_receipt', label: 'Pièce jointe' }
+];
+
+function featureToggleCell(tenantId, feature, enabled) {
+  return `<button data-feature-toggle="${tenantId}" data-feature="${feature}" data-enabled="${enabled ? 1 : 0}" class="ghost">
+    ${enabled ? badge('Activé', 'ok') : badge('Désactivé', 'off')}
+  </button>`;
+}
+
+async function loadTenants() {
+  const tenants = await api('/admin/api/tenants');
+  const statusLabel = { active: 'Actif', pending_verification: 'En attente de vérification', suspended: 'Suspendu' };
+  $('tenantsBody').innerHTML = tenants.length
+    ? tenants.map((t) => `<tr>
+        <td>${t.id}</td>
+        <td>${esc(t.name)}</td>
+        <td>${badge(statusLabel[t.status] || t.status, t.status === 'active' ? 'ok' : (t.status === 'suspended' ? 'failed' : 'off'))}</td>
+        <td>${esc(t.plan)}</td>
+        <td>${t.account_count}</td>
+        <td>${t.gateway_count}</td>
+        <td>${t.api_key_count}</td>
+        <td>${t.message_count}</td>
+        <td>${featureToggleCell(t.id, 'mail2sms', t.features.mail2sms)}</td>
+        <td>${featureToggleCell(t.id, 'attachment_read_receipt', t.features.attachment_read_receipt)}</td>
+        <td>${fmtDate(t.created_at)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="11" class="muted">Aucun tenant.</td></tr>';
+  document.querySelectorAll('[data-feature-toggle]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      try {
+        await api(`/admin/api/tenants/${b.dataset.featureToggle}/features`, {
+          method: 'POST',
+          body: JSON.stringify({ feature: b.dataset.feature, enabled: b.dataset.enabled === '0' })
+        });
+        loadTenants();
+      } catch (e) { alert(e.message); }
+    });
+  });
+}
 
 // ---------- Carnets d'adresses (admin) ----------
 let viewBookId = null;

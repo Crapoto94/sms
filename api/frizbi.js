@@ -51,7 +51,7 @@ async function frizbiSend(settings, { title, message, contacts, customerSmsId })
     customerSmsId: customerSmsId || `sms_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: title || 'Notification',
     message,
-    customerSenderId: settings.sender_id || 'IVRY',
+    customerSenderId: settings.sender_id || '',
     smsContacts: contacts.map((c, i) => ({
       customerSmsContactId: c.id != null ? String(c.id) : `contact_${Date.now()}_${i}`,
       mobile: c.mobile,

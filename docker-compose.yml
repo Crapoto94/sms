@@ -11,6 +11,19 @@ services:
       - PORT_API=3250
       - PORT_WEB=3251
       - DATA_DIR=/data
+      # URL publique utilisée dans les liens envoyés par e-mail (vérification
+      # de compte) et dans les liens de pièces jointes.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      # SMTP transactionnel : e-mail de vérification de compte à la création
+      # d'un tenant (self-service). Sans SMTP_HOST, le lien de vérification
+      # est seulement journalisé dans les logs du conteneur (utile en test,
+      # pas en production).
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_SECURE=${SMTP_SECURE:-false}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
     volumes:
       - sms-gateway-data:/data
 

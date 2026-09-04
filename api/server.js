@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const express = require('express');
 const multer = require('multer');
+const nodemailer = require('nodemailer');
 const db = require('./db');
 const mail2sms = require('./mail2sms');
 const frizbi = require('./frizbi');
@@ -109,11 +110,14 @@ function attachmentDispositionName(name) {
   return encodeURIComponent(readableFilename(name));
 }
 
-function findAttachment(req, attachmentId, owner) {
+function findAttachment(req, attachmentId, owner, tenantId) {
   const id = Number(attachmentId);
   if (!Number.isInteger(id) || id < 1) return { error: 'Pièce jointe invalide' };
   const attachment = db.prepare('SELECT * FROM attachments WHERE id = ?').get(id);
   if (!attachment) return { error: 'Pièce jointe introuvable' };
+  if (tenantId != null && attachment.tenant_id !== tenantId) {
+    return { error: 'Pièce jointe non autorisée' };
+  }
   if (owner && owner.keyId != null && attachment.owner_key_id !== owner.keyId) {
     return { error: 'Pièce jointe non autorisée' };
   }
@@ -123,8 +127,15 @@ function findAttachment(req, attachmentId, owner) {
   return { attachment };
 }
 
-function messageBodyWithAttachment(req, body, attachmentId, owner) {
-  const checked = attachmentId ? findAttachment(req, attachmentId, owner) : { attachment: null };
+// Pièce jointe + suivi de lecture : fonctionnalité payante (tenant_features
+// 'attachment_read_receipt'). tenantId = null (super-admin agissant hors
+// tenant) reste autorisé sans restriction.
+function messageBodyWithAttachment(req, body, attachmentId, owner, tenantId) {
+  if (!attachmentId) return { body };
+  if (tenantId != null && !db.tenantHasFeature(tenantId, 'attachment_read_receipt')) {
+    return { error: 'Envoi de pièce jointe non activé pour votre organisation' };
+  }
+  const checked = findAttachment(req, attachmentId, owner, tenantId);
   if (checked.error) return checked;
   if (!checked.attachment) return { body };
   const suffix = `\n\nPièce jointe : ${publicAttachmentUrl(req, checked.attachment.token)}`;
@@ -133,6 +144,27 @@ function messageBodyWithAttachment(req, body, attachmentId, owner) {
     return { error: `Message trop long avec le lien de la pièce jointe (max ${MAX_MESSAGE_LENGTH} caractères)` };
   }
   return { body: fullBody, attachment: checked.attachment };
+}
+
+// Duplique une pièce jointe pour un destinataire d'un envoi groupé : chaque
+// destinataire reçoit son propre lien/jeton, pour un suivi de lecture par
+// personne plutôt qu'un compteur d'ouvertures partagé entre tous.
+function cloneAttachment(attachment) {
+  const storedName = crypto.randomBytes(12).toString('base64url');
+  const token = crypto.randomBytes(16).toString('base64url');
+  const sourcePath = path.join(ATTACHMENTS_DIR, attachment.stored_name);
+  const destPath = path.join(ATTACHMENTS_DIR, storedName);
+  fs.copyFileSync(sourcePath, destPath);
+  const createdAt = isoNow();
+  const info = db.prepare(`
+    INSERT INTO attachments
+      (token, original_name, stored_name, mime_type, size, owner_key_id, owner_account_id, tenant_id, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    token, attachment.original_name, storedName, attachment.mime_type, attachment.size,
+    attachment.owner_key_id, attachment.owner_account_id, attachment.tenant_id, createdAt, attachment.expires_at
+  );
+  return { id: info.lastInsertRowid, token, path: destPath };
 }
 
 function normalizeIncomingDate(value) {
@@ -210,12 +242,12 @@ function renderContactBody(template, contact) {
   );
 }
 
-function isBlacklisted(phone) {
-  return Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE phone = ?').get(phone));
+function isBlacklisted(tenantId, phone) {
+  return Boolean(db.prepare('SELECT 1 FROM blacklist_numbers WHERE tenant_id = ? AND phone = ?').get(tenantId, phone));
 }
 
-function isMassExcluded(phone) {
-  return Boolean(db.prepare('SELECT 1 FROM mass_exclusions WHERE phone = ?').get(phone));
+function isMassExcluded(tenantId, phone) {
+  return Boolean(db.prepare('SELECT 1 FROM mass_exclusions WHERE tenant_id = ? AND phone = ?').get(tenantId, phone));
 }
 
 // Résout l'ensemble des numéros correspondant à un envoi passé (campagne ou
@@ -226,7 +258,7 @@ function isMassExcluded(phone) {
 function resolveEventPhones(req, eventType, eventId, state) {
   if (eventType === 'campaign') {
     const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ? AND deleted_at IS NULL').get(eventId);
-    if (!campaign || (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId)) return null;
+    if (!campaign || !canAccessRow(req, campaign)) return null;
     const rows = state
       ? db.prepare('SELECT recipient AS phone FROM messages WHERE campaign_id = ? AND status = ?').all(eventId, state)
       : db.prepare('SELECT recipient AS phone FROM messages WHERE campaign_id = ?').all(eventId);
@@ -234,7 +266,7 @@ function resolveEventPhones(req, eventType, eventId, state) {
   }
   if (eventType === 'fleet') {
     const check = db.prepare('SELECT * FROM fleet_checks WHERE id = ? AND deleted_at IS NULL').get(eventId);
-    if (!check || (req.session.role !== 'admin' && check.group_id !== req.session.groupId)) return null;
+    if (!check || !canAccessRow(req, check)) return null;
     const rows = state
       ? db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ? AND state = ?').all(eventId, state)
       : db.prepare('SELECT phone FROM fleet_check_items WHERE fleet_check_id = ?').all(eventId);
@@ -277,16 +309,16 @@ function refreshFleetTimeouts() {
   }
 }
 
-function recordFleetResponse(sender, body, receivedAt) {
+function recordFleetResponse(tenantId, sender, body, receivedAt) {
   const phone = normalizePhone(sender);
   if (!phone) return;
   refreshFleetTimeouts();
   const rows = db.prepare(`
     SELECT i.id, i.delivered_at, c.response_hours
     FROM fleet_check_items i JOIN fleet_checks c ON c.id = i.fleet_check_id
-    WHERE i.phone = ? AND i.response_at IS NULL AND i.state = 'delivered'
+    WHERE i.phone = ? AND i.response_at IS NULL AND i.state = 'delivered' AND c.tenant_id = ?
     ORDER BY i.id ASC
-  `).all(phone);
+  `).all(phone, tenantId);
   for (const row of rows) {
     const deliveredAt = Date.parse(row.delivered_at || '');
     if (!Number.isNaN(deliveredAt) && Date.parse(receivedAt) - deliveredAt <= (row.response_hours || FLEET_RESPONSE_HOURS) * 3600000) {
@@ -339,8 +371,8 @@ function setAdminPhone(phone) {
 }
 
 // ---------- Répartition des envois entre passerelles internes ----------
-function getGatewaySettings() {
-  return db.prepare('SELECT * FROM gateway_settings WHERE id = 1').get() ||
+function getGatewaySettings(tenantId) {
+  return db.prepare('SELECT * FROM gateway_settings WHERE tenant_id = ?').get(tenantId) ||
     { quota_cap: 180, quota_window_days: 30 };
 }
 
@@ -359,8 +391,8 @@ function getGatewaySettings() {
  *   l'appelant retombe alors sur la répartition de charge historique
  *   (message non attribué, prenable par la première passerelle disponible).
  */
-function assignGateway(recipient) {
-  const settings = getGatewaySettings();
+function assignGateway(tenantId, recipient) {
+  const settings = getGatewaySettings(tenantId);
   const windowIso = new Date(Date.now() - settings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
   const onlineCutoff = onlineCutoffIso();
   const gateways = db.prepare(`
@@ -368,14 +400,14 @@ function assignGateway(recipient) {
       (SELECT COUNT(DISTINCT m.recipient) FROM messages m
         WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?) AS recentDistinct
     FROM keys k
-    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ?
-  `).all(windowIso, onlineCutoff);
+    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ? AND k.tenant_id = ?
+  `).all(windowIso, onlineCutoff, tenantId);
   if (!gateways.length) return null;
   const sticky = db.prepare(`
     SELECT claimed_by FROM messages
-    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ?
+    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ? AND tenant_id = ?
     ORDER BY id DESC LIMIT 1
-  `).get(recipient, windowIso);
+  `).get(recipient, windowIso, tenantId);
   if (sticky) {
     const match = gateways.find((g) => g.id === sticky.claimed_by);
     if (match) return match.id;
@@ -395,8 +427,8 @@ function assignGateway(recipient) {
  * décisions en mémoire pour tout le lot, comme le ferait l'envoi réel
  * message après message.
  */
-function simulateAssignment(phones) {
-  const settings = getGatewaySettings();
+function simulateAssignment(tenantId, phones) {
+  const settings = getGatewaySettings(tenantId);
   const windowIso = new Date(Date.now() - settings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
   const onlineCutoff = onlineCutoffIso();
   const gateways = db.prepare(`
@@ -404,8 +436,8 @@ function simulateAssignment(phones) {
       (SELECT COUNT(DISTINCT m.recipient) FROM messages m
         WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?) AS recentDistinct
     FROM keys k
-    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ?
-  `).all(windowIso, onlineCutoff);
+    WHERE k.type = 'gateway' AND k.revoked = 0 AND k.last_seen_at > ? AND k.tenant_id = ?
+  `).all(windowIso, onlineCutoff, tenantId);
 
   const simulated = new Map(gateways.map((g) => [g.id, g.recentDistinct]));
   const assignedCount = new Map(gateways.map((g) => [g.id, 0]));
@@ -413,13 +445,13 @@ function simulateAssignment(phones) {
 
   const stickyStmt = db.prepare(`
     SELECT claimed_by FROM messages
-    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ?
+    WHERE recipient = ? AND provider = 'internal' AND claimed_by IS NOT NULL AND created_at >= ? AND tenant_id = ?
     ORDER BY id DESC LIMIT 1
   `);
 
   for (const phone of phones) {
     if (!gateways.length) { unassigned++; continue; }
-    const sticky = stickyStmt.get(phone, windowIso);
+    const sticky = stickyStmt.get(phone, windowIso, tenantId);
     let gatewayId;
     let isNewDistinct = true;
     if (sticky && gateways.some((g) => g.id === sticky.claimed_by)) {
@@ -472,12 +504,17 @@ function splitByLines(assigned, simCount) {
 }
 
 // ---------- Envoi de SMS externe (Frizbi) ----------
-function getFrizbiSettings() {
-  const s = db.prepare('SELECT * FROM frizbi_settings WHERE id = 1').get() ||
-    { mode: 'internal', both_threshold: 10, api_url: '', client_id: '', client_secret: '', sender_id: 'IVRY', callback_token: null };
+function tenantSenderTitle(tenantId) {
+  const tenant = tenantId ? db.prepare('SELECT name FROM tenants WHERE id = ?').get(tenantId) : null;
+  return tenant ? tenant.name : 'Notification';
+}
+
+function getFrizbiSettings(tenantId) {
+  const s = db.prepare('SELECT * FROM frizbi_settings WHERE tenant_id = ?').get(tenantId) ||
+    { tenant_id: tenantId, mode: 'internal', both_threshold: 10, api_url: '', client_id: '', client_secret: '', sender_id: '', callback_token: null };
   if (!s.callback_token) {
     s.callback_token = crypto.randomBytes(16).toString('hex');
-    db.prepare('UPDATE frizbi_settings SET callback_token = ? WHERE id = 1').run(s.callback_token);
+    db.prepare('UPDATE frizbi_settings SET callback_token = ? WHERE tenant_id = ?').run(s.callback_token, tenantId);
   }
   return s;
 }
@@ -501,12 +538,12 @@ function mapFrizbiStatus(raw) {
  * (statut agrégé pour tout le lot), et on journalise chaque appel dans
  * frizbi_events pour permettre d'observer le format réel.
  */
-async function pollFrizbiStatuses() {
+async function pollFrizbiStatusesForTenant(tenantId) {
   const pending = db.prepare(
-    "SELECT DISTINCT provider_ref FROM messages WHERE provider = 'frizbi' AND status = 'sent' AND provider_ref IS NOT NULL"
-  ).all();
+    "SELECT DISTINCT provider_ref FROM messages WHERE provider = 'frizbi' AND status = 'sent' AND provider_ref IS NOT NULL AND tenant_id = ?"
+  ).all(tenantId);
   if (!pending.length) return;
-  const settings = getFrizbiSettings();
+  const settings = getFrizbiSettings(tenantId);
   if (!settings.api_url || !settings.client_id || !settings.client_secret) return;
   for (const { provider_ref } of pending) {
     let data;
@@ -548,12 +585,20 @@ async function pollFrizbiStatuses() {
     );
   }
 }
+async function pollFrizbiStatuses() {
+  const tenantIds = db.prepare(
+    "SELECT tenant_id FROM frizbi_settings WHERE mode <> 'internal'"
+  ).all().map((r) => r.tenant_id);
+  for (const tenantId of tenantIds) {
+    await pollFrizbiStatusesForTenant(tenantId);
+  }
+}
 setInterval(() => { pollFrizbiStatuses().catch((err) => console.error('[FRIZBI] poll error:', err)); }, 60 * 1000);
 
 // Décide, pour un envoi groupé de `count` destinataires, quel canal utiliser.
 // 'both' : Frizbi seulement au-delà du seuil configuré, sinon passerelles.
-function decideSmsProvider(count) {
-  const s = getFrizbiSettings();
+function decideSmsProvider(tenantId, count) {
+  const s = getFrizbiSettings(tenantId);
   if (s.mode === 'frizbi') return 'frizbi';
   if (s.mode === 'both' && count > (s.both_threshold || 10)) return 'frizbi';
   return 'internal';
@@ -567,9 +612,9 @@ function decideSmsProvider(count) {
  * variante), un envoi au texte commun n'en fait qu'un seul quel que soit
  * le nombre de destinataires.
  */
-async function dispatchFrizbiBatch(entries, { title } = {}) {
+async function dispatchFrizbiBatch(tenantId, entries, { title } = {}) {
   if (!entries.length) return;
-  const settings = getFrizbiSettings();
+  const settings = getFrizbiSettings(tenantId);
   const groups = new Map();
   for (const entry of entries) {
     if (!groups.has(entry.body)) groups.set(entry.body, []);
@@ -683,6 +728,10 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_web_sessions_exp ON web_sessions(exp);
 `);
+const webSessionCols = db.prepare('PRAGMA table_info(web_sessions)').all().map((c) => c.name);
+if (!webSessionCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE web_sessions ADD COLUMN tenant_id INTEGER');
+}
 
 function parseCookies(req) {
   const out = {};
@@ -706,19 +755,21 @@ function loadSession(sid) {
     login: row.login,
     role: row.role,
     groupId: row.group_id,
-    isAdmin: row.role === 'admin'
+    tenantId: row.tenant_id,
+    isAdmin: row.role === 'admin' || row.role === 'super_admin'
   };
 }
 
 function saveSession(sid, session) {
   db.prepare(`
-    INSERT INTO web_sessions (sid, account_id, login, role, group_id, exp, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO web_sessions (sid, account_id, login, role, group_id, tenant_id, exp, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(sid) DO UPDATE SET
       account_id = excluded.account_id,
       login      = excluded.login,
       role       = excluded.role,
       group_id   = excluded.group_id,
+      tenant_id  = excluded.tenant_id,
       exp        = excluded.exp
   `).run(
     sid,
@@ -726,6 +777,7 @@ function saveSession(sid, session) {
     session.login,
     session.role,
     session.groupId || null,
+    session.tenantId || null,
     session.exp,
     isoNow()
   );
@@ -777,6 +829,7 @@ function requireApiKey(type) {
     }
     db.prepare('UPDATE keys SET last_used_at = ? WHERE id = ?').run(isoNow(), row.id);
     req.apiKey = row;
+    req.tenantId = row.tenant_id;
     next();
   };
 }
@@ -835,6 +888,10 @@ function uploadSingle(req, res, next) {
 
 apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  if (!db.tenantHasFeature(req.tenantId, 'attachment_read_receipt')) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(403).json({ error: 'Envoi de pièce jointe non activé pour votre organisation' });
+  }
   const expiry = attachmentExpiry(
     req.body.expiresInDays === undefined ? DEFAULT_ATTACHMENT_EXPIRY_DAYS : req.body.expiresInDays
   );
@@ -846,8 +903,8 @@ apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle
   try {
     const info = db.prepare(`
       INSERT INTO attachments
-        (token, original_name, stored_name, mime_type, size, owner_key_id, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (token, original_name, stored_name, mime_type, size, owner_key_id, tenant_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       req.file.filename,
       readableFilename(req.file.originalname || 'piece-jointe'),
@@ -855,6 +912,7 @@ apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle
       req.file.mimetype || 'application/octet-stream',
       req.file.size,
       req.apiKey.id,
+      req.tenantId,
       createdAt,
       expiry.expiresAt
     );
@@ -874,10 +932,13 @@ apiApp.post('/api/v1/attachments', requireApiKey('web'), rateLimit, uploadSingle
 
 // Envoi d'un SMS demandé par une application web (clé type "web")
 apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, async (req, res) => {
+  if (!db.tenantHasFeature(req.tenantId, 'api_send')) {
+    return res.status(403).json({ error: 'Envoi par API non activé pour votre organisation' });
+  }
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
   const withAttachment = messageBodyWithAttachment(
-    req, message, req.body.attachmentId, { keyId: req.apiKey.id }
+    req, message, req.body.attachmentId, { keyId: req.apiKey.id }, req.tenantId
   );
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -887,15 +948,15 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, async (req, res
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
   if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
-  const provider = decideSmsProvider(1);
-  const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
+  const provider = decideSmsProvider(req.tenantId, 1);
+  const claimedBy = provider === 'internal' ? assignGateway(req.tenantId, recipient) : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, `API WEB : ${req.apiKey.label}`, createdAt, provider, claimedBy);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by_label, created_at, provider, claimed_by, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, 'pending', 'web', req.apiKey.label, withAttachment.attachment ? withAttachment.attachment.id : null, `API WEB : ${req.apiKey.label}`, createdAt, provider, claimedBy, req.tenantId);
   let finalStatus = 'pending';
   if (provider === 'frizbi') {
-    await dispatchFrizbiBatch([{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: 'Ville d’Ivry' });
+    await dispatchFrizbiBatch(req.tenantId, [{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: tenantSenderTitle(req.tenantId) });
     finalStatus = db.prepare('SELECT status FROM messages WHERE id = ?').get(info.lastInsertRowid).status;
   }
   res.status(201).json({
@@ -913,12 +974,12 @@ apiApp.post('/api/v1/messages', requireApiKey('web'), rateLimit, async (req, res
 
 // Lecture des carnets d'adresses (clé type "web") — utilisée pour la
 // synchronisation de carnets entre instances de la passerelle.
-apiApp.get('/api/v1/books', requireApiKey('web'), (_req, res) => {
-  res.json(listRemoteBooksLocal());
+apiApp.get('/api/v1/books', requireApiKey('web'), (req, res) => {
+  res.json(listRemoteBooksLocal(req.tenantId));
 });
 
 apiApp.get('/api/v1/books/:id/contacts', requireApiKey('web'), (req, res) => {
-  const data = getRemoteBookContactsLocal(Number(req.params.id));
+  const data = getRemoteBookContactsLocal(req.tenantId, Number(req.params.id));
   if (!data) return res.status(404).json({ error: 'Carnet introuvable' });
   res.json(data);
 });
@@ -987,21 +1048,29 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
     // passerelle n'avait de marge disponible sous son quota au moment de
     // l'envoi.
     const intervalMs = SYNC_INTERVAL_SEC * 1000;
-    const claimState = db.prepare('SELECT * FROM claim_state WHERE id = 1').get();
+    // Un tour de répartition par tenant : sinon les passerelles d'un tenant
+    // chargé fausseraient le calcul de part équitable des passerelles d'un
+    // autre tenant, alors que pendingCount/activeCount ci-dessous sont eux
+    // bornés au tenant de la clé.
+    let claimState = db.prepare('SELECT * FROM claim_state WHERE tenant_id = ?').get(req.tenantId);
+    if (!claimState) {
+      db.prepare('INSERT OR IGNORE INTO claim_state (tenant_id) VALUES (?)').run(req.tenantId);
+      claimState = db.prepare('SELECT * FROM claim_state WHERE tenant_id = ?').get(req.tenantId);
+    }
     if (!claimState.round_started || Date.now() - Date.parse(claimState.round_started) >= intervalMs) {
-      db.prepare('UPDATE claim_state SET round_started = ?, claimed = 0 WHERE id = 1').run(nowIso);
+      db.prepare('UPDATE claim_state SET round_started = ?, claimed = 0 WHERE tenant_id = ?').run(nowIso, req.tenantId);
       claimState.round_started = nowIso;
       claimState.claimed = 0;
     }
 
     const pendingCount = db.prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL"
-    ).get().c;
+      "SELECT COUNT(*) AS c FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL AND tenant_id = ?"
+    ).get(req.tenantId).c;
 
     const activeCutoff = onlineCutoffIso();
     let activeCount = db.prepare(
-      "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
-    ).get(activeCutoff).c;
+      "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ? AND tenant_id = ?"
+    ).get(activeCutoff, req.tenantId).c;
     const selfFresh = req.apiKey.last_seen_at &&
       Date.parse(req.apiKey.last_seen_at) >= Date.parse(activeCutoff);
     if (!selfFresh) activeCount++;
@@ -1015,26 +1084,29 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
 
     const cutoff = new Date(now.getTime() - SENDING_STALE_MS).toISOString();
     const escalationCutoff = new Date(now.getTime() - ESCALATION_MS).toISOString();
+    // Chaque requête de ce lot est bornée à tenant_id = req.tenantId : une
+    // passerelle ne doit jamais pouvoir réclamer/envoyer les messages d'un
+    // autre tenant.
     const stale = db.prepare(
-      "SELECT * FROM messages WHERE status = 'sending' AND provider = 'internal' AND claimed_at < ? ORDER BY id ASC LIMIT ?"
-    ).all(cutoff, CLAIM_LIMIT);
+      "SELECT * FROM messages WHERE status = 'sending' AND provider = 'internal' AND claimed_at < ? AND tenant_id = ? ORDER BY id ASC LIMIT ?"
+    ).all(cutoff, req.tenantId, CLAIM_LIMIT);
     // Messages déjà attribués à MOI par le serveur à la création (cf.
     // assignGateway) : je les prends sans limite de partage, ils ne sont
     // prenables par personne d'autre tant que je suis en ligne.
     const mine = db.prepare(
-      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by = ? ORDER BY id ASC LIMIT ?"
-    ).all(req.apiKey.id, CLAIM_LIMIT);
+      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by = ? AND tenant_id = ? ORDER BY id ASC LIMIT ?"
+    ).all(req.apiKey.id, req.tenantId, CLAIM_LIMIT);
     // Messages attribués à une passerelle qui semble hors-ligne : n'importe
     // quelle passerelle en ligne peut les récupérer pour ne pas les perdre.
     const orphaned = db.prepare(`
       SELECT m.* FROM messages m LEFT JOIN keys k ON k.id = m.claimed_by
       WHERE m.status = 'pending' AND m.provider = 'internal' AND m.claimed_by IS NOT NULL
-        AND m.claimed_by <> ? AND (k.last_seen_at IS NULL OR k.last_seen_at <= ?)
+        AND m.claimed_by <> ? AND (k.last_seen_at IS NULL OR k.last_seen_at <= ?) AND m.tenant_id = ?
       ORDER BY m.id ASC LIMIT ?
-    `).all(req.apiKey.id, activeCutoff, CLAIM_LIMIT);
+    `).all(req.apiKey.id, activeCutoff, req.tenantId, CLAIM_LIMIT);
     const pending = db.prepare(
-      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL ORDER BY id ASC LIMIT ?"
-    ).all(CLAIM_LIMIT);
+      "SELECT * FROM messages WHERE status = 'pending' AND provider = 'internal' AND claimed_by IS NULL AND tenant_id = ? ORDER BY id ASC LIMIT ?"
+    ).all(req.tenantId, CLAIM_LIMIT);
 
     const toClaim = [];
     let pendingClaimed = 0;
@@ -1048,7 +1120,7 @@ apiApp.post('/api/v1/gateway/sync', requireApiKey('gateway'), (req, res) => {
       else if (allowance > 0) { add(m); pendingClaimed++; allowance--; }
     }
     if (pendingClaimed > 0) {
-      db.prepare('UPDATE claim_state SET claimed = claimed + ? WHERE id = 1').run(pendingClaimed);
+      db.prepare('UPDATE claim_state SET claimed = claimed + ? WHERE tenant_id = ?').run(pendingClaimed, req.tenantId);
     }
 
     const markClaimed = db.prepare(
@@ -1118,7 +1190,7 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
     throw err;
   }
   for (const message of acceptedMessages) {
-    recordFleetResponse(message.sender, message.body, message.receivedAt);
+    recordFleetResponse(req.tenantId, message.sender, message.body, message.receivedAt);
   }
   res.json({ accepted });
 });
@@ -1132,9 +1204,13 @@ apiApp.post('/api/v1/gateway/incoming', requireApiKey('gateway'), (req, res) => 
 // permettre d'observer et d'ajuster une fois le trafic réel disponible.
 apiApp.all('/api/v1/frizbi/callback', (req, res) => {
   const params = { ...req.query, ...(req.body || {}) };
-  const settings = getFrizbiSettings();
   const providedToken = params.token || req.get('x-frizbi-token');
-  if (settings.callback_token && providedToken !== settings.callback_token) {
+  // Le jeton identifie à la fois l'autorisation ET le tenant (chaque tenant
+  // a ses propres réglages/jeton Frizbi depuis le multi-tenant).
+  const settings = providedToken
+    ? db.prepare('SELECT * FROM frizbi_settings WHERE callback_token = ?').get(providedToken)
+    : null;
+  if (!settings) {
     return res.status(403).json({ error: 'Jeton invalide' });
   }
   const nowIso = isoNow();
@@ -1147,10 +1223,10 @@ apiApp.all('/api/v1/frizbi/callback', (req, res) => {
     messageId = Number(contactId);
     const mapped = mapFrizbiStatus(statusRaw);
     if (mapped === 'delivered') {
-      db.prepare("UPDATE messages SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?), updated_at = ? WHERE id = ? AND provider = 'frizbi'").run(nowIso, nowIso, messageId);
+      db.prepare("UPDATE messages SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?), updated_at = ? WHERE id = ? AND provider = 'frizbi' AND tenant_id = ?").run(nowIso, nowIso, messageId, settings.tenant_id);
       applied = true;
     } else if (mapped === 'failed') {
-      db.prepare("UPDATE messages SET status = 'failed', failed_at = COALESCE(failed_at, ?), error = ?, updated_at = ? WHERE id = ? AND provider = 'frizbi'").run(nowIso, `Frizbi : ${statusRaw}`, nowIso, messageId);
+      db.prepare("UPDATE messages SET status = 'failed', failed_at = COALESCE(failed_at, ?), error = ?, updated_at = ? WHERE id = ? AND provider = 'frizbi' AND tenant_id = ?").run(nowIso, `Frizbi : ${statusRaw}`, nowIso, messageId, settings.tenant_id);
       applied = true;
     }
   }
@@ -1171,11 +1247,71 @@ function requireSession(req, res, next) {
   next();
 }
 
+// « admin » = admin d'un tenant (bornée à req.session.tenantId) ou
+// super_admin (aucune borne). Utiliser requireSuperAdmin pour les routes
+// réservées au super-admin cross-tenant (gestion des tenants eux-mêmes).
 function requireAdmin(req, res, next) {
-  if (req.session.role !== 'admin') {
+  if (req.session.role !== 'admin' && req.session.role !== 'super_admin') {
     return res.status(403).json({ error: 'Accès réservé à l’administrateur' });
   }
   next();
+}
+
+function requireSuperAdmin(req, res, next) {
+  if (req.session.role !== 'super_admin') {
+    return res.status(403).json({ error: 'Accès réservé au super-administrateur' });
+  }
+  next();
+}
+
+// Fragment SQL + paramètre pour borner une requête au tenant de la session
+// (aucune borne pour le super-admin). column est le nom de colonne qualifié
+// éventuellement avec un alias de table (ex. 'm.tenant_id').
+function tenantScope(req, column = 'tenant_id') {
+  if (req.session.role === 'super_admin') return { clause: '', params: [] };
+  return { clause: `${column} = ?`, params: [req.session.tenantId] };
+}
+
+// Conditions de visibilité pour une requête filtrant par tenant (et, pour un
+// simple utilisateur, par groupe) — super_admin : aucune borne, admin (de
+// tenant) : borné au tenant, user : borné au tenant ET au groupe.
+// Vrai si la session peut voir/agir sur `row` (doit porter tenant_id, et
+// group_id si groupCol est fourni). super_admin : toujours vrai. admin :
+// même tenant. user : même tenant ET même groupe.
+function canAccessRow(req, row, requireGroup = true) {
+  if (req.session.role === 'super_admin') return true;
+  if (row.tenant_id !== req.session.tenantId) return false;
+  if (req.session.role === 'user' && requireGroup) return row.group_id === req.session.groupId;
+  return true;
+}
+
+// Résout le group_id à appliquer à une création (message, campagne...) :
+// un 'user' est toujours forcé sur son propre groupe ; un admin/super_admin
+// peut cibler un groupe précis, mais seulement s'il appartient à son propre
+// tenant (super_admin : n'importe quel tenant). Renvoie { groupId } ou
+// { error } si le groupe demandé n'existe pas / n'est pas dans le tenant.
+function resolveGroupId(req, rawGroupId) {
+  if (req.session.role === 'user') return { groupId: req.session.groupId };
+  const groupId = Number(rawGroupId) || null;
+  if (!groupId) return { groupId: null };
+  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+  if (!group || (req.session.role !== 'super_admin' && group.tenant_id !== req.session.tenantId)) {
+    return { error: 'Groupe introuvable' };
+  }
+  return { groupId };
+}
+
+function scopeConditions(req, tenantCol, groupCol) {
+  const clauses = [];
+  const params = [];
+  if (req.session.role === 'super_admin') return { clauses, params };
+  clauses.push(`${tenantCol} = ?`);
+  params.push(req.session.tenantId);
+  if (req.session.role === 'user' && groupCol) {
+    clauses.push(`${groupCol} = ?`);
+    params.push(req.session.groupId);
+  }
+  return { clauses, params };
 }
 
 const webApp = express();
@@ -1204,6 +1340,7 @@ webApp.post('/admin/login', (req, res) => {
   let sessionLogin;
   let role = 'user';
   let groupId = null;
+  let tenantId = null;
 
   const fail = (reason) => {
     logAuthAttempt(req, null, reason);
@@ -1216,20 +1353,38 @@ webApp.post('/admin/login', (req, res) => {
   };
 
   if (login === '') {
+    // Compte pivot super-admin : mot de passe issu de la variable d'env
+    // ADMIN_PASSWORD, jamais du hash stocké (qui est vide pour ce compte).
     if (password !== ADMIN_PASSWORD) {
       return fail('401 Mot de passe admin incorrect');
     }
-    role = 'admin';
+    role = 'super_admin';
     sessionLogin = 'admin';
+    const row = db.prepare("SELECT id FROM accounts WHERE login = ''").get();
+    accountId = row ? row.id : null;
+    // Le super-admin garde un tenant « courant » (celui de l'organisation
+    // historique) pour que la console actuelle (envoi, comptes, groupes...)
+    // continue de fonctionner sans sélecteur de tenant dédié — role reste
+    // 'super_admin' donc les lectures ne sont pas bridées par ce tenantId
+    // (cf. tenantScope/canAccessRow), seules les créations en héritent.
+    tenantId = db.DEFAULT_TENANT_ID;
   } else {
     const row = db.prepare('SELECT * FROM accounts WHERE login = ?').get(login);
     if (!row || row.disabled || !verifyPassword(password, row.password_hash)) {
       return fail(`401 Connexion échouée (compte « ${login.slice(0, 32)} »)`);
     }
+    if (!row.email_verified_at) {
+      return res.status(403).json({ error: 'Adresse e-mail non vérifiée. Consultez votre boîte mail pour activer le compte.' });
+    }
+    const tenant = row.tenant_id ? db.prepare('SELECT * FROM tenants WHERE id = ?').get(row.tenant_id) : null;
+    if (tenant && tenant.status === 'suspended') {
+      return res.status(403).json({ error: 'Ce compte est suspendu. Contactez le support.' });
+    }
     accountId = row.id;
     sessionLogin = row.login;
-    role = row.role === 'admin' ? 'admin' : 'user';
+    role = row.role === 'super_admin' ? 'admin' : (row.role === 'admin' ? 'admin' : 'user');
     groupId = row.group_id || null;
+    tenantId = row.tenant_id || null;
   }
 
   clearAuthFailures(req, efLogin);
@@ -1240,7 +1395,8 @@ webApp.post('/admin/login', (req, res) => {
     login: sessionLogin,
     role,
     groupId,
-    isAdmin: role === 'admin'
+    tenantId,
+    isAdmin: role === 'admin' || role === 'super_admin'
   };
   saveSession(sid, session);
   req.session = session;
@@ -1252,12 +1408,15 @@ webApp.post('/admin/login', (req, res) => {
     'Set-Cookie',
     `sid=${sid}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`
   );
-  res.json({ ok: true, login: sessionLogin, isAdmin: role === 'admin', role, groupId });
+  res.json({ ok: true, login: sessionLogin, isAdmin: session.isAdmin, role, groupId, tenantId });
 });
 
 webApp.get('/admin/api/session', requireSession, (req, res) => {
   const g = req.session.groupId
     ? db.prepare('SELECT name FROM groups WHERE id = ?').get(req.session.groupId)
+    : null;
+  const tenant = req.session.tenantId
+    ? db.prepare('SELECT id, name, plan, status FROM tenants WHERE id = ?').get(req.session.tenantId)
     : null;
   res.json({
     login: req.session.login,
@@ -1265,6 +1424,8 @@ webApp.get('/admin/api/session', requireSession, (req, res) => {
     role: req.session.role,
     groupId: req.session.groupId,
     groupName: g ? g.name : null,
+    tenantId: req.session.tenantId,
+    tenant,
     version: APP_VERSION
   });
 });
@@ -1298,14 +1459,157 @@ webApp.get('/openapi.json', sendFile('openapi.json'));
 webApp.get('/aide', renderHtml('help.html'));
 
 webApp.get('/login.html', renderHtml('login.html'));
+webApp.get('/signup.html', renderHtml('signup.html'));
+webApp.get('/verify-email.html', renderHtml('verify-email.html'));
 webApp.use('/css', express.static(path.join(PUBLIC_DIR, 'css')));
 webApp.use('/js', express.static(path.join(PUBLIC_DIR, 'js')));
 
 webApp.get(['/', '/index.html'], (req, res) => {
   const s = sessionValid(req);
-  if (!s) return res.redirect('/login.html');
-  if (s.role !== 'admin') return res.redirect('/send.html');
+  if (!s) return renderHtml('landing.html')(req, res);
+  if (s.role === 'user') return res.redirect('/send.html');
   renderHtml('index.html')(req, res);
+});
+
+// ---------- Création de compte (self-service) + vérification e-mail ----------
+const SIGNUP_LOGIN_RE = /^[a-zA-Z0-9._-]{3,32}$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const VERIFICATION_TTL_MS = 48 * 60 * 60 * 1000; // 48h pour cliquer le lien
+
+function slugify(name) {
+  return String(name).toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'organisation';
+}
+
+function uniqueTenantSlug(name) {
+  const base = slugify(name);
+  let slug = base;
+  let i = 2;
+  while (db.prepare('SELECT 1 FROM tenants WHERE slug = ?').get(slug)) {
+    slug = `${base}-${i++}`;
+  }
+  return slug;
+}
+
+async function sendVerificationEmail(email, login, token) {
+  const base = String(process.env.PUBLIC_BASE_URL || `http://localhost:${PORT_WEB}`).replace(/\/$/, '');
+  const link = `${base}/verify-email.html?token=${encodeURIComponent(token)}`;
+  const host = process.env.SMTP_HOST;
+  if (!host) {
+    // Pas de SMTP transactionnel configuré (dev/local) : on journalise le
+    // lien au lieu d'échouer silencieusement, pour rester testable sans
+    // boîte mail réelle.
+    console.warn(`[SIGNUP] SMTP_HOST non configuré — lien de vérification pour ${email} : ${link}`);
+    return;
+  }
+  const transport = nodemailer.createTransport({
+    host,
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: process.env.SMTP_SECURE === 'true',
+    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD } : undefined
+  });
+  await transport.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: email,
+    subject: 'Confirmez votre compte Passerelle SMS',
+    text: `Bonjour ${login},\n\nConfirmez votre adresse e-mail pour activer votre compte :\n${link}\n\nCe lien expire dans 48 heures.`,
+    html: `<p>Bonjour ${login},</p><p>Confirmez votre adresse e-mail pour activer votre compte :</p><p><a href="${link}">${link}</a></p><p>Ce lien expire dans 48 heures.</p>`
+  });
+}
+
+webApp.post('/admin/signup', async (req, res) => {
+  const body = req.body || {};
+  const organisation = String(body.organisation || '').trim();
+  const login = String(body.login || '').trim();
+  const email = String(body.email || '').trim().toLowerCase();
+  const password = String(body.password || '');
+
+  if (organisation.length < 2 || organisation.length > 80) {
+    return res.status(400).json({ error: 'Nom d’organisation invalide (2 à 80 caractères)' });
+  }
+  if (!SIGNUP_LOGIN_RE.test(login)) {
+    return res.status(400).json({ error: 'Identifiant invalide (3 à 32 caractères : lettres, chiffres, . _ -)' });
+  }
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'Adresse e-mail invalide' });
+  }
+  if (password.length < PASSWORD_MIN_LENGTH) {
+    return res.status(400).json({ error: `Mot de passe trop court (${PASSWORD_MIN_LENGTH} caractères minimum)` });
+  }
+  if (db.prepare('SELECT 1 FROM accounts WHERE login = ?').get(login)) {
+    return res.status(409).json({ error: 'Cet identifiant existe déjà' });
+  }
+
+  const createdAt = isoNow();
+  const slug = uniqueTenantSlug(organisation);
+  let tenantId, accountId;
+  db.exec('BEGIN');
+  try {
+    tenantId = db.prepare(
+      "INSERT INTO tenants (name, slug, status, plan, created_at) VALUES (?, ?, 'pending_verification', 'free', ?)"
+    ).run(organisation, slug, createdAt).lastInsertRowid;
+    const groupId = db.prepare(
+      'INSERT INTO groups (tenant_id, name, created_at) VALUES (?, ?, ?)'
+    ).run(tenantId, 'Général', createdAt).lastInsertRowid;
+    accountId = db.prepare(`
+      INSERT INTO accounts (login, password_hash, role, tenant_id, group_id, email, is_group_manager, disabled, created_at)
+      VALUES (?, ?, 'admin', ?, ?, ?, 1, 0, ?)
+    `).run(login, hashPassword(password), tenantId, groupId, email, createdAt).lastInsertRowid;
+    db.seedTenantFeatures(tenantId, db.FREE_FEATURES);
+    db.prepare('INSERT INTO gateway_settings (tenant_id) VALUES (?)').run(tenantId);
+    db.prepare('INSERT INTO frizbi_settings (tenant_id) VALUES (?)').run(tenantId);
+    db.prepare('INSERT INTO claim_state (tenant_id) VALUES (?)').run(tenantId);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  const token = newToken();
+  db.prepare(`
+    INSERT INTO email_verifications (account_id, token_hash, purpose, expires_at, created_at)
+    VALUES (?, ?, 'signup', ?, ?)
+  `).run(accountId, sha256(token), new Date(Date.now() + VERIFICATION_TTL_MS).toISOString(), createdAt);
+
+  try {
+    await sendVerificationEmail(email, login, token);
+  } catch (err) {
+    console.error('[SIGNUP] envoi e-mail de vérification impossible :', err.message);
+    // On ne bloque pas la création du compte pour un incident SMTP : le
+    // lien reste consultable dans les logs serveur, et un service de
+    // renvoi pourra être ajouté plus tard si besoin.
+  }
+  res.status(201).json({ ok: true, message: 'Compte créé. Vérifiez votre boîte mail pour l’activer.' });
+});
+
+webApp.post('/admin/verify-email', (req, res) => {
+  const token = String((req.body || {}).token || '').trim();
+  if (!token) return res.status(400).json({ error: 'Jeton manquant' });
+  const row = db.prepare(
+    "SELECT * FROM email_verifications WHERE token_hash = ? AND purpose = 'signup'"
+  ).get(sha256(token));
+  if (!row) return res.status(404).json({ error: 'Lien invalide' });
+  if (row.consumed_at) return res.status(409).json({ error: 'Ce lien a déjà été utilisé' });
+  if (Date.parse(row.expires_at) < Date.now()) return res.status(410).json({ error: 'Ce lien a expiré' });
+
+  const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(row.account_id);
+  if (!account) return res.status(404).json({ error: 'Compte introuvable' });
+
+  const nowIso = isoNow();
+  db.exec('BEGIN');
+  try {
+    db.prepare('UPDATE accounts SET email_verified_at = ? WHERE id = ?').run(nowIso, account.id);
+    if (account.tenant_id) {
+      db.prepare("UPDATE tenants SET status = 'active' WHERE id = ? AND status = 'pending_verification'").run(account.tenant_id);
+    }
+    db.prepare('UPDATE email_verifications SET consumed_at = ? WHERE id = ?').run(nowIso, row.id);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  res.json({ ok: true, login: account.login });
 });
 
 webApp.get('/send.html', (req, res) => {
@@ -1319,6 +1623,10 @@ webApp.use('/admin/api', requireSession);
 
 webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Fichier manquant (champ « file »)' });
+  if (!db.tenantHasFeature(req.session.tenantId, 'attachment_read_receipt')) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(403).json({ error: 'Envoi de pièce jointe non activé pour votre organisation' });
+  }
   const expiry = attachmentExpiry(
     req.body.expiresInDays === undefined ? DEFAULT_ATTACHMENT_EXPIRY_DAYS : req.body.expiresInDays
   );
@@ -1330,8 +1638,8 @@ webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
   try {
     const info = db.prepare(`
       INSERT INTO attachments
-        (token, original_name, stored_name, mime_type, size, owner_account_id, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (token, original_name, stored_name, mime_type, size, owner_account_id, tenant_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       req.file.filename,
       readableFilename(req.file.originalname || 'piece-jointe'),
@@ -1339,6 +1647,7 @@ webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
       req.file.mimetype || 'application/octet-stream',
       req.file.size,
       req.session.accountId,
+      req.session.tenantId,
       createdAt,
       expiry.expiresAt
     );
@@ -1359,8 +1668,11 @@ webApp.post('/admin/api/attachments', uploadSingle, (req, res) => {
 function attachmentForSession(req, id) {
   const attachment = db.prepare('SELECT * FROM attachments WHERE id = ?').get(Number(id));
   if (!attachment) return null;
-  if (req.session.role !== 'admin' && attachment.owner_account_id !== req.session.accountId) return null;
-  return attachment;
+  if (req.session.role === 'super_admin') return attachment;
+  if (req.session.role === 'admin') {
+    return attachment.tenant_id === req.session.tenantId ? attachment : null;
+  }
+  return attachment.owner_account_id === req.session.accountId ? attachment : null;
 }
 
 webApp.get('/admin/api/attachments/:id/preview', (req, res) => {
@@ -1391,11 +1703,12 @@ webApp.get('/admin/api/attachments/:id/opens', (req, res) => {
   });
 });
 
-webApp.get('/admin/api/keys', requireAdmin, (_req, res) => {
+webApp.get('/admin/api/keys', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 'tenant_id');
   const keys = db.prepare(
     `SELECT id, label, type, device_id, created_at, expires_at, revoked, last_used_at, last_seen_at
-     FROM keys ORDER BY id DESC`
-  ).all();
+     FROM keys ${scope.clause ? `WHERE ${scope.clause}` : ''} ORDER BY id DESC`
+  ).all(...scope.params);
   res.json(keys.map((k) => ({ ...k, expired: isExpired(k) })));
 });
 
@@ -1416,8 +1729,8 @@ webApp.post('/admin/api/keys', requireAdmin, (req, res) => {
     ? null
     : new Date(Date.now() + days * 24 * 3600 * 1000).toISOString();
   const info = db.prepare(
-    'INSERT INTO keys (label, type, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(label, type, sha256(token), isoNow(), expiresAt);
+    'INSERT INTO keys (label, type, token_hash, tenant_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(label, type, sha256(token), req.session.tenantId, isoNow(), expiresAt);
   res.status(201).json({
     key: {
       id: info.lastInsertRowid,
@@ -1431,22 +1744,32 @@ webApp.post('/admin/api/keys', requireAdmin, (req, res) => {
   });
 });
 
+// Vérifie qu'une clé appartient au tenant de la session (ou que la session
+// est super-admin, sans borne). Renvoie la ligne ou null.
+function keyForSession(req, id) {
+  const key = db.prepare('SELECT * FROM keys WHERE id = ?').get(Number(id));
+  if (!key) return null;
+  if (req.session.role !== 'super_admin' && key.tenant_id !== req.session.tenantId) return null;
+  return key;
+}
+
 webApp.post('/admin/api/keys/:id/revoke', requireAdmin, (req, res) => {
-  const info = db.prepare('UPDATE keys SET revoked = 1 WHERE id = ?').run(Number(req.params.id));
-  if (info.changes === 0) return res.status(404).json({ error: 'Clé introuvable' });
+  if (!keyForSession(req, req.params.id)) return res.status(404).json({ error: 'Clé introuvable' });
+  db.prepare('UPDATE keys SET revoked = 1 WHERE id = ?').run(Number(req.params.id));
   res.json({ ok: true });
 });
 
 webApp.delete('/admin/api/keys/:id', requireAdmin, (req, res) => {
-  const info = db.prepare('DELETE FROM keys WHERE id = ?').run(Number(req.params.id));
-  if (info.changes === 0) return res.status(404).json({ error: 'Clé introuvable' });
+  if (!keyForSession(req, req.params.id)) return res.status(404).json({ error: 'Clé introuvable' });
+  db.prepare('DELETE FROM keys WHERE id = ?').run(Number(req.params.id));
   res.json({ ok: true });
 });
 
-webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
+webApp.get('/admin/api/gateways', requireAdmin, (req, res) => {
   const cutoff = onlineCutoffIso();
-  const gwSettings = getGatewaySettings();
+  const gwSettings = getGatewaySettings(req.session.tenantId);
   const windowIso = new Date(Date.now() - gwSettings.quota_window_days * 24 * 60 * 60 * 1000).toISOString();
+  const scope = tenantScope(req, 'k.tenant_id');
   const gateways = db.prepare(`
     SELECT
       k.id, k.label, k.device_id, k.app_version, k.last_seen_at, k.last_used_at, k.sim_count,
@@ -1458,9 +1781,9 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
       (SELECT COUNT(DISTINCT m.recipient) FROM messages m
         WHERE m.claimed_by = k.id AND m.provider = 'internal' AND m.created_at >= ?)         AS recentDistinctRecipients
     FROM keys k
-    WHERE k.type = 'gateway'
+    WHERE k.type = 'gateway' ${scope.clause ? `AND ${scope.clause}` : ''}
     ORDER BY k.last_seen_at DESC
-  `).all(windowIso).map((g) => ({
+  `).all(windowIso, ...scope.params).map((g) => ({
     ...g,
     online: !!(g.last_seen_at && g.last_seen_at > cutoff),
     // Quota effectif : une passerelle à N lignes a N fois la capacité de
@@ -1472,7 +1795,8 @@ webApp.get('/admin/api/gateways', requireAdmin, (_req, res) => {
 
 // Détail par ligne (SIM) de chaque passerelle multi-SIM : numéro si l'APK a
 // pu le lire, et nombre de messages envoyés/remis/échoués sur cette ligne.
-webApp.get('/admin/api/gateway-lines', requireAdmin, (_req, res) => {
+webApp.get('/admin/api/gateway-lines', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 'messages.tenant_id');
   const rows = db.prepare(`
     SELECT claimed_by AS gateway_id, sim_slot,
       MAX(sim_number) AS sim_number,
@@ -1481,10 +1805,10 @@ webApp.get('/admin/api/gateway-lines', requireAdmin, (_req, res) => {
       SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)    AS failed
     FROM messages
-    WHERE claimed_by IS NOT NULL AND sim_slot IS NOT NULL
+    WHERE claimed_by IS NOT NULL AND sim_slot IS NOT NULL ${scope.clause ? `AND ${scope.clause}` : ''}
     GROUP BY claimed_by, sim_slot
     ORDER BY claimed_by ASC, sim_slot ASC
-  `).all();
+  `).all(...scope.params);
   const byGateway = {};
   for (const r of rows) {
     (byGateway[r.gateway_id] = byGateway[r.gateway_id] || []).push(r);
@@ -1492,16 +1816,16 @@ webApp.get('/admin/api/gateway-lines', requireAdmin, (_req, res) => {
   res.json(byGateway);
 });
 
-webApp.get('/admin/api/gateway-settings', requireAdmin, (_req, res) => {
-  res.json(getGatewaySettings());
+webApp.get('/admin/api/gateway-settings', requireAdmin, (req, res) => {
+  res.json(getGatewaySettings(req.session.tenantId));
 });
 
 webApp.post('/admin/api/gateway-settings', requireAdmin, (req, res) => {
   const body = req.body || {};
   const quotaCap = Math.max(1, parseInt(body.quotaCap, 10) || 180);
   const quotaWindowDays = Math.max(1, parseInt(body.quotaWindowDays, 10) || 30);
-  db.prepare('UPDATE gateway_settings SET quota_cap = ?, quota_window_days = ? WHERE id = 1')
-    .run(quotaCap, quotaWindowDays);
+  db.prepare('UPDATE gateway_settings SET quota_cap = ?, quota_window_days = ? WHERE tenant_id = ?')
+    .run(quotaCap, quotaWindowDays, req.session.tenantId);
   logConsole(req, 'config quota passerelles', `cap=${quotaCap} fenêtre=${quotaWindowDays}j`);
   res.json({ ok: true });
 });
@@ -1517,9 +1841,10 @@ webApp.get('/admin/api/messages/export', requireAdmin, (req, res) => {
      LEFT JOIN accounts acc ON acc.id = m.created_by
      LEFT JOIN groups g ON g.id = m.group_id
   `;
-  const rows = status
-    ? db.prepare(`${base} WHERE m.status = ? ORDER BY m.id ASC`).all(status)
-    : db.prepare(`${base} ORDER BY m.id ASC`).all();
+  const scope = tenantScope(req, 'm.tenant_id');
+  const cond = [...(status ? ['m.status = ?'] : []), ...(scope.clause ? [scope.clause] : [])];
+  const params = [...(status ? [status] : []), ...scope.params];
+  const rows = db.prepare(`${base} ${cond.length ? `WHERE ${cond.join(' AND ')}` : ''} ORDER BY m.id ASC`).all(...params);
   const esc = (v) => {
     const s = v == null ? '' : String(v);
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -1590,9 +1915,10 @@ webApp.get('/admin/api/messages', (req, res) => {
     cond.push('m.campaign_id IN (SELECT id FROM campaigns WHERE address_book_id = ?)');
     params.push(bookId);
   }
-  if (req.session.role !== 'admin') {
-    cond.push('m.group_id = ?');
-    params.push(req.session.groupId);
+  {
+    const scope = scopeConditions(req, 'm.tenant_id', 'm.group_id');
+    cond.push(...scope.clauses);
+    params.push(...scope.params);
   }
   const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM messages m ${where}`).get(...params).c;
@@ -1616,9 +1942,10 @@ webApp.get('/admin/api/messages/count', (req, res) => {
     cond.push('campaign_id IN (SELECT id FROM campaigns WHERE address_book_id = ?)');
     params.push(bookId);
   }
-  if (req.session.role !== 'admin') {
-    cond.push('group_id = ?');
-    params.push(req.session.groupId);
+  {
+    const scope = scopeConditions(req, 'tenant_id', 'group_id');
+    cond.push(...scope.clauses);
+    params.push(...scope.params);
   }
   const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
   const row = db.prepare(`SELECT COUNT(*) AS c FROM messages ${where}`).get(...params);
@@ -1634,9 +1961,10 @@ webApp.get('/admin/api/messages/counts', (req, res) => {
   if (recipients.length === 0) return res.json({ counts: {} });
   const cond = [`recipient IN (${recipients.map(() => '?').join(',')})`];
   const params = [...recipients];
-  if (req.session.role !== 'admin') {
-    cond.push('group_id = ?');
-    params.push(req.session.groupId);
+  {
+    const scope = scopeConditions(req, 'tenant_id', 'group_id');
+    cond.push(...scope.clauses);
+    params.push(...scope.params);
   }
   const rows = db.prepare(
     `SELECT recipient, COUNT(*) AS c FROM messages WHERE ${cond.join(' AND ')} GROUP BY recipient`
@@ -1647,13 +1975,17 @@ webApp.get('/admin/api/messages/counts', (req, res) => {
 });
 
 webApp.post('/admin/api/messages', async (req, res) => {
+  if (req.session.tenantId != null && !db.tenantHasFeature(req.session.tenantId, 'unit_send')) {
+    return res.status(403).json({ error: 'Envoi unitaire non activé pour votre organisation' });
+  }
   const recipient = String(req.body.recipient || '').trim();
   const message = String(req.body.message || '').trim();
   const withAttachment = messageBodyWithAttachment(
     req,
     message,
     req.body.attachmentId,
-    req.session.role === 'admin' ? null : { accountId: req.session.accountId }
+    req.session.role === 'user' ? { accountId: req.session.accountId } : null,
+    req.session.tenantId
   );
   if (!/^\+?[0-9]{4,15}$/.test(recipient)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -1663,20 +1995,22 @@ webApp.post('/admin/api/messages', async (req, res) => {
     return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   }
   if (withAttachment.error) return res.status(400).json({ error: withAttachment.error });
-  const groupId = req.session.role === 'admin' ? (Number(req.body.groupId) || null) : req.session.groupId;
+  const resolvedGroup = resolveGroupId(req, req.body.groupId);
+  if (resolvedGroup.error) return res.status(400).json({ error: resolvedGroup.error });
+  const groupId = resolvedGroup.groupId;
   const sched = scheduleInfo(req.body.scheduledAt);
   if (sched && sched.error) return res.status(400).json({ error: sched.error });
-  const provider = decideSmsProvider(1);
-  const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
+  const provider = decideSmsProvider(req.session.tenantId, 1);
+  const claimedBy = provider === 'internal' ? assignGateway(req.session.tenantId, recipient) : null;
   const status = sched ? 'scheduled' : 'pending';
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
   const info = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, scheduledAt, provider, claimedBy);
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, tenant_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(recipient, withAttachment.body, status, 'console', 'Console', withAttachment.attachment ? withAttachment.attachment.id : null, req.session.accountId, req.session.login, createdAt, groupId, req.session.tenantId, scheduledAt, provider, claimedBy);
   let finalStatus = status;
   if (!sched && provider === 'frizbi') {
-    await dispatchFrizbiBatch([{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: 'Ville d’Ivry' });
+    await dispatchFrizbiBatch(req.session.tenantId, [{ messageId: info.lastInsertRowid, recipient, body: withAttachment.body }], { title: tenantSenderTitle(req.session.tenantId) });
     finalStatus = db.prepare('SELECT status FROM messages WHERE id = ?').get(info.lastInsertRowid).status;
   }
   logConsole(req, 'envoi', null, 1);
@@ -1694,6 +2028,9 @@ webApp.post('/admin/api/messages', async (req, res) => {
 });
 
 webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
+  if (req.session.tenantId != null && !db.tenantHasFeature(req.session.tenantId, 'mass_send')) {
+    return res.status(403).json({ error: 'Envoi en masse non activé pour votre organisation' });
+  }
   const input = Array.isArray(req.body.messages) ? req.body.messages : [];
   const MAX_IMPORT = 5000;
   if (input.length === 0) return res.status(400).json({ error: 'Aucune ligne à importer' });
@@ -1723,11 +2060,13 @@ webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
     seen.add(key);
     toInsert.push([recipient, message]);
   }
-  const groupId = Number(req.body.groupId) || null;
+  const resolvedGroup = resolveGroupId(req, req.body.groupId);
+  if (resolvedGroup.error) return res.status(400).json({ error: resolvedGroup.error });
+  const groupId = resolvedGroup.groupId;
   const createdAt = isoNow();
-  const provider = decideSmsProvider(toInsert.length);
+  const provider = decideSmsProvider(req.session.tenantId, toInsert.length);
   const insert = db.prepare(
-    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, tenant_id, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   let created = 0;
   let unassignedCount = 0;
@@ -1736,9 +2075,9 @@ webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
     db.exec('BEGIN');
     try {
       for (const [recipient, message] of toInsert) {
-        const claimedBy = provider === 'internal' ? assignGateway(recipient) : null;
+        const claimedBy = provider === 'internal' ? assignGateway(req.session.tenantId, recipient) : null;
         if (provider === 'internal' && claimedBy == null) unassignedCount++;
-        const msgInfo = insert.run(recipient, message, 'pending', 'console', 'Console', null, req.session.accountId, req.session.login, createdAt, groupId, provider, claimedBy);
+        const msgInfo = insert.run(recipient, message, 'pending', 'console', 'Console', null, req.session.accountId, req.session.login, createdAt, groupId, req.session.tenantId, provider, claimedBy);
         dispatchEntries.push({ messageId: msgInfo.lastInsertRowid, recipient, body: message });
         created++;
       }
@@ -1749,7 +2088,7 @@ webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
     }
   }
   if (created > 0 && provider === 'frizbi') {
-    await dispatchFrizbiBatch(dispatchEntries, { title: 'Ville d’Ivry' });
+    await dispatchFrizbiBatch(req.session.tenantId, dispatchEntries, { title: tenantSenderTitle(req.session.tenantId) });
   }
   if (created > 0) logConsole(req, 'import', `${toInsert.length} ligne(s) lue(s)`, created);
   res.status(201).json({
@@ -1762,23 +2101,32 @@ webApp.post('/admin/api/messages/import', requireAdmin, async (req, res) => {
 
 webApp.get('/admin/api/console-logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  // console_logs n'a pas de tenant_id (journal historique) : un admin de
+  // tenant est borné aux logins de son propre tenant (+ 'admin' n'apparaît
+  // jamais pour lui, réservé au super-admin).
+  const scope = req.session.role === 'super_admin'
+    ? { clause: '', params: [] }
+    : { clause: 'login IN (SELECT login FROM accounts WHERE tenant_id = ?)', params: [req.session.tenantId] };
   const rows = db.prepare(`
     SELECT id, login, role, action, detail, count, ip, user_agent, created_at
     FROM console_logs
+    ${scope.clause ? `WHERE ${scope.clause}` : ''}
     ORDER BY id DESC LIMIT ?
-  `).all(limit);
+  `).all(...scope.params, limit);
   res.json(rows);
 });
 
 // ---------- Configuration sécurité : numéro admin pour les alertes SMS ----------
-webApp.get('/admin/api/security', requireAdmin, (_req, res) => {
+// Alerte plateforme (brute-force sur la connexion), pas une donnée de
+// tenant : réservée au super-admin.
+webApp.get('/admin/api/security', requireSuperAdmin, (_req, res) => {
   res.json({
     adminPhone: getAdminPhone(),
     alertThreshold: BRUTE_FORCE_ALERT_THRESHOLD
   });
 });
 
-webApp.post('/admin/api/security/phone', requireAdmin, (req, res) => {
+webApp.post('/admin/api/security/phone', requireSuperAdmin, (req, res) => {
   const phone = String((req.body || {}).phone || '').trim();
   if (phone !== '' && !/^\+?[0-9]{4,15}$/.test(phone)) {
     return res.status(400).json({ error: 'Numéro de téléphone invalide' });
@@ -1788,9 +2136,9 @@ webApp.post('/admin/api/security/phone', requireAdmin, (req, res) => {
   res.json({ ok: true, adminPhone: getAdminPhone() });
 });
 
-// ---------- Configuration Frizbi (SMS externe) ----------
-webApp.get('/admin/api/frizbi-settings', requireAdmin, (_req, res) => {
-  const s = getFrizbiSettings();
+// ---------- Configuration Frizbi (SMS externe) — fonctionnalité par tenant ----------
+webApp.get('/admin/api/frizbi-settings', requireAdmin, (req, res) => {
+  const s = getFrizbiSettings(req.session.tenantId);
   res.json({ ...s, client_secret: s.client_secret ? '••••••••' : '' });
 });
 
@@ -1800,11 +2148,17 @@ webApp.post('/admin/api/frizbi-settings', requireAdmin, (req, res) => {
   const bothThreshold = Math.max(1, parseInt(body.bothThreshold, 10) || 10);
   const apiUrl = String(body.apiUrl || '').trim();
   const clientId = String(body.clientId || '').trim();
-  const senderId = String(body.senderId || '').trim().slice(0, 11) || 'IVRY';
+  const existing = db.prepare('SELECT client_secret, sender_id FROM frizbi_settings WHERE tenant_id = ?').get(req.session.tenantId);
+  // Pas de valeur d'expéditeur générique imposée : chaque tenant a la sienne
+  // (l'ancienne valeur si déjà réglée, sinon vide — Frizbi refusera l'appel
+  // tant qu'elle n'est pas renseignée, ce qui est le comportement voulu).
+  const senderId = String(body.senderId || '').trim().slice(0, 11) || (existing ? existing.sender_id : '');
   if ((mode === 'frizbi' || mode === 'both') && (!apiUrl || !clientId)) {
     return res.status(400).json({ error: 'URL de l’API et Client ID requis pour activer Frizbi' });
   }
-  const existing = db.prepare('SELECT client_secret FROM frizbi_settings WHERE id = 1').get();
+  if ((mode === 'frizbi' || mode === 'both') && !senderId) {
+    return res.status(400).json({ error: 'Identifiant d’expéditeur requis pour activer Frizbi (11 caractères alphanumériques max)' });
+  }
   const rawSecret = body.clientSecret;
   const clientSecret = (rawSecret === '••••••••' || rawSecret === undefined) && existing
     ? existing.client_secret
@@ -1812,15 +2166,15 @@ webApp.post('/admin/api/frizbi-settings', requireAdmin, (req, res) => {
   db.prepare(`
     UPDATE frizbi_settings
     SET mode = ?, both_threshold = ?, api_url = ?, client_id = ?, client_secret = ?, sender_id = ?, updated_at = ?
-    WHERE id = 1
-  `).run(mode, bothThreshold, apiUrl, clientId, clientSecret, senderId, isoNow());
+    WHERE tenant_id = ?
+  `).run(mode, bothThreshold, apiUrl, clientId, clientSecret, senderId, isoNow(), req.session.tenantId);
   logConsole(req, 'config Frizbi', `mode=${mode} seuil=${bothThreshold}`);
   res.json({ ok: true });
 });
 
 webApp.post('/admin/api/frizbi/test-connection', requireAdmin, async (req, res) => {
   try {
-    const existing = db.prepare('SELECT client_secret FROM frizbi_settings WHERE id = 1').get();
+    const existing = db.prepare('SELECT client_secret FROM frizbi_settings WHERE tenant_id = ?').get(req.session.tenantId);
     const body = req.body || {};
     const clientSecret = (body.clientSecret === '••••••••' || !body.clientSecret) && existing
       ? existing.client_secret
@@ -1839,7 +2193,7 @@ webApp.post('/admin/api/frizbi/test-connection', requireAdmin, async (req, res) 
 webApp.post('/admin/api/frizbi/send-test', requireAdmin, async (req, res) => {
   const mobile = normalizePhone(String((req.body || {}).mobile || ''));
   if (!/^\+?[0-9]{4,15}$/.test(mobile)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
-  const settings = getFrizbiSettings();
+  const settings = getFrizbiSettings(req.session.tenantId);
   if (!settings.api_url || !settings.client_id || !settings.client_secret) {
     return res.status(400).json({ error: 'Paramètres Frizbi incomplets' });
   }
@@ -1861,11 +2215,13 @@ webApp.post('/admin/api/frizbi/send-test', requireAdmin, async (req, res) => {
 // dans la doc V2.3) et de vérifier que les statuts sont bien appliqués.
 webApp.get('/admin/api/frizbi/events', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const scope = tenantScope(req, 'm.tenant_id');
   const rows = db.prepare(`
     SELECT e.*, m.recipient, m.status AS message_status
     FROM frizbi_events e LEFT JOIN messages m ON m.id = e.message_id
+    ${scope.clause ? `WHERE ${scope.clause}` : ''}
     ORDER BY e.id DESC LIMIT ?
-  `).all(limit);
+  `).all(...scope.params, limit);
   res.json(rows);
 });
 
@@ -1921,19 +2277,34 @@ const mail2smsBoxSelect = `
   FROM mail2sms_boxes
 `;
 
-webApp.get('/admin/api/mail2sms', requireAdmin, (_req, res) => {
-  const boxes = db.prepare(`${mail2smsBoxSelect} ORDER BY id ASC`).all();
+// Une boîte doit appartenir au tenant de la session (super-admin : pas de
+// borne — utilisé uniquement pour le diagnostic cross-tenant).
+function mail2smsBoxForSession(req, id) {
+  const box = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(Number(id));
+  if (!box) return null;
+  if (req.session.role !== 'super_admin' && box.tenant_id !== req.session.tenantId) return null;
+  return box;
+}
+
+webApp.get('/admin/api/mail2sms', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 'tenant_id');
+  const boxes = db.prepare(`${mail2smsBoxSelect} ${scope.clause ? `WHERE ${scope.clause}` : ''} ORDER BY id ASC`).all(...scope.params);
+  const emailScope = tenantScope(req, 'b.tenant_id');
   const emails = db.prepare(`
     SELECT e.id, e.box_id, b.name AS box_name, e.message_uid, e.from_addr, e.subject,
       e.received_at, e.processed_at, e.status, e.error, e.recipient_count, e.message_count,
       e.reply_attempts, e.reply_sent_at, e.reply_error
     FROM mail2sms_emails e JOIN mail2sms_boxes b ON b.id = e.box_id
+    ${emailScope.clause ? `WHERE ${emailScope.clause}` : ''}
     ORDER BY e.id DESC LIMIT 50
-  `).all();
+  `).all(...emailScope.params);
   res.json({ boxes, emails });
 });
 
 webApp.post('/admin/api/mail2sms', requireAdmin, (req, res) => {
+  if (req.session.tenantId != null && !db.tenantHasFeature(req.session.tenantId, 'mail2sms')) {
+    return res.status(403).json({ error: 'Mail → SMS non activé pour votre organisation' });
+  }
   const box = mail2smsBoxFromBody(req.body, true);
   const error = mail2smsValidation(box, true);
   if (error) return res.status(400).json({ error });
@@ -1942,20 +2313,20 @@ webApp.post('/admin/api/mail2sms', requireAdmin, (req, res) => {
       (name, email, imap_host, imap_port, imap_secure, imap_folder, login, password,
        allowed_senders, reply_enabled, reply_delay_min, reply_subject,
        smtp_host, smtp_port, smtp_secure, smtp_login, smtp_password,
-       scan_interval_sec, processed_folder, active, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       scan_interval_sec, processed_folder, active, tenant_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     box.name, box.email, box.imap_host, box.imap_port, box.imap_secure, box.imap_folder, box.login, box.password,
     box.allowed_senders, box.reply_enabled, box.reply_delay_min, box.reply_subject,
     box.smtp_host, box.smtp_port, box.smtp_secure, box.smtp_login, box.smtp_password,
-    box.scan_interval_sec, box.processed_folder, box.active, isoNow()
+    box.scan_interval_sec, box.processed_folder, box.active, req.session.tenantId, isoNow()
   );
   res.status(201).json({ id: info.lastInsertRowid });
 });
 
 webApp.patch('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM mail2sms_boxes WHERE id = ?').get(id);
+  const existing = mail2smsBoxForSession(req, id);
   if (!existing) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   const box = mail2smsBoxFromBody(req.body, false);
   // Mot de passe vide = conserve l'actuel
@@ -1981,13 +2352,14 @@ webApp.patch('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
 
 webApp.delete('/admin/api/mail2sms/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const info = db.prepare('DELETE FROM mail2sms_boxes WHERE id = ?').run(id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
+  if (!mail2smsBoxForSession(req, id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
+  db.prepare('DELETE FROM mail2sms_boxes WHERE id = ?').run(id);
   db.prepare('DELETE FROM mail2sms_emails WHERE box_id = ?').run(id);
   res.json({ ok: true });
 });
 
 webApp.post('/admin/api/mail2sms/:id/test', requireAdmin, async (req, res) => {
+  if (!mail2smsBoxForSession(req, req.params.id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   try {
     const result = await mail2sms.testBox(Number(req.params.id));
     res.json({ ok: true, ...result });
@@ -1997,6 +2369,7 @@ webApp.post('/admin/api/mail2sms/:id/test', requireAdmin, async (req, res) => {
 });
 
 webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, (req, res) => {
+  if (!mail2smsBoxForSession(req, req.params.id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   try {
     // Le relevé s'exécute en arrière-plan : la requête répond immédiatement
     // (pas de timeout 504 du proxy) et le JS suit la progression via
@@ -2009,12 +2382,16 @@ webApp.post('/admin/api/mail2sms/:id/scan', requireAdmin, (req, res) => {
 });
 
 webApp.get('/admin/api/mail2sms/:id/scan-status', requireAdmin, (req, res) => {
+  if (!mail2smsBoxForSession(req, req.params.id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   const job = mail2sms.getScanJob(Number(req.params.id));
   if (!job) return res.status(404).json({ error: 'Aucun relevé en cours ou terminé pour cette boîte' });
   res.json(job);
 });
 
-webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, (req, res) => {
+// Déclenche un relevé de toutes les boîtes, tous tenants confondus (chaque
+// boîte reste filtrée par sa propre fonctionnalité mail2sms côté mail2sms.js)
+// : action globale, réservée au super-admin.
+webApp.post('/admin/api/mail2sms/scan-all', requireSuperAdmin, (req, res) => {
   try {
     mail2sms.startScanAll();
     res.json({ ok: true });
@@ -2024,6 +2401,7 @@ webApp.post('/admin/api/mail2sms/scan-all', requireAdmin, (req, res) => {
 });
 
 webApp.post('/admin/api/mail2sms/:id/test-smtp', requireAdmin, async (req, res) => {
+  if (!mail2smsBoxForSession(req, req.params.id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   try {
     const result = await mail2sms.testSmtp(Number(req.params.id));
     res.json({ ok: true, ...result });
@@ -2033,6 +2411,7 @@ webApp.post('/admin/api/mail2sms/:id/test-smtp', requireAdmin, async (req, res) 
 });
 
 webApp.post('/admin/api/mail2sms/:id/retry-reply/:emailId', requireAdmin, (req, res) => {
+  if (!mail2smsBoxForSession(req, req.params.id)) return res.status(404).json({ error: 'Boîte mail2sms introuvable' });
   const info = db.prepare(
     'UPDATE mail2sms_emails SET reply_attempts = 0, reply_error = NULL WHERE id = ? AND box_id = ?'
   ).run(Number(req.params.emailId), Number(req.params.id));
@@ -2051,17 +2430,18 @@ function normalizeSourceUrl(url) {
 
 // Lecture directe en base (utilisée quand la source est cette instance) :
 // mêmes données que les routes /api/v1/books.
-function listRemoteBooksLocal() {
+function listRemoteBooksLocal(tenantId) {
   return db.prepare(`
     SELECT ab.id, ab.name, ab.group_id, ab.created_at, g.name AS group_name,
       (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count
     FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
+    WHERE ab.tenant_id = ?
     ORDER BY ab.id ASC
-  `).all();
+  `).all(tenantId);
 }
 
-function getRemoteBookContactsLocal(id) {
-  const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(Number(id));
+function getRemoteBookContactsLocal(tenantId, id) {
+  const book = db.prepare('SELECT * FROM address_books WHERE id = ? AND tenant_id = ?').get(Number(id), tenantId);
   if (!book) return null;
   const group = book.group_id ? db.prepare('SELECT name FROM groups WHERE id = ?').get(book.group_id) : null;
   const contacts = db.prepare(`
@@ -2109,7 +2489,7 @@ async function fetchRemote(url, apiKey) {
 }
 
 async function readRemoteBooks(source) {
-  if (isSelfInstance(source.url)) return listRemoteBooksLocal();
+  if (isSelfInstance(source.url)) return listRemoteBooksLocal(source.tenant_id);
   const base = normalizeSourceUrl(source.url);
   const books = await fetchRemote(`${base}/api/v1/books`, source.api_key);
   if (!Array.isArray(books)) throw new Error('Réponse distante invalide');
@@ -2118,7 +2498,7 @@ async function readRemoteBooks(source) {
 
 async function readRemoteBook(source, remoteBookId) {
   if (isSelfInstance(source.url)) {
-    const data = getRemoteBookContactsLocal(remoteBookId);
+    const data = getRemoteBookContactsLocal(source.tenant_id, remoteBookId);
     if (!data) throw new Error('Carnet distant introuvable');
     return data;
   }
@@ -2140,8 +2520,8 @@ async function syncOneBook(syncBook) {
     let localBookId = syncBook.local_book_id;
     if (!localBookId) {
       const info = db.prepare(
-        'INSERT INTO address_books (group_id, name, created_at) VALUES (NULL, ?, ?)'
-      ).run(data.name || syncBook.remote_book_name, isoNow());
+        'INSERT INTO address_books (group_id, tenant_id, name, created_at) VALUES (NULL, ?, ?, ?)'
+      ).run(source.tenant_id, data.name || syncBook.remote_book_name, isoNow());
       localBookId = info.lastInsertRowid;
       db.prepare('UPDATE sync_books SET local_book_id = ? WHERE id = ?').run(localBookId, syncBook.id);
     }
@@ -2200,17 +2580,31 @@ async function runScheduledSync() {
 setInterval(() => { runScheduledSync().catch(() => {}); }, 60 * 60 * 1000);
 setTimeout(() => { runScheduledSync().catch(() => {}); }, 30 * 1000);
 
-webApp.get('/admin/api/sync-sources', requireAdmin, (_req, res) => {
+// Une source (et ses carnets synchronisés) doit appartenir au tenant de la
+// session (super-admin : pas de borne).
+function syncSourceForSession(req, id) {
+  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(id));
+  if (!source) return null;
+  if (req.session.role !== 'super_admin' && source.tenant_id !== req.session.tenantId) return null;
+  return source;
+}
+
+webApp.get('/admin/api/sync-sources', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 's.tenant_id');
   const sources = db.prepare(`
     SELECT s.*, (SELECT COUNT(*) FROM sync_books sb WHERE sb.source_id = s.id) AS book_count
-    FROM sync_sources s ORDER BY s.id ASC
-  `).all();
+    FROM sync_sources s ${scope.clause ? `WHERE ${scope.clause}` : ''} ORDER BY s.id ASC
+  `).all(...scope.params);
+  const bookScope = tenantScope(req, 's.tenant_id');
   const books = db.prepare(`
     SELECT sb.*, ab.name AS local_book_name,
       (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = sb.local_book_id) AS contact_count
-    FROM sync_books sb LEFT JOIN address_books ab ON ab.id = sb.local_book_id
+    FROM sync_books sb
+    JOIN sync_sources s ON s.id = sb.source_id
+    LEFT JOIN address_books ab ON ab.id = sb.local_book_id
+    ${bookScope.clause ? `WHERE ${bookScope.clause}` : ''}
     ORDER BY sb.id ASC
-  `).all();
+  `).all(...bookScope.params);
   res.json({ sources, books });
 });
 
@@ -2221,13 +2615,14 @@ webApp.post('/admin/api/sync-sources', requireAdmin, (req, res) => {
   if (!label) return res.status(400).json({ error: 'Libellé requis' });
   if (!/^https?:\/\/.+/.test(url)) return res.status(400).json({ error: 'URL invalide (http:// ou https:// attendu)' });
   if (!apiKey) return res.status(400).json({ error: 'Clé d’authentification requise' });
-  const info = db.prepare('INSERT INTO sync_sources (label, url, api_key, created_at) VALUES (?, ?, ?, ?)')
-    .run(label, url, apiKey, isoNow());
+  const info = db.prepare('INSERT INTO sync_sources (label, url, api_key, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(label, url, apiKey, req.session.tenantId, isoNow());
   res.status(201).json({ id: info.lastInsertRowid, label, url, created_at: isoNow(), book_count: 0 });
 });
 
 webApp.delete('/admin/api/sync-sources/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
+  if (!syncSourceForSession(req, id)) return res.status(404).json({ error: 'Source introuvable' });
   db.exec('BEGIN');
   try {
     const syncBooks = db.prepare('SELECT * FROM sync_books WHERE source_id = ?').all(id);
@@ -2249,7 +2644,7 @@ webApp.delete('/admin/api/sync-sources/:id', requireAdmin, (req, res) => {
 
 webApp.post('/admin/api/sync-sources/:id/browse', requireAdmin, async (req, res) => {
   try {
-    const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+    const source = syncSourceForSession(req, req.params.id);
     if (!source) return res.status(404).json({ error: 'Source introuvable' });
     const books = await readRemoteBooks(source);
     const synced = new Set(
@@ -2272,10 +2667,10 @@ webApp.post('/admin/api/sync-sources/:id/browse', requireAdmin, async (req, res)
 });
 
 webApp.post('/admin/api/sync-sources/:id/test', requireAdmin, async (req, res) => {
-  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+  const source = syncSourceForSession(req, req.params.id);
   if (!source) return res.status(404).json({ error: 'Source introuvable' });
   if (isSelfInstance(source.url)) {
-    const books = listRemoteBooksLocal();
+    const books = listRemoteBooksLocal(source.tenant_id);
     return res.json({
       ok: true,
       self: true,
@@ -2299,7 +2694,7 @@ webApp.post('/admin/api/sync-sources/:id/test', requireAdmin, async (req, res) =
 });
 
 webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) => {
-  const source = db.prepare('SELECT * FROM sync_sources WHERE id = ?').get(Number(req.params.id));
+  const source = syncSourceForSession(req, req.params.id);
   if (!source) return res.status(404).json({ error: 'Source introuvable' });
   const bookIds = Array.isArray(req.body.bookIds)
     ? req.body.bookIds.map(Number).filter(Number.isInteger)
@@ -2324,8 +2719,8 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
     db.exec('BEGIN');
     try {
       const name = data.name || `Carnet distant ${remoteId}`;
-      const info = db.prepare('INSERT INTO address_books (group_id, name, created_at) VALUES (NULL, ?, ?)')
-        .run(name, isoNow());
+      const info = db.prepare('INSERT INTO address_books (group_id, tenant_id, name, created_at) VALUES (NULL, ?, ?, ?)')
+        .run(source.tenant_id, name, isoNow());
       localBookId = info.lastInsertRowid;
       const insert = db.prepare(
         'INSERT INTO contacts (address_book_id, first_name, last_name, entity, service, direction, imei, puk, line_status, plan, device_terminal, secondary_line, phone, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -2359,8 +2754,15 @@ webApp.post('/admin/api/sync-sources/:id/books', requireAdmin, async (req, res) 
   res.status(201).json({ results });
 });
 
+// Un sync_book n'a pas de tenant_id direct : il hérite de celui de sa source.
+function syncBookForSession(req, id) {
+  const syncBook = db.prepare('SELECT * FROM sync_books WHERE id = ?').get(Number(id));
+  if (!syncBook) return null;
+  return syncSourceForSession(req, syncBook.source_id) ? syncBook : null;
+}
+
 webApp.post('/admin/api/sync-books/:id/run', requireAdmin, async (req, res) => {
-  const syncBook = db.prepare('SELECT * FROM sync_books WHERE id = ?').get(Number(req.params.id));
+  const syncBook = syncBookForSession(req, req.params.id);
   if (!syncBook) return res.status(404).json({ error: 'Synchronisation introuvable' });
   try {
     const result = await syncOneBook(syncBook);
@@ -2373,7 +2775,7 @@ webApp.post('/admin/api/sync-books/:id/run', requireAdmin, async (req, res) => {
 });
 
 webApp.delete('/admin/api/sync-books/:id', requireAdmin, (req, res) => {
-  const syncBook = db.prepare('SELECT * FROM sync_books WHERE id = ?').get(Number(req.params.id));
+  const syncBook = syncBookForSession(req, req.params.id);
   if (!syncBook) return res.status(404).json({ error: 'Synchronisation introuvable' });
   db.exec('BEGIN');
   try {
@@ -2397,7 +2799,7 @@ const CANCELABLE = ['scheduled', 'pending', 'sending', 'sent'];
 webApp.post('/admin/api/messages/:id/cancel', (req, res) => {
   const message = db.prepare('SELECT * FROM messages WHERE id = ?').get(Number(req.params.id));
   if (!message) return res.status(404).json({ error: 'Message introuvable' });
-  if (req.session.role !== 'admin' && message.group_id !== req.session.groupId) {
+  if (!canAccessRow(req, message)) {
     return res.status(404).json({ error: 'Message introuvable' });
   }
   if (!CANCELABLE.includes(message.status)) {
@@ -2413,7 +2815,7 @@ webApp.post('/admin/api/messages/:id/cancel', (req, res) => {
 webApp.post('/admin/api/campaigns/:campaignId/cancel', (req, res) => {
   const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(Number(req.params.campaignId));
   if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
-  if (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId) {
+  if (!canAccessRow(req, campaign)) {
     return res.status(404).json({ error: 'Campagne introuvable' });
   }
   const now = isoNow();
@@ -2427,21 +2829,25 @@ webApp.post('/admin/api/campaigns/:campaignId/cancel', (req, res) => {
 
 webApp.get('/admin/api/logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const scope = tenantScope(req, 'k.tenant_id');
   const rows = db.prepare(`
     SELECT l.id, l.key_id, l.device_id, l.reports, l.claimed, l.created_at, k.label AS gateway_label
     FROM gateway_logs l LEFT JOIN keys k ON k.id = l.key_id
+    ${scope.clause ? `WHERE ${scope.clause}` : ''}
     ORDER BY l.id DESC LIMIT ?
-  `).all(limit);
+  `).all(...scope.params, limit);
   res.json(rows);
 });
 
 webApp.get('/admin/api/auth-logs', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10) || 100, 1), 500);
+  const scope = tenantScope(req, 'k.tenant_id');
   const rows = db.prepare(`
     SELECT a.id, a.key_id, a.ip, a.reason, a.created_at, k.label AS gateway_label
     FROM auth_logs a LEFT JOIN keys k ON k.id = a.key_id
+    ${scope.clause ? `WHERE ${scope.clause}` : ''}
     ORDER BY a.id DESC LIMIT ?
-  `).all(limit);
+  `).all(...scope.params, limit);
   res.json(rows);
 });
 
@@ -2451,10 +2857,15 @@ const accountFields = `
   g.name AS group_name
 `;
 
-webApp.get('/admin/api/accounts', requireAdmin, (_req, res) => {
+webApp.get('/admin/api/accounts', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 'a.tenant_id');
+  // Le compte pivot du super-admin (login vide) n'est pas un compte de
+  // tenant : il ne doit jamais apparaître dans cette liste.
+  const cond = ["a.login <> ''", ...(scope.clause ? [scope.clause] : [])];
   const rows = db.prepare(
-    `SELECT ${accountFields} FROM accounts a LEFT JOIN groups g ON g.id = a.group_id ORDER BY a.id ASC`
-  ).all();
+    `SELECT ${accountFields} FROM accounts a LEFT JOIN groups g ON g.id = a.group_id
+     WHERE ${cond.join(' AND ')} ORDER BY a.id ASC`
+  ).all(...scope.params);
   res.json(rows);
 });
 
@@ -2477,19 +2888,38 @@ webApp.post('/admin/api/accounts', requireAdmin, (req, res) => {
   if (db.prepare('SELECT 1 FROM accounts WHERE login = ?').get(login)) {
     return res.status(409).json({ error: 'Cet identifiant existe déjà' });
   }
-  if (groupId && !db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
-    return res.status(400).json({ error: 'Groupe introuvable' });
+  // Un admin de tenant ne peut rattacher le compte qu'à un groupe de son
+  // propre tenant ; le super-admin peut cibler un autre tenant via le corps
+  // de la requête, sinon celui de sa session (l'organisation historique).
+  const tenantId = req.session.role === 'super_admin'
+    ? (Number(req.body.tenantId) || req.session.tenantId)
+    : req.session.tenantId;
+  if (groupId) {
+    const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+    if (!group || (tenantId != null && group.tenant_id !== tenantId)) {
+      return res.status(400).json({ error: 'Groupe introuvable' });
+    }
   }
   const info = db.prepare(
-    'INSERT INTO accounts (login, password_hash, role, group_id, email, is_group_manager, disabled, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
-  ).run(login, hashPassword(password), role, groupId, email, isGroupManager, isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, login, role, group_id: groupId, email, is_group_manager: isGroupManager, disabled: 0, created_at: isoNow() });
+    'INSERT INTO accounts (login, password_hash, role, group_id, tenant_id, email, is_group_manager, email_verified_at, disabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
+  ).run(login, hashPassword(password), role, groupId, tenantId, email, isGroupManager, isoNow(), isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, login, role, group_id: groupId, tenant_id: tenantId, email, is_group_manager: isGroupManager, disabled: 0, created_at: isoNow() });
 });
+
+// Un compte est accessible à un admin de tenant seulement s'il appartient à
+// son tenant (super-admin : sans borne, mais pas utilisé pour éditer le
+// compte pivot lui-même via cette route).
+function accountForSession(req, id) {
+  const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(Number(id));
+  if (!row) return null;
+  if (req.session.role !== 'super_admin' && row.tenant_id !== req.session.tenantId) return null;
+  return row;
+}
 
 webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const body = req.body || {};
-  const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+  const row = accountForSession(req, id);
   if (!row) return res.status(404).json({ error: 'Compte introuvable' });
 
   const sets = [];
@@ -2504,8 +2934,11 @@ webApp.patch('/admin/api/accounts/:id', requireAdmin, (req, res) => {
   }
   if (body.groupId !== undefined) {
     const groupId = Number(body.groupId) || null;
-    if (groupId && !db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
-      return res.status(400).json({ error: 'Groupe introuvable' });
+    if (groupId) {
+      const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+      if (!group || group.tenant_id !== row.tenant_id) {
+        return res.status(400).json({ error: 'Groupe introuvable' });
+      }
     }
     sets.push('group_id = ?');
     params.push(groupId);
@@ -2539,9 +2972,9 @@ webApp.post('/admin/api/accounts/:id/password', requireAdmin, (req, res) => {
   if (password.length < PASSWORD_MIN_LENGTH) {
     return res.status(400).json({ error: `Mot de passe trop court (${PASSWORD_MIN_LENGTH} caractères minimum)` });
   }
-  const info = db.prepare('UPDATE accounts SET password_hash = ? WHERE id = ?')
+  if (!accountForSession(req, req.params.id)) return res.status(404).json({ error: 'Compte introuvable' });
+  db.prepare('UPDATE accounts SET password_hash = ? WHERE id = ?')
     .run(hashPassword(password), Number(req.params.id));
-  if (info.changes === 0) return res.status(404).json({ error: 'Compte introuvable' });
   res.json({ ok: true });
 });
 
@@ -2550,9 +2983,9 @@ webApp.post('/admin/api/accounts/:id/disable', requireAdmin, (req, res) => {
   if (req.session.accountId === id) {
     return res.status(400).json({ error: 'Impossible de désactiver le compte avec lequel vous êtes connecté' });
   }
+  if (!accountForSession(req, id)) return res.status(404).json({ error: 'Compte introuvable' });
   const disabled = (req.body || {}).disabled ? 1 : 0;
-  const info = db.prepare('UPDATE accounts SET disabled = ? WHERE id = ?').run(disabled, id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Compte introuvable' });
+  db.prepare('UPDATE accounts SET disabled = ? WHERE id = ?').run(disabled, id);
   res.json({ ok: true });
 });
 
@@ -2561,54 +2994,67 @@ webApp.delete('/admin/api/accounts/:id', requireAdmin, (req, res) => {
   if (req.session.accountId === id) {
     return res.status(400).json({ error: 'Impossible de supprimer le compte avec lequel vous êtes connecté' });
   }
-  const info = db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Compte introuvable' });
+  if (!accountForSession(req, id)) return res.status(404).json({ error: 'Compte introuvable' });
+  db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
   res.json({ ok: true });
 });
 
 // ---------- Groupes (admin) ----------
-webApp.get('/admin/api/groups', requireAdmin, (_req, res) => {
+function groupForSession(req, id) {
+  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(Number(id));
+  if (!group) return null;
+  if (req.session.role !== 'super_admin' && group.tenant_id !== req.session.tenantId) return null;
+  return group;
+}
+
+webApp.get('/admin/api/groups', requireAdmin, (req, res) => {
+  const scope = tenantScope(req, 'g.tenant_id');
   const rows = db.prepare(`
     SELECT g.*,
       (SELECT COUNT(*) FROM accounts a WHERE a.group_id = g.id) AS member_count,
       (SELECT COUNT(*) FROM accounts a WHERE a.group_id = g.id AND a.is_group_manager = 1) AS manager_count,
       (SELECT GROUP_CONCAT(a.login, ', ') FROM accounts a WHERE a.group_id = g.id AND a.is_group_manager = 1) AS managers,
       (SELECT COUNT(*) FROM messages m WHERE m.group_id = g.id) AS message_count
-    FROM groups g ORDER BY g.id ASC
-  `).all();
+    FROM groups g ${scope.clause ? `WHERE ${scope.clause}` : ''} ORDER BY g.id ASC
+  `).all(...scope.params);
   res.json(rows);
 });
 
 webApp.post('/admin/api/groups', requireAdmin, (req, res) => {
   const name = String((req.body || {}).name || '').trim();
+  const tenantId = req.session.role === 'super_admin'
+    ? (Number(req.body.tenantId) || req.session.tenantId)
+    : req.session.tenantId;
+  if (!tenantId) return res.status(400).json({ error: 'Tenant requis' });
   if (name.length < 2 || name.length > 64) {
     return res.status(400).json({ error: 'Nom de groupe invalide (2 à 64 caractères)' });
   }
-  if (db.prepare('SELECT 1 FROM groups WHERE name = ?').get(name)) {
+  if (db.prepare('SELECT 1 FROM groups WHERE tenant_id = ? AND name = ?').get(tenantId, name)) {
     return res.status(409).json({ error: 'Ce nom de groupe existe déjà' });
   }
-  const info = db.prepare('INSERT INTO groups (name, created_at) VALUES (?, ?)')
-    .run(name, isoNow());
-  res.status(201).json({ id: info.lastInsertRowid, name, created_at: isoNow(), member_count: 0, message_count: 0 });
+  const info = db.prepare('INSERT INTO groups (tenant_id, name, created_at) VALUES (?, ?, ?)')
+    .run(tenantId, name, isoNow());
+  res.status(201).json({ id: info.lastInsertRowid, name, tenant_id: tenantId, created_at: isoNow(), member_count: 0, message_count: 0 });
 });
 
 webApp.patch('/admin/api/groups/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
+  const existing = groupForSession(req, id);
+  if (!existing) return res.status(404).json({ error: 'Groupe introuvable' });
   const name = String((req.body || {}).name || '').trim();
   if (name.length < 2 || name.length > 64) {
     return res.status(400).json({ error: 'Nom de groupe invalide (2 à 64 caractères)' });
   }
-  const dup = db.prepare('SELECT 1 FROM groups WHERE name = ? AND id <> ?').get(name, id);
+  const dup = db.prepare('SELECT 1 FROM groups WHERE tenant_id = ? AND name = ? AND id <> ?').get(existing.tenant_id, name, id);
   if (dup) return res.status(409).json({ error: 'Ce nom de groupe existe déjà' });
-  const info = db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+  db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id);
   res.json({ ok: true });
 });
 
 webApp.delete('/admin/api/groups/:id', requireAdmin, (req, res) => {
   const id = Number(req.params.id);
-  const info = db.prepare('DELETE FROM groups WHERE id = ?').run(id);
-  if (info.changes === 0) return res.status(404).json({ error: 'Groupe introuvable' });
+  if (!groupForSession(req, id)) return res.status(404).json({ error: 'Groupe introuvable' });
+  db.prepare('DELETE FROM groups WHERE id = ?').run(id);
   db.prepare('UPDATE accounts SET group_id = NULL WHERE group_id = ?').run(id);
   db.prepare('UPDATE messages SET group_id = NULL WHERE group_id = ?').run(id);
   db.prepare('DELETE FROM contacts WHERE address_book_id IN (SELECT id FROM address_books WHERE group_id = ?)').run(id);
@@ -2621,45 +3067,44 @@ function requireGroupBook(req, res) {
   const bookId = Number(req.params.bookId);
   const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
   if (!book) return { error: 'Carnet introuvable' };
-  if (req.session.role !== 'admin' && book.group_id !== req.session.groupId) {
+  if (!canAccessRow(req, book)) {
     return { error: 'Carnet introuvable' };
   }
   return { book };
 }
 
 webApp.get('/admin/api/address-books', (req, res) => {
-  const scope = req.session.role === 'admin' ? '' : 'WHERE ab.group_id = ?';
-  const params = req.session.role === 'admin' ? [] : [req.session.groupId];
+  const scope = scopeConditions(req, 'ab.tenant_id', 'ab.group_id');
+  const where = scope.clauses.length ? `WHERE ${scope.clauses.join(' AND ')}` : '';
   const books = db.prepare(`
     SELECT ab.*, g.name AS group_name,
       (SELECT COUNT(*) FROM contacts c WHERE c.address_book_id = ab.id) AS contact_count,
       (SELECT COUNT(*) FROM messages m JOIN campaigns c2 ON c2.id = m.campaign_id
         WHERE c2.address_book_id = ab.id) AS message_count
     FROM address_books ab LEFT JOIN groups g ON g.id = ab.group_id
-    ${scope} ORDER BY ab.id ASC
-  `).all(...params);
+    ${where} ORDER BY ab.id ASC
+  `).all(...scope.params);
   res.json(books);
 });
 
 webApp.post('/admin/api/address-books', (req, res) => {
   const name = String((req.body || {}).name || '').trim();
-  const groupId = req.session.role === 'admin'
-    ? (Number(req.body.groupId) || null)
-    : req.session.groupId;
+  const groupId = req.session.role === 'user' ? req.session.groupId : (Number(req.body.groupId) || null);
   if (name.length < 1 || name.length > 64) {
     return res.status(400).json({ error: 'Nom de carnet invalide (1 à 64 caractères)' });
   }
   if (!groupId) {
     return res.status(400).json({ error: 'Un groupe est requis pour créer un carnet' });
   }
-  if (!db.prepare('SELECT 1 FROM groups WHERE id = ?').get(groupId)) {
+  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+  if (!group || (req.session.role !== 'super_admin' && group.tenant_id !== req.session.tenantId)) {
     return res.status(400).json({ error: 'Groupe introuvable' });
   }
   if (db.prepare('SELECT 1 FROM address_books WHERE group_id = ? AND name = ?').get(groupId, name)) {
     return res.status(409).json({ error: 'Ce nom de carnet existe déjà dans ce groupe' });
   }
-  const info = db.prepare('INSERT INTO address_books (group_id, name, created_at) VALUES (?, ?, ?)')
-    .run(groupId, name, isoNow());
+  const info = db.prepare('INSERT INTO address_books (group_id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .run(groupId, group.tenant_id, name, isoNow());
   res.status(201).json({ id: info.lastInsertRowid, group_id: groupId, name, created_at: isoNow(), contact_count: 0 });
 });
 
@@ -2697,10 +3142,10 @@ webApp.get('/admin/api/address-books/:bookId/contacts', (req, res) => {
       CASE WHEN b.phone IS NULL THEN 0 ELSE 1 END AS blacklisted,
       CASE WHEN x.phone IS NULL THEN 0 ELSE 1 END AS mass_excluded
     FROM contacts c
-    LEFT JOIN blacklist_numbers b ON b.phone = c.phone
-    LEFT JOIN mass_exclusions x ON x.phone = c.phone
+    LEFT JOIN blacklist_numbers b ON b.phone = c.phone AND b.tenant_id = ?
+    LEFT JOIN mass_exclusions x ON x.phone = c.phone AND x.tenant_id = ?
     WHERE c.address_book_id = ? ORDER BY c.id ASC LIMIT ? OFFSET ?
-  `).all(checked.book.id, pageSize, offset);
+  `).all(checked.book.tenant_id, checked.book.tenant_id, checked.book.id, pageSize, offset);
   const total = db.prepare('SELECT COUNT(*) c FROM contacts WHERE address_book_id = ?').get(checked.book.id).c;
   res.set('X-Total-Count', total);
   res.set('X-Page-Size', pageSize);
@@ -2841,7 +3286,7 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
   }
 
   const bookId = checked.book.id;
-  const blacklisted = toInsert.filter((contact) => isBlacklisted(contact.phone)).length;
+  const blacklisted = toInsert.filter((contact) => isBlacklisted(checked.book.tenant_id, contact.phone)).length;
   const overwrite = body.overwrite === true;
   const replaced = overwrite
     ? db.prepare('DELETE FROM contacts WHERE address_book_id = ?').run(bookId).changes
@@ -2874,6 +3319,9 @@ webApp.post('/admin/api/address-books/:bookId/import', (req, res) => {
 // groupée dans le journal, nommée d'après le carnet) et un message par
 // contact sélectionné, rattaché à la campagne et au groupe du carnet.
 webApp.post('/admin/api/campaigns', async (req, res) => {
+  if (req.session.tenantId != null && !db.tenantHasFeature(req.session.tenantId, 'mass_send')) {
+    return res.status(403).json({ error: 'Envoi en masse non activé pour votre organisation' });
+  }
   const body = req.body || {};
   const bookId = Number(body.bookId);
   const excludeBookId = Number(body.excludeBookId) || 0;
@@ -2885,18 +3333,18 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
     req,
     message,
     body.attachmentId,
-    req.session.role === 'admin' ? null : { accountId: req.session.accountId }
+    req.session.role === 'user' ? { accountId: req.session.accountId } : null,
+    req.session.tenantId
   );
   if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
   const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
-  if (!book) return res.status(404).json({ error: 'Carnet introuvable' });
-  if (req.session.role !== 'admin' && book.group_id !== req.session.groupId) {
+  if (!book || !canAccessRow(req, book)) {
     return res.status(404).json({ error: 'Carnet introuvable' });
   }
   let excludedPhones = new Set();
   if (excludeBookId) {
     const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
-    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+    if (!excludeBook || !canAccessRow(req, excludeBook)) {
       return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
     }
     excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
@@ -2922,11 +3370,11 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
   if (contacts.length === 0) {
     return res.status(400).json({ error: 'Aucun destinataire valide dans ce carnet' });
   }
-  const blocked = contacts.filter((contact) => isBlacklisted(contact.phone));
+  const blocked = contacts.filter((contact) => isBlacklisted(book.tenant_id, contact.phone));
   if (blocked.length) {
     return res.status(400).json({ error: `Envoi impossible : ${blocked.map((contact) => contact.phone).join(', ')} est/sont blacklisté(s)` });
   }
-  const provider = decideSmsProvider(contacts.length);
+  const provider = decideSmsProvider(book.tenant_id, contacts.length);
   const status = sched ? 'scheduled' : 'pending';
   const scheduledAt = sched ? sched.scheduledAt : null;
   const createdAt = isoNow();
@@ -2938,11 +3386,11 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
   db.exec('BEGIN');
   try {
     const info = db.prepare(
-      'INSERT INTO campaigns (address_book_id, group_id, body, created_by, scheduled_at, created_at, name) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(bookId, groupId, message, req.session.accountId, scheduledAt, createdAt, name);
+      'INSERT INTO campaigns (address_book_id, group_id, tenant_id, body, created_by, scheduled_at, created_at, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(bookId, groupId, book.tenant_id, message, req.session.accountId, scheduledAt, createdAt, name);
     campaignId = info.lastInsertRowid;
     const insert = db.prepare(
-      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, campaign_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO messages (recipient, body, status, origin, origin_label, attachment_id, created_by, created_by_label, created_at, group_id, tenant_id, campaign_id, scheduled_at, provider, claimed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     for (const c of contacts) {
       const renderedMessage = renderContactBody(message, c);
@@ -2950,7 +3398,7 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
         db.exec('ROLLBACK');
         return res.status(400).json({ error: `Message trop long pour ${c.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
       }
-      const claimedBy = provider === 'internal' ? assignGateway(c.phone) : null;
+      const claimedBy = provider === 'internal' ? assignGateway(book.tenant_id, c.phone) : null;
       if (provider === 'internal' && claimedBy == null) unassignedCount++;
       let messageBody = renderedMessage;
       let attachmentId = null;
@@ -2960,7 +3408,7 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
         attachmentId = copy.id;
         messageBody = `${renderedMessage}\n\nPièce jointe : ${publicAttachmentUrl(req, copy.token)}`;
       }
-      const msgInfo = insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, campaignId, scheduledAt, provider, claimedBy);
+      const msgInfo = insert.run(c.phone, messageBody, status, 'console', 'Console', attachmentId, req.session.accountId, req.session.login, createdAt, groupId, book.tenant_id, campaignId, scheduledAt, provider, claimedBy);
       dispatchEntries.push({ messageId: msgInfo.lastInsertRowid, recipient: c.phone, body: messageBody, firstName: c.first_name, lastName: c.last_name });
     }
     db.exec('COMMIT');
@@ -2970,7 +3418,7 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
     throw err;
   }
   if (!sched && provider === 'frizbi') {
-    await dispatchFrizbiBatch(dispatchEntries, { title: book.name });
+    await dispatchFrizbiBatch(book.tenant_id, dispatchEntries, { title: book.name });
   }
   logConsole(req, 'campagne', book.name, contacts.length);
   res.status(201).json({
@@ -2982,6 +3430,8 @@ webApp.post('/admin/api/campaigns', async (req, res) => {
 });
 
 webApp.get('/admin/api/campaigns', (req, res) => {
+  const scope = scopeConditions(req, 'c.tenant_id', 'c.group_id');
+  const cond = ['c.deleted_at IS NULL', ...scope.clauses];
   const campaigns = db.prepare(`
     SELECT c.*, ab.name AS book_name, acc.login AS creator_login,
       COUNT(m.id) AS total,
@@ -2993,17 +3443,16 @@ webApp.get('/admin/api/campaigns', (req, res) => {
     LEFT JOIN address_books ab ON ab.id = c.address_book_id
     LEFT JOIN accounts acc ON acc.id = c.created_by
     LEFT JOIN messages m ON m.campaign_id = c.id
-    WHERE c.deleted_at IS NULL ${req.session.role === 'admin' ? '' : 'AND c.group_id = ?'}
+    WHERE ${cond.join(' AND ')}
     GROUP BY c.id ORDER BY c.id DESC
-  `).all(...(req.session.role === 'admin' ? [] : [req.session.groupId]));
+  `).all(...scope.params);
   res.json(campaigns);
 });
 
 function campaignVisible(req, id) {
   const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!campaign) return null;
-  if (req.session.role !== 'admin' && campaign.group_id !== req.session.groupId) return null;
-  return campaign;
+  return canAccessRow(req, campaign) ? campaign : null;
 }
 
 // Détail paginé d'une campagne : ses messages, page par page (contrairement
@@ -3053,20 +3502,20 @@ webApp.delete('/admin/api/campaigns/:id', (req, res) => {
 });
 
 webApp.get('/admin/api/blacklist', (req, res) => {
-  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM blacklist_numbers ORDER BY phone ASC').all());
+  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM blacklist_numbers WHERE tenant_id = ? ORDER BY phone ASC').all(req.session.tenantId));
 });
 
 webApp.post('/admin/api/blacklist', (req, res) => {
   const phone = normalizePhone((req.body || {}).phone || '');
   if (!/^\+?[0-9]{4,15}$/.test(phone)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
-  db.prepare('INSERT OR IGNORE INTO blacklist_numbers (phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?)')
-    .run(phone, isoNow(), req.session.accountId, req.session.login);
+  db.prepare('INSERT OR IGNORE INTO blacklist_numbers (tenant_id, phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?, ?)')
+    .run(req.session.tenantId, phone, isoNow(), req.session.accountId, req.session.login);
   res.status(201).json({ phone, blacklisted: true });
 });
 
 webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
   const phone = normalizePhone(req.params.phone);
-  db.prepare('DELETE FROM blacklist_numbers WHERE phone = ?').run(phone);
+  db.prepare('DELETE FROM blacklist_numbers WHERE tenant_id = ? AND phone = ?').run(req.session.tenantId, phone);
   res.json({ phone, blacklisted: false });
 });
 
@@ -3075,20 +3524,20 @@ webApp.delete('/admin/api/blacklist/:phone', (req, res) => {
 // une pré-décoche dans les listes de destinataires — l'opérateur peut
 // réinclure le numéro pour un envoi ponctuel.
 webApp.get('/admin/api/mass-exclusions', (req, res) => {
-  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM mass_exclusions ORDER BY phone ASC').all());
+  res.json(db.prepare('SELECT phone, created_at, created_by_label FROM mass_exclusions WHERE tenant_id = ? ORDER BY phone ASC').all(req.session.tenantId));
 });
 
 webApp.post('/admin/api/mass-exclusions', (req, res) => {
   const phone = normalizePhone((req.body || {}).phone || '');
   if (!/^\+?[0-9]{4,15}$/.test(phone)) return res.status(400).json({ error: 'Numéro de téléphone invalide' });
-  db.prepare('INSERT OR IGNORE INTO mass_exclusions (phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?)')
-    .run(phone, isoNow(), req.session.accountId, req.session.login);
+  db.prepare('INSERT OR IGNORE INTO mass_exclusions (tenant_id, phone, created_at, created_by, created_by_label) VALUES (?, ?, ?, ?, ?)')
+    .run(req.session.tenantId, phone, isoNow(), req.session.accountId, req.session.login);
   res.status(201).json({ phone, massExcluded: true });
 });
 
 webApp.delete('/admin/api/mass-exclusions/:phone', (req, res) => {
   const phone = normalizePhone(req.params.phone);
-  db.prepare('DELETE FROM mass_exclusions WHERE phone = ?').run(phone);
+  db.prepare('DELETE FROM mass_exclusions WHERE tenant_id = ? AND phone = ?').run(req.session.tenantId, phone);
   res.json({ phone, massExcluded: false });
 });
 
@@ -3103,13 +3552,13 @@ webApp.post('/admin/api/send-preview', (req, res) => {
   const contactIds = Array.isArray(body.contactIds) ? body.contactIds.map(Number).filter(Number.isInteger) : [];
   if (!bookId) return res.status(400).json({ error: 'Carnet d’adresses requis' });
   const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
-  if (!book || (req.session.role !== 'admin' && book.group_id !== req.session.groupId)) {
+  if (!book || !canAccessRow(req, book)) {
     return res.status(404).json({ error: 'Carnet introuvable' });
   }
   let excludedPhones = new Set();
   if (excludeBookId) {
     const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
-    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+    if (!excludeBook || !canAccessRow(req, excludeBook)) {
       return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
     }
     excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((r) => r.phone));
@@ -3123,11 +3572,11 @@ webApp.post('/admin/api/send-preview', (req, res) => {
   const allContacts = db.prepare(`SELECT phone FROM contacts WHERE address_book_id = ? ${contactWhere}`)
     .all(bookId, ...contactIds);
   const nonExcluded = allContacts.filter((c) => !excludedPhones.has(c.phone));
-  const blacklistedCount = nonExcluded.filter((c) => isBlacklisted(c.phone)).length;
-  const phones = nonExcluded.filter((c) => !isBlacklisted(c.phone)).map((c) => c.phone);
+  const blacklistedCount = nonExcluded.filter((c) => isBlacklisted(book.tenant_id, c.phone)).length;
+  const phones = nonExcluded.filter((c) => !isBlacklisted(book.tenant_id, c.phone)).map((c) => c.phone);
 
-  const sim = simulateAssignment(phones);
-  const gwSettings = getGatewaySettings();
+  const sim = simulateAssignment(book.tenant_id, phones);
+  const gwSettings = getGatewaySettings(book.tenant_id);
   const gateways = sim.gateways.map((g) => {
     const lineCounts = splitByLines(g.assigned, g.simCount);
     return {
@@ -3171,13 +3620,13 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   if (!message) return res.status(400).json({ error: 'Message de vérification vide' });
   if (message.length > MAX_MESSAGE_LENGTH) return res.status(400).json({ error: `Message trop long (max ${MAX_MESSAGE_LENGTH} caractères)` });
   const book = db.prepare('SELECT * FROM address_books WHERE id = ?').get(bookId);
-  if (!book || (req.session.role !== 'admin' && book.group_id !== req.session.groupId)) {
+  if (!book || !canAccessRow(req, book)) {
     return res.status(404).json({ error: 'Carnet introuvable' });
   }
   let excludedPhones = new Set();
   if (excludeBookId) {
     const excludeBook = db.prepare('SELECT * FROM address_books WHERE id = ?').get(excludeBookId);
-    if (!excludeBook || (req.session.role !== 'admin' && excludeBook.group_id !== req.session.groupId)) {
+    if (!excludeBook || !canAccessRow(req, excludeBook)) {
       return res.status(404).json({ error: 'Carnet d’exclusion introuvable' });
     }
     excludedPhones = new Set(db.prepare('SELECT phone FROM contacts WHERE address_book_id = ?').all(excludeBookId).map((row) => row.phone));
@@ -3194,7 +3643,7 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   const contacts = db.prepare(`SELECT * FROM contacts WHERE address_book_id = ? ${contactWhere} ORDER BY id ASC`)
     .all(bookId, ...contactIds).filter((contact) => !excludedPhones.has(contact.phone));
   if (!contacts.length) return res.status(400).json({ error: 'Aucun contact sélectionné' });
-  const blocked = contacts.filter((contact) => isBlacklisted(contact.phone));
+  const blocked = contacts.filter((contact) => isBlacklisted(book.tenant_id, contact.phone));
   if (blocked.length) {
     return res.status(400).json({ error: `Vérification impossible : ${blocked.map((contact) => contact.phone).join(', ')} est/sont blacklisté(s)` });
   }
@@ -3204,13 +3653,13 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
   db.exec('BEGIN');
   try {
     const check = db.prepare(`
-      INSERT INTO fleet_checks (group_id, address_book_id, message, created_by, created_by_label, response_hours, created_at, name)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(book.group_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt, name);
+      INSERT INTO fleet_checks (group_id, tenant_id, address_book_id, message, created_by, created_by_label, response_hours, created_at, name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(book.group_id, book.tenant_id, book.id, message, req.session.accountId, req.session.login, FLEET_RESPONSE_HOURS, createdAt, name);
     checkId = check.lastInsertRowid;
     const insertMessage = db.prepare(`
-      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id, claimed_by)
-      VALUES (?, ?, 'pending', 'console', 'Console', ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (recipient, body, status, origin, origin_label, created_by, created_by_label, fleet_check_id, created_at, group_id, tenant_id, claimed_by)
+      VALUES (?, ?, 'pending', 'console', 'Console', ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertItem = db.prepare(`
       INSERT INTO fleet_check_items
@@ -3223,10 +3672,10 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
         db.exec('ROLLBACK');
         return res.status(400).json({ error: `Message trop long pour ${contact.phone} après remplacement des variables (max ${MAX_MESSAGE_LENGTH} caractères)` });
       }
-      const claimedBy = assignGateway(contact.phone);
+      const claimedBy = assignGateway(book.tenant_id, contact.phone);
       if (claimedBy == null) unassignedCount++;
       const msg = insertMessage.run(
-        contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id, claimedBy
+        contact.phone, renderedMessage, req.session.accountId, req.session.login, checkId, createdAt, book.group_id, book.tenant_id, claimedBy
       );
       insertItem.run(checkId, msg.lastInsertRowid, contact.id, contact.first_name, contact.last_name, contact.entity,
         contact.service, contact.direction, contact.imei, contact.puk, contact.line_status, contact.plan, contact.device_terminal, contact.secondary_line, contact.phone);
@@ -3248,12 +3697,12 @@ webApp.post('/admin/api/fleet-checks', (req, res) => {
 function fleetCheckVisible(req, id) {
   const check = db.prepare('SELECT * FROM fleet_checks WHERE id = ?').get(Number(id));
   if (!check) return null;
-  if (req.session.role !== 'admin' && check.group_id !== req.session.groupId) return null;
-  return check;
+  return canAccessRow(req, check) ? check : null;
 }
 
 webApp.get('/admin/api/fleet-checks', (req, res) => {
   refreshFleetTimeouts();
+  const scope = scopeConditions(req, 'f.tenant_id', 'f.group_id');
   const checks = db.prepare(`
     SELECT f.*, ab.name AS book_name,
       COUNT(i.id) AS total,
@@ -3264,9 +3713,9 @@ webApp.get('/admin/api/fleet-checks', (req, res) => {
     FROM fleet_checks f
     LEFT JOIN address_books ab ON ab.id = f.address_book_id
     LEFT JOIN fleet_check_items i ON i.fleet_check_id = f.id
-    WHERE f.deleted_at IS NULL ${req.session.role === 'admin' ? '' : 'AND f.group_id = ?'}
+    WHERE f.deleted_at IS NULL ${scope.clauses.length ? `AND ${scope.clauses.join(' AND ')}` : ''}
     GROUP BY f.id ORDER BY f.id DESC
-  `).all(...(req.session.role === 'admin' ? [] : [req.session.groupId]));
+  `).all(...scope.params);
   res.json(checks);
 });
 
@@ -3338,38 +3787,117 @@ webApp.get('/admin/api/fleet-checks/:id/export', (req, res) => {
   res.send('\uFEFF' + header.join(';') + '\r\n' + lines.join('\r\n'));
 });
 
-webApp.get('/admin/api/stats', requireAdmin, (_req, res) => {
+webApp.get('/admin/api/stats', requireAdmin, (req, res) => {
+  const msgScope = tenantScope(req, 'tenant_id');
   const byStatus = {};
-  for (const r of db.prepare('SELECT status, COUNT(*) AS c FROM messages GROUP BY status').all()) {
+  for (const r of db.prepare(`SELECT status, COUNT(*) AS c FROM messages ${msgScope.clause ? `WHERE ${msgScope.clause}` : ''} GROUP BY status`).all(...msgScope.params)) {
     byStatus[r.status] = r.c;
   }
+  const keyScope = tenantScope(req, 'tenant_id');
   const byKeyType = {};
-  for (const r of db.prepare('SELECT type, COUNT(*) AS c FROM keys GROUP BY type').all()) {
+  for (const r of db.prepare(`SELECT type, COUNT(*) AS c FROM keys ${keyScope.clause ? `WHERE ${keyScope.clause}` : ''} GROUP BY type`).all(...keyScope.params)) {
     byKeyType[r.type] = r.c;
   }
+  const onlineScope = tenantScope(req, 'tenant_id');
   const online = db.prepare(
-    "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
-  ).get(onlineCutoffIso()).c;
+    `SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ? ${onlineScope.clause ? `AND ${onlineScope.clause}` : ''}`
+  ).get(onlineCutoffIso(), ...onlineScope.params).c;
   res.json({ messages: byStatus, keys: byKeyType, gatewaysOnline: online });
 });
 
-webApp.get('/admin/api/gateways/online', requireSession, (_req, res) => {
+webApp.get('/admin/api/gateways/online', requireSession, (req, res) => {
+  const scope = tenantScope(req, 'tenant_id');
   const online = db.prepare(
-    "SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ?"
-  ).get(onlineCutoffIso()).c;
+    `SELECT COUNT(*) AS c FROM keys WHERE type = 'gateway' AND last_seen_at > ? ${scope.clause ? `AND ${scope.clause}` : ''}`
+  ).get(onlineCutoffIso(), ...scope.params).c;
   res.json({ online });
 });
 
 webApp.get('/admin/api/incoming', requireAdmin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '50', 10) || 50, 1), 200);
+  const scope = tenantScope(req, 'k.tenant_id');
   const rows = db.prepare(`
     SELECT im.id, im.sender, im.body, im.received_at, im.created_at,
            k.label AS gateway_label, im.device_id
     FROM incoming_messages im
     LEFT JOIN keys k ON k.id = im.key_id
+    ${scope.clause ? `WHERE ${scope.clause}` : ''}
     ORDER BY im.id DESC LIMIT ?
-  `).all(limit);
+  `).all(...scope.params, limit);
   res.json(rows);
+});
+
+// ---------- Tenants (super-admin uniquement) ----------
+// Vue d'ensemble de toutes les organisations, et bascule de leurs
+// fonctionnalités payantes (mail2sms, pièce jointe + suivi de lecture).
+webApp.get('/admin/api/tenants', requireSuperAdmin, (_req, res) => {
+  const tenants = db.prepare(`
+    SELECT t.*,
+      (SELECT COUNT(*) FROM accounts a WHERE a.tenant_id = t.id) AS account_count,
+      (SELECT COUNT(*) FROM keys k WHERE k.tenant_id = t.id AND k.type = 'gateway') AS gateway_count,
+      (SELECT COUNT(*) FROM keys k WHERE k.tenant_id = t.id AND k.type = 'web') AS api_key_count,
+      (SELECT COUNT(*) FROM messages m WHERE m.tenant_id = t.id) AS message_count
+    FROM tenants t ORDER BY t.id ASC
+  `).all();
+  const features = db.prepare('SELECT tenant_id, feature, enabled FROM tenant_features').all();
+  const byTenant = {};
+  for (const f of features) {
+    (byTenant[f.tenant_id] = byTenant[f.tenant_id] || {})[f.feature] = !!f.enabled;
+  }
+  res.json(tenants.map((t) => ({
+    ...t,
+    features: {
+      ...Object.fromEntries(db.FREE_FEATURES.map((f) => [f, true])),
+      ...Object.fromEntries(db.PAID_FEATURES.map((f) => [f, false])),
+      ...(byTenant[t.id] || {})
+    }
+  })));
+});
+
+webApp.patch('/admin/api/tenants/:id', requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+  if (!tenant) return res.status(404).json({ error: 'Tenant introuvable' });
+  const body = req.body || {};
+  const sets = [];
+  const params = [];
+  if (body.name !== undefined) {
+    const name = String(body.name || '').trim();
+    if (name.length < 2 || name.length > 80) return res.status(400).json({ error: 'Nom invalide (2 à 80 caractères)' });
+    sets.push('name = ?');
+    params.push(name);
+  }
+  if (body.status !== undefined) {
+    if (!['active', 'pending_verification', 'suspended'].includes(body.status)) {
+      return res.status(400).json({ error: 'Statut invalide' });
+    }
+    sets.push('status = ?');
+    params.push(body.status);
+  }
+  if (body.plan !== undefined) {
+    sets.push('plan = ?');
+    params.push(String(body.plan || 'free').trim().slice(0, 32));
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucune modification demandée' });
+  params.push(id);
+  db.prepare(`UPDATE tenants SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  logConsole(req, 'config tenant', `#${id} ${Object.keys(body).join(',')}`);
+  res.json({ ok: true });
+});
+
+webApp.post('/admin/api/tenants/:id/features', requireSuperAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(id);
+  if (!tenant) return res.status(404).json({ error: 'Tenant introuvable' });
+  const feature = String((req.body || {}).feature || '');
+  if (!db.ALL_FEATURES.includes(feature)) return res.status(400).json({ error: 'Fonctionnalité inconnue' });
+  const enabled = (req.body || {}).enabled ? 1 : 0;
+  db.prepare(`
+    INSERT INTO tenant_features (tenant_id, feature, enabled) VALUES (?, ?, ?)
+    ON CONFLICT(tenant_id, feature) DO UPDATE SET enabled = excluded.enabled
+  `).run(id, feature, enabled);
+  logConsole(req, 'config feature tenant', `#${id} ${feature}=${enabled}`);
+  res.json({ ok: true });
 });
 
 apiApp.listen(PORT_API, '0.0.0.0', () => {
@@ -3390,13 +3918,18 @@ setInterval(() => {
       "UPDATE messages SET status = 'pending', updated_at = ? WHERE status = 'scheduled' AND scheduled_at <= ? AND provider = 'internal'"
     ).run(now, now);
     const dueFrizbi = db.prepare(
-      "SELECT id, recipient, body FROM messages WHERE status = 'scheduled' AND scheduled_at <= ? AND provider = 'frizbi'"
+      "SELECT id, recipient, body, tenant_id FROM messages WHERE status = 'scheduled' AND scheduled_at <= ? AND provider = 'frizbi'"
     ).all(now);
     if (dueFrizbi.length) {
-      dispatchFrizbiBatch(
-        dueFrizbi.map((m) => ({ messageId: m.id, recipient: m.recipient, body: m.body })),
-        { title: 'Ville d’Ivry' }
-      ).catch((err) => console.error('[FRIZBI] dispatch programmé error:', err));
+      const byTenant = new Map();
+      for (const m of dueFrizbi) {
+        if (!byTenant.has(m.tenant_id)) byTenant.set(m.tenant_id, []);
+        byTenant.get(m.tenant_id).push({ messageId: m.id, recipient: m.recipient, body: m.body });
+      }
+      for (const [tenantId, entries] of byTenant) {
+        dispatchFrizbiBatch(tenantId, entries, { title: tenantSenderTitle(tenantId) })
+          .catch((err) => console.error('[FRIZBI] dispatch programmé error:', err));
+      }
     }
   } catch (_) { /* ne bloque jamais */ }
 }, 10 * 1000);

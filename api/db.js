@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS frizbi_settings (
   api_url        TEXT    NOT NULL DEFAULT 'https://apiv2.frizbi.evolnet.fr',
   client_id      TEXT,
   client_secret  TEXT,
-  sender_id      TEXT    NOT NULL DEFAULT 'IVRY',
+  sender_id      TEXT    NOT NULL DEFAULT '',
   callback_token TEXT,
   updated_at     TEXT
 );
@@ -233,14 +233,16 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE INDEX IF NOT EXISTS idx_accounts_login ON accounts(login);
 
+-- Un tour de répartition (round) par tenant : sans cela, les passerelles
+-- d'un tenant chargé fausseraient le calcul de part équitable des
+-- passerelles d'un autre tenant (cf. migration plus bas pour les bases
+-- pré-multi-tenant).
 CREATE TABLE IF NOT EXISTS claim_state (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant_id     INTEGER NOT NULL UNIQUE,
   round_started TEXT,
   claimed       INTEGER NOT NULL DEFAULT 0
 );
-
-INSERT INTO claim_state (id, round_started, claimed)
-SELECT 1, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM claim_state WHERE id = 1);
 
 CREATE TABLE IF NOT EXISTS groups (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,7 +366,54 @@ CREATE TABLE IF NOT EXISTS mail2sms_emails (
 
 CREATE INDEX IF NOT EXISTS idx_mail2sms_emails_box   ON mail2sms_emails(box_id);
 CREATE INDEX IF NOT EXISTS idx_mail2sms_emails_reply ON mail2sms_emails(status, reply_sent_at);
+
+-- Multi-tenant : chaque organisation cliente (« tenant ») a ses propres
+-- messages, jetons API/passerelles, groupes, etc. Le compte pivot admin
+-- (login vide) n'appartient à aucun tenant : c'est le super-admin, il voit
+-- tous les tenants. Les tenants existants avant cette version sont rattachés
+-- au tenant n°1 par les migrations plus bas.
+CREATE TABLE IF NOT EXISTS tenants (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT    NOT NULL,
+  slug       TEXT    NOT NULL UNIQUE,
+  status     TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending_verification', 'suspended')),
+  plan       TEXT    NOT NULL DEFAULT 'free',
+  created_at TEXT    NOT NULL
+);
+
+-- Fonctionnalités activables par tenant. Absence de ligne = valeur par
+-- défaut gérée en code (tenantHasFeature ci-dessous) : les fonctionnalités
+-- gratuites (unit_send, mass_send, api_send) sont considérées actives même
+-- sans ligne, pour éviter un backfill sur chaque nouveau tenant.
+CREATE TABLE IF NOT EXISTS tenant_features (
+  tenant_id INTEGER NOT NULL,
+  feature   TEXT    NOT NULL,
+  enabled   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, feature)
+);
+
+-- Jetons de vérification (création de compte, réinitialisation de mot de
+-- passe). token_hash stocke un sha256 du jeton envoyé par e-mail, jamais le
+-- jeton en clair (même principe que keys.token_hash).
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id  INTEGER NOT NULL,
+  token_hash  TEXT    NOT NULL UNIQUE,
+  purpose     TEXT    NOT NULL DEFAULT 'signup' CHECK (purpose IN ('signup', 'reset')),
+  expires_at  TEXT    NOT NULL,
+  consumed_at TEXT,
+  created_at  TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verifications_account ON email_verifications(account_id);
 `);
+
+// Tenant historique : toutes les données créées avant l'arrivée du
+// multi-tenant sont rattachées à ce tenant n°1 par les migrations ci-dessous.
+const DEFAULT_TENANT_ID = 1;
+db.prepare(
+  'INSERT OR IGNORE INTO tenants (id, name, slug, status, plan, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+).run(DEFAULT_TENANT_ID, 'Organisation par défaut', 'organisation-par-defaut', 'active', 'free', new Date().toISOString());
 
 // Migrations : colonnes ajoutées sur des bases existantes (CREATE TABLE
 // IF NOT EXISTS ne modifie pas les tables déjà présentes).
@@ -387,13 +436,30 @@ if (!accountCols.includes('last_login_at')) {
 if (!accountCols.includes('phone')) {
   db.exec('ALTER TABLE accounts ADD COLUMN phone TEXT');
 }
+if (!accountCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE accounts ADD COLUMN tenant_id INTEGER');
+}
+if (!accountCols.includes('email_verified_at')) {
+  // NULL = compte créé en libre-service pas encore vérifié. Les comptes
+  // existants avant cette version (créés par un admin) sont considérés
+  // vérifiés d'office par la migration ci-dessous.
+  db.exec('ALTER TABLE accounts ADD COLUMN email_verified_at TEXT');
+}
 
 // Entrée pivot « admin » : le compte administrateur (connexion sans login)
 // n'a pas de ligne dans accounts ; on stocke ici son numéro de téléphone
-// pour les alertes SMS. La ligne est garantie au démarrage.
+// pour les alertes SMS. La ligne est garantie au démarrage. C'est le
+// super-admin : il n'appartient à aucun tenant et voit tous les tenants.
 db.prepare(
   'INSERT OR IGNORE INTO accounts (login, password_hash, role, disabled, created_at) VALUES (?, ?, ?, 0, ?)'
-).run('', '', 'admin', new Date().toISOString());
+).run('', '', 'super_admin', new Date().toISOString());
+// Bascule le compte pivot d'une base pré-multi-tenant (role='admin') vers
+// super_admin, et rattache tous les autres comptes déjà en base au tenant
+// historique (comptes créés en libre-service : déjà correctement rattachés
+// à leur tenant dès la création, donc non affectés par ce WHERE).
+db.prepare("UPDATE accounts SET role = 'super_admin', tenant_id = NULL WHERE login = ''").run();
+db.prepare('UPDATE accounts SET tenant_id = ? WHERE tenant_id IS NULL AND login <> ?').run(DEFAULT_TENANT_ID, '');
+db.prepare('UPDATE accounts SET email_verified_at = created_at WHERE email_verified_at IS NULL AND login <> ?').run('');
 const keyCols = db.prepare('PRAGMA table_info(keys)').all().map((c) => c.name);
 if (!keyCols.includes('app_version')) {
   db.exec('ALTER TABLE keys ADD COLUMN app_version TEXT');
@@ -405,6 +471,13 @@ if (!keyCols.includes('sim_count')) {
   // encore, ou sur une version antérieure).
   db.exec('ALTER TABLE keys ADD COLUMN sim_count INTEGER NOT NULL DEFAULT 1');
 }
+if (!keyCols.includes('tenant_id')) {
+  // Jetons API et passerelles n'étaient pas isolés par organisation avant
+  // le multi-tenant : tout est rattaché au tenant historique.
+  db.exec('ALTER TABLE keys ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE keys SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_keys_tenant ON keys(tenant_id)');
 const messageCols = db.prepare('PRAGMA table_info(messages)').all().map((c) => c.name);
 if (!messageCols.includes('group_id')) {
   db.exec('ALTER TABLE messages ADD COLUMN group_id INTEGER');
@@ -455,18 +528,122 @@ if (!messageCols.includes('sim_slot')) {
 if (!messageCols.includes('sim_number')) {
   db.exec('ALTER TABLE messages ADD COLUMN sim_number TEXT');
 }
+if (!messageCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE messages ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE messages SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_messages_tenant_id ON messages(tenant_id)');
 const frizbiCols = db.prepare('PRAGMA table_info(frizbi_settings)').all().map((c) => c.name);
 if (!frizbiCols.includes('callback_token')) {
   db.exec('ALTER TABLE frizbi_settings ADD COLUMN callback_token TEXT');
 }
-db.prepare('INSERT OR IGNORE INTO frizbi_settings (id) VALUES (1)').run();
-db.prepare('INSERT OR IGNORE INTO gateway_settings (id) VALUES (1)').run();
+// frizbi_settings et gateway_settings étaient des singletons (id figé à 1) :
+// on reconstruit les deux tables pour passer à une ligne par tenant.
+if (!frizbiCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE frizbi_settings_new (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id      INTEGER NOT NULL UNIQUE,
+      mode           TEXT    NOT NULL DEFAULT 'internal',
+      both_threshold INTEGER NOT NULL DEFAULT 10,
+      api_url        TEXT    NOT NULL DEFAULT 'https://apiv2.frizbi.evolnet.fr',
+      client_id      TEXT,
+      client_secret  TEXT,
+      sender_id      TEXT    NOT NULL DEFAULT '',
+      callback_token TEXT,
+      updated_at     TEXT
+    );
+    INSERT INTO frizbi_settings_new (tenant_id, mode, both_threshold, api_url, client_id, client_secret, sender_id, callback_token, updated_at)
+      SELECT ${DEFAULT_TENANT_ID}, mode, both_threshold, api_url, client_id, client_secret, sender_id, callback_token, updated_at
+      FROM frizbi_settings WHERE id = 1;
+    DROP TABLE frizbi_settings;
+    ALTER TABLE frizbi_settings_new RENAME TO frizbi_settings;
+    COMMIT;
+  `);
+}
+const gwSettingsCols = db.prepare('PRAGMA table_info(gateway_settings)').all().map((c) => c.name);
+if (!gwSettingsCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE gateway_settings_new (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id         INTEGER NOT NULL UNIQUE,
+      quota_cap         INTEGER NOT NULL DEFAULT 180,
+      quota_window_days INTEGER NOT NULL DEFAULT 30
+    );
+    INSERT INTO gateway_settings_new (tenant_id, quota_cap, quota_window_days)
+      SELECT ${DEFAULT_TENANT_ID}, quota_cap, quota_window_days FROM gateway_settings WHERE id = 1;
+    DROP TABLE gateway_settings;
+    ALTER TABLE gateway_settings_new RENAME TO gateway_settings;
+    COMMIT;
+  `);
+}
+// Garantit une ligne de réglages par tenant existant (nouveaux tenants
+// inclus, au cas où cette migration tourne après leur création).
+db.prepare(`
+  INSERT OR IGNORE INTO frizbi_settings (tenant_id)
+  SELECT id FROM tenants WHERE id NOT IN (SELECT tenant_id FROM frizbi_settings)
+`).run();
+db.prepare(`
+  INSERT OR IGNORE INTO gateway_settings (tenant_id)
+  SELECT id FROM tenants WHERE id NOT IN (SELECT tenant_id FROM gateway_settings)
+`).run();
+
+// claim_state était un singleton global (id figé à 1) : reconstruit en une
+// ligne par tenant, comme gateway_settings/frizbi_settings ci-dessus.
+const claimStateCols = db.prepare('PRAGMA table_info(claim_state)').all().map((c) => c.name);
+if (!claimStateCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE claim_state_new (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id     INTEGER NOT NULL UNIQUE,
+      round_started TEXT,
+      claimed       INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO claim_state_new (tenant_id, round_started, claimed)
+      SELECT ${DEFAULT_TENANT_ID}, round_started, claimed FROM claim_state WHERE id = 1;
+    DROP TABLE claim_state;
+    ALTER TABLE claim_state_new RENAME TO claim_state;
+    COMMIT;
+  `);
+}
+db.prepare(`
+  INSERT OR IGNORE INTO claim_state (tenant_id)
+  SELECT id FROM tenants WHERE id NOT IN (SELECT tenant_id FROM claim_state)
+`).run();
+
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(group_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_provider ON messages(provider)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_mail2sms_email_id ON messages(mail2sms_email_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_campaign_id ON messages(campaign_id)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_messages_scheduled_at ON messages(scheduled_at)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)');
+
+// groups.name était unique globalement (une seule organisation). Avec le
+// multi-tenant, deux tenants doivent pouvoir chacun avoir un groupe
+// « Commercial » : on reconstruit la table avec tenant_id + unicité
+// (tenant_id, name).
+const groupCols = db.prepare('PRAGMA table_info(groups)').all().map((c) => c.name);
+if (!groupCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE groups_new (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id  INTEGER NOT NULL,
+      name       TEXT    NOT NULL,
+      created_at TEXT    NOT NULL,
+      UNIQUE (tenant_id, name)
+    );
+    INSERT INTO groups_new (id, tenant_id, name, created_at)
+      SELECT id, ${DEFAULT_TENANT_ID}, name, created_at FROM groups;
+    DROP TABLE groups;
+    ALTER TABLE groups_new RENAME TO groups;
+    COMMIT;
+  `);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_groups_tenant ON groups(tenant_id)');
 
 const contactCols = db.prepare('PRAGMA table_info(contacts)').all().map((c) => c.name);
 for (const column of ['service', 'direction', 'imei', 'puk']) {
@@ -499,6 +676,16 @@ if (!fleetCheckCols.includes('deleted_at')) {
 if (!campaignCols.includes('deleted_at')) {
   db.exec('ALTER TABLE campaigns ADD COLUMN deleted_at TEXT');
 }
+if (!campaignCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE campaigns ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE campaigns SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+if (!fleetCheckCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE fleet_checks ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE fleet_checks SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_campaigns_tenant ON campaigns(tenant_id)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_fleet_checks_tenant ON fleet_checks(tenant_id)');
 
 // Numéros exclus par défaut des envois en masse (campagnes et vérifications
 // de flotte) : contrairement à la liste noire, ce n'est pas un blocage —
@@ -515,17 +702,81 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_mass_exclusions_phone ON mass_exclusions(phone);
 `);
 
+// blacklist_numbers et mass_exclusions étaient globaux (phone en clé
+// primaire) : un numéro bloqué par un tenant bloquait tout le monde. On
+// reconstruit les deux tables avec une clé (tenant_id, phone).
+const blacklistCols = db.prepare('PRAGMA table_info(blacklist_numbers)').all().map((c) => c.name);
+if (!blacklistCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE blacklist_numbers_new (
+      tenant_id        INTEGER NOT NULL,
+      phone            TEXT    NOT NULL,
+      created_at       TEXT    NOT NULL,
+      created_by       INTEGER,
+      created_by_label TEXT,
+      PRIMARY KEY (tenant_id, phone)
+    );
+    INSERT INTO blacklist_numbers_new (tenant_id, phone, created_at, created_by, created_by_label)
+      SELECT ${DEFAULT_TENANT_ID}, phone, created_at, created_by, created_by_label FROM blacklist_numbers;
+    DROP TABLE blacklist_numbers;
+    ALTER TABLE blacklist_numbers_new RENAME TO blacklist_numbers;
+    CREATE INDEX idx_blacklist_numbers_tenant ON blacklist_numbers(tenant_id);
+    COMMIT;
+  `);
+}
+const massExclusionCols = db.prepare('PRAGMA table_info(mass_exclusions)').all().map((c) => c.name);
+if (!massExclusionCols.includes('tenant_id')) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE mass_exclusions_new (
+      tenant_id        INTEGER NOT NULL,
+      phone            TEXT    NOT NULL,
+      created_at       TEXT    NOT NULL,
+      created_by       INTEGER,
+      created_by_label TEXT,
+      PRIMARY KEY (tenant_id, phone)
+    );
+    INSERT INTO mass_exclusions_new (tenant_id, phone, created_at, created_by, created_by_label)
+      SELECT ${DEFAULT_TENANT_ID}, phone, created_at, created_by, created_by_label FROM mass_exclusions;
+    DROP TABLE mass_exclusions;
+    ALTER TABLE mass_exclusions_new RENAME TO mass_exclusions;
+    CREATE INDEX idx_mass_exclusions_tenant ON mass_exclusions(tenant_id);
+    COMMIT;
+  `);
+}
+
 const attachmentCols = db.prepare('PRAGMA table_info(attachments)').all().map((c) => c.name);
 if (!attachmentCols.includes('expires_at')) {
   db.exec('ALTER TABLE attachments ADD COLUMN expires_at TEXT');
   db.exec("UPDATE attachments SET expires_at = datetime(created_at, '+90 days') WHERE expires_at IS NULL");
 }
+if (!attachmentCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE attachments ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE attachments SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_attachments_tenant ON attachments(tenant_id)');
 
 // Mail → SMS : dossier IMAP de destination des e-mails transformés en SMS.
 const m2sBoxCols = db.prepare('PRAGMA table_info(mail2sms_boxes)').all().map((c) => c.name);
 if (!m2sBoxCols.includes('processed_folder')) {
   db.exec("ALTER TABLE mail2sms_boxes ADD COLUMN processed_folder TEXT NOT NULL DEFAULT 'SMS Traités'");
 }
+if (!m2sBoxCols.includes('tenant_id')) {
+  // Mail2SMS est une fonctionnalité payante : les boîtes existantes
+  // appartiennent au tenant historique, qui l'a déjà en usage (activée
+  // plus bas dans tenant_features pour ne pas régresser une prod active).
+  db.exec('ALTER TABLE mail2sms_boxes ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE mail2sms_boxes SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_mail2sms_boxes_tenant ON mail2sms_boxes(tenant_id)');
+
+const syncSourceCols = db.prepare('PRAGMA table_info(sync_sources)').all().map((c) => c.name);
+if (!syncSourceCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE sync_sources ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE sync_sources SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_sync_sources_tenant ON sync_sources(tenant_id)');
 
 // Journal console : mémorise le navigateur/appareil du client pour distinguer
 // les connexions qui partagent la même IP publique (NAT de la box).
@@ -557,5 +808,48 @@ if (bookGroupCol && bookGroupCol.notnull === 1) {
   `);
   db.exec('CREATE INDEX IF NOT EXISTS idx_address_books_group ON address_books(group_id)');
 }
+const addressBookCols = db.prepare('PRAGMA table_info(address_books)').all().map((c) => c.name);
+if (!addressBookCols.includes('tenant_id')) {
+  db.exec('ALTER TABLE address_books ADD COLUMN tenant_id INTEGER');
+  db.exec(`UPDATE address_books SET tenant_id = ${DEFAULT_TENANT_ID} WHERE tenant_id IS NULL`);
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_address_books_tenant ON address_books(tenant_id)');
+
+// --- Fonctionnalités par tenant -------------------------------------------
+// Gratuites par défaut (activées explicitement pour clarté dans l'admin,
+// même si tenantHasFeature() les considère actives par défaut de toute
+// façon). Le tenant historique avait déjà mail2sms et les pièces jointes en
+// usage réel : on les active pour ne pas régresser une organisation active.
+const FREE_FEATURES = ['unit_send', 'mass_send', 'api_send'];
+const PAID_FEATURES = ['mail2sms', 'attachment_read_receipt'];
+const ALL_FEATURES = [...FREE_FEATURES, ...PAID_FEATURES];
+
+function seedTenantFeatures(tenantId, enabledFeatures) {
+  const stmt = db.prepare(
+    'INSERT OR IGNORE INTO tenant_features (tenant_id, feature, enabled) VALUES (?, ?, ?)'
+  );
+  for (const feature of ALL_FEATURES) {
+    stmt.run(tenantId, feature, enabledFeatures.includes(feature) ? 1 : 0);
+  }
+}
+seedTenantFeatures(DEFAULT_TENANT_ID, [...FREE_FEATURES, ...PAID_FEATURES]);
+
+// enabled=1 explicite, OU aucune ligne pour une feature gratuite (nouveaux
+// tenants créés avant qu'une nouvelle feature gratuite existe encore ici).
+function tenantHasFeature(tenantId, feature) {
+  if (tenantId == null) return true; // super-admin : jamais bridé
+  const row = db.prepare(
+    'SELECT enabled FROM tenant_features WHERE tenant_id = ? AND feature = ?'
+  ).get(tenantId, feature);
+  if (row) return !!row.enabled;
+  return FREE_FEATURES.includes(feature);
+}
+
+db.tenantHasFeature = tenantHasFeature;
+db.seedTenantFeatures = seedTenantFeatures;
+db.FREE_FEATURES = FREE_FEATURES;
+db.PAID_FEATURES = PAID_FEATURES;
+db.ALL_FEATURES = ALL_FEATURES;
+db.DEFAULT_TENANT_ID = DEFAULT_TENANT_ID;
 
 module.exports = db;

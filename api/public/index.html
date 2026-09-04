@@ -7,29 +7,45 @@
   <link rel="stylesheet" href="/css/style.css?v=__APP_VERSION__">
 </head>
 <body>
-  <header>
+  <div class="app-shell">
+  <header class="sidebar">
     <div class="header-brand">
       <h1><a class="brand" href="/"><span class="brand-mark"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></span>Passerelle SMS</a></h1>
       <span id="appVersion" class="muted"></span>
       <span id="onlineBadge" class="online-pastille" title="Passerelles actives"></span>
     </div>
-    <nav class="nav">
-      <button class="tab" data-tab="keys">Clés API</button>
-      <button class="tab" data-tab="gateways">Passerelles</button>
-      <button class="tab active" data-tab="messages">Messages</button>
-      <button class="tab" data-tab="books">Carnets</button>
-      <button class="tab" data-tab="campaigns">Campagnes</button>
-      <button class="tab" data-tab="fleet">Vérification flotte</button>
-      <button class="tab" data-tab="sync">Synchro carnets</button>
-      <button class="tab" data-tab="mail2sms">Mail → SMS</button>
-      <button class="tab" data-tab="frizbi">SMS externe (Frizbi)</button>
-      <button class="tab" data-tab="logs">Logs</button>
-      <button class="tab" data-tab="journal">Journal</button>
-      <button class="tab" data-tab="accounts">Comptes</button>
-      <button class="tab" data-tab="groups">Groupes</button>
-      <button class="tab" data-tab="help">Aide</button>
+    <nav class="nav nav-sidebar">
+      <div class="nav-group">
+        <span class="nav-group-label">Envoi</span>
+        <button class="tab active" data-tab="messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Messages</button>
+        <button class="tab" data-tab="books"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"/><circle cx="12" cy="10" r="2.4"/><path d="M8 17c0-2 1.8-3.2 4-3.2s4 1.2 4 3.2"/></svg>Carnets</button>
+        <button class="tab" data-tab="campaigns"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Campagnes</button>
+        <button class="tab" data-tab="fleet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 3v2h6V3"/><path d="M8.5 13l2 2 4-4"/></svg>Vérification flotte</button>
+      </div>
+      <div class="nav-group">
+        <span class="nav-group-label">Passerelles</span>
+        <button class="tab" data-tab="keys"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8"/><path d="M16 7l2 2"/><path d="M19 4l1 1"/></svg>Clés API</button>
+        <button class="tab" data-tab="gateways"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>Passerelles</button>
+        <button class="tab" data-tab="sync"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="9" height="6" rx="2.5"/><rect x="13" y="11" width="9" height="6" rx="2.5"/><line x1="7" y1="10" x2="17" y2="14"/></svg>Synchro carnets</button>
+      </div>
+      <div class="nav-group">
+        <span class="nav-group-label">Intégrations</span>
+        <button class="tab" data-tab="mail2sms"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 6l10 7 10-7"/></svg>Mail → SMS</button>
+        <button class="tab" data-tab="frizbi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L2 11l7 2 2 7 4-6 7-12z"/><path d="M11 13l4-4"/></svg>SMS externe (Frizbi)</button>
+      </div>
+      <div class="nav-group">
+        <span class="nav-group-label">Administration</span>
+        <button class="tab" data-tab="logs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="14" y2="18"/></svg>Logs</button>
+        <button class="tab" data-tab="journal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M9 2h6"/></svg>Journal</button>
+        <button class="tab" data-tab="accounts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v1"/></svg>Comptes</button>
+        <button class="tab" data-tab="groups"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20v-.8a4.2 4.2 0 0 1 4.2-4.2h4.6a4.2 4.2 0 0 1 4.2 4.2v.8"/><circle cx="17.5" cy="9" r="2.6"/><path d="M16 15.2c2.6 0 6 1.1 6 4v.8h-4.8"/></svg>Groupes</button>
+        <button class="tab" data-tab="tenants" id="tabTenants" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><line x1="8" y1="7.5" x2="8" y2="7.5"/><line x1="12" y1="7.5" x2="12" y2="7.5"/><line x1="16" y1="7.5" x2="16" y2="7.5"/><line x1="8" y1="11.5" x2="8" y2="11.5"/><line x1="12" y1="11.5" x2="12" y2="11.5"/><line x1="16" y1="11.5" x2="16" y2="11.5"/><path d="M9 21v-4h6v4"/></svg>Tenants</button>
+      </div>
+      <div class="nav-group">
+        <button class="tab" data-tab="help"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 2.6-3 4.6"/><line x1="12" y1="17.3" x2="12" y2="17.3"/></svg>Aide</button>
+      </div>
     </nav>
-    <div class="header-actions">
+    <div class="header-actions sidebar-actions">
       <a id="btnDocs" class="ghost" href="/docs" target="_blank" rel="noopener">Docs API</a>
       <button id="btnTheme" class="ghost">Mode clair</button>
       <button id="logout" class="ghost">Déconnexion</button>
@@ -37,6 +53,7 @@
     </div>
   </header>
 
+  <div class="main-scroll">
   <main>
     <section id="keys" class="panel hidden">
       <div class="row">
@@ -412,7 +429,7 @@
       </div>
       <div class="row">
         <label for="frizbiSenderId">Sender ID</label>
-        <input id="frizbiSenderId" maxlength="11" placeholder="IVRY" style="max-width:160px">
+        <input id="frizbiSenderId" maxlength="11" placeholder="ex : MASOCIETE" style="max-width:160px">
       </div>
       <div class="row">
         <label for="frizbiClientId">Client ID</label>
@@ -503,7 +520,7 @@
         <h2>Comptes d'accès à la console</h2>
         <button id="btnNewAccount">+ Nouveau compte</button>
       </div>
-      <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe. Laissez l'identifiant vide sur l'écran de connexion pour utiliser le compte admin (mot de passe défini dans docker-compose, <code>ADMIN_PASSWORD</code>).</p>
+      <p class="muted">Ces comptes se connectent avec un identifiant et un mot de passe et sont rattachés à votre organisation. Cochez « Admin » pour donner accès à l'ensemble de l'organisation (jetons, passerelles, groupes, comptes) plutôt qu'à un seul groupe.</p>
       <div class="table-wrap"><table>
         <thead>
           <tr><th>ID</th><th>Identifiant</th><th>Rôle</th><th>Groupe</th><th>E-mail</th><th>Resp.</th><th>Créé le</th><th>Dernière connexion</th><th>État</th><th>Actions</th></tr>
@@ -511,12 +528,14 @@
         <tbody id="accountsBody"></tbody>
       </table></div>
       <br>
-      <h2>Sécurité</h2>
-      <p class="muted">Numéro recevant un SMS d'alerte après 5 échecs de connexion à la console (anti-bruteforce).</p>
-      <div class="row">
-        <input id="adminPhone" type="tel" placeholder="Numéro d'alerte admin (ex. 06XXXXXXXX)" style="max-width:320px">
-        <button id="btnSaveAdminPhone" class="ghost">Enregistrer</button>
-        <span id="adminPhoneStatus" class="muted"></span>
+      <div id="securitySection" hidden>
+        <h2>Sécurité</h2>
+        <p class="muted">Numéro recevant un SMS d'alerte après 5 échecs de connexion à la console (anti-bruteforce).</p>
+        <div class="row">
+          <input id="adminPhone" type="tel" placeholder="Numéro d'alerte admin (ex. 06XXXXXXXX)" style="max-width:320px">
+          <button id="btnSaveAdminPhone" class="ghost">Enregistrer</button>
+          <span id="adminPhoneStatus" class="muted"></span>
+        </div>
       </div>
     </section>
     <section id="groups" class="panel hidden">
@@ -532,10 +551,24 @@
         <tbody id="groupsBody"></tbody>
       </table></div>
     </section>
+    <section id="tenants" class="panel hidden">
+      <div class="row">
+        <h2>Tenants</h2>
+      </div>
+      <p class="muted">Chaque tenant est une organisation isolée : ses propres messages, jetons API/passerelles et fonctionnalités. Gratuit par défaut : envoi unitaire, envoi en masse, envoi par API. À activer au cas par cas : Mail → SMS, pièce jointe avec suivi de lecture.</p>
+      <div class="table-wrap"><table>
+        <thead>
+          <tr><th>ID</th><th>Nom</th><th>Statut</th><th>Plan</th><th>Comptes</th><th>Passerelles</th><th>Jetons API</th><th>Messages</th><th>Mail → SMS</th><th>Pièce jointe</th><th>Créé le</th></tr>
+        </thead>
+        <tbody id="tenantsBody"></tbody>
+      </table></div>
+    </section>
     <section id="help" class="panel hidden">
       <!-- __HELP_CONTENT__ -->
     </section>
   </main>
+  </div>
+  </div>
 
   <div id="modal" class="overlay hidden">
     <div class="card">

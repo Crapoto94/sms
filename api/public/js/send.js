@@ -23,13 +23,29 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
 function initTheme() {
   const btn = $('btnTheme');
   if (!btn) return;
+  // Sans choix explicite mémorisé, on suit la préférence système (gérée en
+  // CSS, cf. @media (prefers-color-scheme: light) dans style.css) plutôt
+  // que d'imposer le sombre par défaut.
+  const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  const effectiveLight = () => {
+    const stored = localStorage.getItem('sms-theme');
+    if (stored === 'light') return true;
+    if (stored === 'dark') return false;
+    return mql ? mql.matches : false;
+  };
   const apply = (light) => {
     document.body.classList.toggle('light', light);
+    document.body.classList.toggle('dark', !light);
     btn.textContent = light ? 'Mode sombre' : 'Mode clair';
   };
-  apply(localStorage.getItem('sms-theme') === 'light');
+  const stored = localStorage.getItem('sms-theme');
+  if (stored === 'light' || stored === 'dark') {
+    apply(stored === 'light');
+  } else {
+    btn.textContent = effectiveLight() ? 'Mode sombre' : 'Mode clair';
+  }
   btn.addEventListener('click', () => {
-    const light = !document.body.classList.contains('light');
+    const light = !effectiveLight();
     localStorage.setItem('sms-theme', light ? 'light' : 'dark');
     apply(light);
   });
@@ -140,7 +156,7 @@ async function loadSession() {
 }
 
 function homeUrl() {
-  return session && session.role === 'admin' ? '/' : '/send.html';
+  return session && session.isAdmin ? '/' : '/send.html';
 }
 
 $('btnBackHome').addEventListener('click', () => { location.href = homeUrl(); });
