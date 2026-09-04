@@ -131,6 +131,7 @@
           },
           "400": { "description": "Fichier manquant ou upload invalide.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "Clé API manquante ou invalide.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "Envoi de pièce jointe non activé pour votre organisation.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "413": { "description": "Fichier supérieur à 10 Mo.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
@@ -204,7 +205,7 @@
             }
           },
           "403": {
-            "description": "Clé API révoquée, expirée ou type de clé inadapté (la clé doit être de type \"web\").",
+            "description": "Clé API révoquée, expirée, type de clé inadapté (la clé doit être de type \"web\"), ou envoi par API non activé pour votre organisation.",
             "content": {
               "application/json": {
                 "schema": {

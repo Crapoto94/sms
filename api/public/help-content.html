@@ -583,7 +583,7 @@
           Elle évite d'avoir à purger les carnets à la main à chaque envoi.
         </p>
         <ul class="help-list">
-          <li><b>Elle vaut pour toute l'instance.</b> Un numéro blacklisté l'est pour tous les groupes, sans cloisonnement : c'est une décision qui engage la collectivité entière, pas un service.</li>
+          <li><b>Elle vaut pour toute l'organisation.</b> Un numéro blacklisté l'est pour tous les groupes de votre organisation, sans cloisonnement par groupe : c'est une décision qui engage l'organisation entière, pas un seul service. Elle n'a en revanche aucun effet sur les autres organisations de la plateforme, totalement indépendantes.</li>
           <li><b>Tout le monde peut l'alimenter.</b> Un utilisateur comme un administrateur peut ajouter ou retirer un numéro, depuis le bouton <em>Numéros blacklistés</em> de l'écran des carnets d'adresses. La console note qui a fait l'ajout.</li>
           <li><b>Les contacts concernés sont signalés.</b> Dans un carnet, un contact dont le numéro figure sur la liste apparaît marqué : inutile de comparer les deux listes à la main.</li>
           <li><b>Le contact n'est pas supprimé.</b> Il reste dans le carnet, avec sa fiche complète ; seul l'envoi est bloqué. Retirer le numéro de la liste noire le rend de nouveau joignable immédiatement.</li>
@@ -688,6 +688,10 @@
           de la flotte. Quelques minutes plus tard, un <strong>compte-rendu</strong> est renvoyé par e-mail à
           l'expéditeur.
         </p>
+        <p>
+          C'est une fonctionnalité à activer : si l'onglet <em>Mail → SMS</em> refuse la création d'une boîte,
+          demandez son activation pour votre organisation.
+        </p>
 
         <h4 class="help-sub">Le format attendu</h4>
         <ul class="help-list">
@@ -724,11 +728,16 @@
           le port API. Les deux sont gérés depuis cette console.
         </p>
 
+        <p>
+          Chaque organisation (« tenant ») est isolée des autres : ses propres messages, jetons API/passerelles,
+          comptes et groupes. Une seule exception, le super-administrateur, décrite ci-dessous.
+        </p>
+
         <div class="help-cards">
           <div class="help-card">
             <span class="help-card-tag tag-admin">Compte humain</span>
             <h4>Administrateur</h4>
-            <p>Voit et gère l'intégralité de l'instance, tous groupes confondus. Seul rôle à accéder aux clés API, aux passerelles, aux journaux, aux comptes, aux groupes et à la synchronisation.</p>
+            <p>Voit et gère l'intégralité de <strong>son organisation</strong>, tous groupes confondus. Seul rôle à accéder aux clés API, aux passerelles, aux journaux, aux comptes, aux groupes et à la synchronisation — mais uniquement pour son organisation, jamais pour les autres.</p>
           </div>
           <div class="help-card">
             <span class="help-card-tag tag-user">Compte humain</span>
@@ -751,9 +760,9 @@
             <p>Réservée à un téléphone Android. Elle autorise uniquement le sondage de la file, la remontée des statuts et celle des SMS reçus. Elle ne permet pas de déposer un message.</p>
           </div>
           <div class="help-card">
-            <span class="help-card-tag tag-admin">Compte de secours</span>
-            <h4>Compte admin intégré</h4>
-            <p>Accessible en laissant l'identifiant vide sur l'écran de connexion. Son mot de passe est défini par la variable <span class="code">ADMIN_PASSWORD</span> du <span class="code">docker-compose</span>, et non depuis la console.</p>
+            <span class="help-card-tag tag-admin">Compte plateforme</span>
+            <h4>Super-administrateur</h4>
+            <p>Accessible en laissant l'identifiant vide sur l'écran de connexion. Son mot de passe est défini par la variable <span class="code">ADMIN_PASSWORD</span> du <span class="code">docker-compose</span>, et non depuis la console. Voit toutes les organisations de la plateforme depuis l'onglet <em>Tenants</em> (statut, fonctionnalités activées, compteurs), et gère la sienne comme n'importe quel administrateur.</p>
           </div>
         </div>
       </article>
@@ -789,7 +798,7 @@
               <li>Créer, renommer et supprimer des carnets ; ajouter, modifier et supprimer des contacts.</li>
               <li>Importer un fichier CSV avec correspondance des colonnes à l'écran et aperçu avant validation.</li>
               <li>Renseigner les champs métier : entité, service, direction, IMEI, code PUK, statut ligne, forfait, terminal communiquant et ligne secondaire.</li>
-              <li>Blacklister un numéro : il est alors refusé à l'envoi, pour tout le monde et sur toute l'instance.</li>
+              <li>Blacklister un numéro : il est alors refusé à l'envoi, pour tout le monde et tous les groupes de son organisation.</li>
             </ul>
           </div>
           <div class="help-feature">
@@ -815,7 +824,7 @@
         <h3>13 · Ce que peut faire un administrateur</h3>
         <p>
           L'administrateur dispose de tout ce qui précède, sans cloisonnement par groupe, plus la totalité de la
-          configuration et de la supervision.
+          configuration et de la supervision — le tout borné à sa propre organisation, jamais aux autres.
         </p>
 
         <div class="help-features">
@@ -846,7 +855,7 @@
           <div class="help-feature">
             <h4>Voir l'ensemble du trafic</h4>
             <ul>
-              <li>Tous les messages, tous groupes confondus, avec l'auteur et l'origine (console, interface d'envoi, API).</li>
+              <li>Tous les messages de son organisation, tous groupes confondus, avec l'auteur et l'origine (console, interface d'envoi, API).</li>
               <li>Tous les SMS reçus par les téléphones de la flotte.</li>
               <li>Importer un lot d'envois en CSV, et exporter l'historique en CSV.</li>
             </ul>
@@ -856,7 +865,7 @@
             <ul>
               <li>Accéder aux carnets de tous les groupes et en créer pour le compte d'un groupe.</li>
               <li>Déclarer des passerelles distantes et choisir les carnets à synchroniser.</li>
-              <li>Tenir la liste noire des numéros, valable pour toute l'instance.</li>
+              <li>Tenir la liste noire des numéros, valable pour toute l'organisation.</li>
             </ul>
           </div>
           <div class="help-feature">
@@ -907,22 +916,25 @@
             <tr><td>Importer / exporter en CSV</td><td class="p">Contacts</td><td class="y">Oui</td><td class="n">Non</td><td class="n">Non</td></tr>
           </tbody>
         </table></div>
+        <p class="muted">« Tous » signifie ici tous les groupes de sa propre organisation — jamais ceux d'une autre. Le super-administrateur a en plus accès à l'onglet <em>Tenants</em>, qui liste toutes les organisations de la plateforme sans donner accès à leurs messages ou carnets.</p>
       </article>
 
       <article class="help-block" id="help-glossaire">
         <h3>15 · Glossaire</h3>
         <dl class="help-gloss">
-          <dt>Passerelle</dt><dd>Selon le contexte : l'instance serveur complète (« la passerelle de la mairie »), ou un téléphone déclaré sur cette instance, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
-          <dt>Groupe</dt><dd>Unité de cloisonnement. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
+          <dt>Organisation (tenant)</dt><dd>Une organisation cliente de la plateforme : ses propres messages, jetons API/passerelles, groupes et comptes, totalement isolés de ceux des autres organisations. Visibles toutes ensemble uniquement par le super-administrateur, dans l'onglet <em>Tenants</em>.</dd>
+          <dt>Passerelle</dt><dd>Selon le contexte : la console web d'une organisation (« la passerelle de la mairie »), ou un téléphone déclaré sur cette organisation, tel qu'il apparaît dans l'onglet <em>Passerelles</em>.</dd>
+          <dt>Groupe</dt><dd>Unité de cloisonnement au sein d'une organisation. Ses membres partagent les mêmes carnets et ne voient que les messages partis du groupe.</dd>
           <dt>Carnet d'adresses</dt><dd>Liste de contacts appartenant à un groupe, avec les champs métier entité, service, direction, IMEI, PUK, statut ligne, forfait, terminal communiquant et ligne secondaire.</dd>
           <dt>Campagne</dt><dd>Envoi groupé issu d'un carnet. Les messages restent regroupés dans l'historique, avec leurs compteurs et une annulation d'ensemble.</dd>
           <dt>Variable</dt><dd>Marqueur du type <span class="code">{prénom}</span> remplacé, pour chaque destinataire, par la valeur de sa fiche contact.</dd>
-          <dt>Liste noire</dt><dd>Numéros interdits d'envoi sur toute l'instance. Une campagne qui en contient est refusée avant tout départ.</dd>
+          <dt>Liste noire</dt><dd>Numéros interdits d'envoi sur toute l'organisation (pas les autres organisations de la plateforme). Une campagne qui en contient est refusée avant tout départ.</dd>
           <dt>Vérification de flotte</dt><dd>Campagne de test attendant une réponse des porteurs, pour contrôler qu'un parc de téléphones est bien en service.</dd>
-          <dt>Pièce jointe</dt><dd>Fichier téléversé sur la passerelle et diffusé sous forme de lien ajouté au SMS, avec date d'expiration et suivi des ouvertures.</dd>
+          <dt>Pièce jointe</dt><dd>Fichier téléversé sur la passerelle et diffusé sous forme de lien ajouté au SMS, avec date d'expiration et suivi des ouvertures. Fonctionnalité à activer pour l'organisation.</dd>
           <dt>Profil API</dt><dd>Couple URL + clé enregistré dans l'application Android. Un profil par passerelle servie.</dd>
           <dt>Sondage</dt><dd>Appel périodique du téléphone vers le serveur. Il n'existe aucune connexion entrante vers le téléphone.</dd>
           <dt>Frizbi</dt><dd>API externe d'envoi de SMS en masse, alternative aux passerelles internes pour les gros volumes. Se configure dans l'onglet <em>SMS externe (Frizbi)</em>.</dd>
+          <dt>Mail → SMS</dt><dd>Transformation automatique d'un e-mail reçu sur une boîte IMAP surveillée en SMS envoyé par la flotte. Fonctionnalité à activer pour l'organisation.</dd>
           <dt>Quota (passerelle)</dt><dd>Nombre maximal de destinataires distincts qu'une passerelle interne peut contacter sur une fenêtre glissante (30&nbsp;jours par défaut), pour rester sous le seuil de blocage anti-spam de l'opérateur. Réglable dans l'onglet <em>Passerelles</em>.</dd>
           <dt>Multi-SIM</dt><dd>Téléphone équipé de deux cartes SIM. L'application y alterne automatiquement les envois 50/50 entre les deux lignes.</dd>
         </dl>
